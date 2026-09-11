@@ -1,7 +1,9 @@
 'use client'
 
+import { List } from 'lucide-react'
 import { useEffect, useState } from 'react'
 
+import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from '@/components/ui/sheet'
 import type { Heading } from '@/lib/content/derive'
 import { cn } from '@/lib/utils/cn'
 
@@ -74,9 +76,19 @@ function smoothJump(event: React.MouseEvent<HTMLAnchorElement>, id: string) {
 export function TableOfContents({
   headings,
   className,
+  title = 'On this page',
+  onNavigate,
 }: {
   headings: Heading[]
   className?: string
+  /**
+   * The list's own heading. `null` omits it, for the drawer, whose sheet title
+   * already says what the list is — two headings a line apart is one heading
+   * too many.
+   */
+  title?: string | null
+  /** Called after a link is followed. The drawer closes itself with this. */
+  onNavigate?: () => void
 }) {
   const [activeId, setActiveId] = useState<string | null>(null)
 
@@ -116,9 +128,11 @@ export function TableOfContents({
 
   return (
     <nav aria-label="On this page" className={cn('flex flex-col', className)}>
-      <h2 className="mb-3 text-xs font-medium uppercase tracking-wider text-ink-subtle">
-        On this page
-      </h2>
+      {title ? (
+        <h2 className="mb-3 text-xs font-medium uppercase tracking-wider text-ink-subtle">
+          {title}
+        </h2>
+      ) : null}
       {headings.map((heading) => (
         <a
           key={heading.id}
@@ -133,6 +147,7 @@ export function TableOfContents({
             // second of the old section still marked as current.
             setActiveId(heading.id)
             smoothJump(event, heading.id)
+            onNavigate?.()
           }}
           className="toc-link"
         >
@@ -144,42 +159,66 @@ export function TableOfContents({
 }
 
 /**
- * The same contents as a disclosure, for the narrow layout.
+ * The same contents as a bottom drawer, for the layouts without a rail.
  *
- * Native `<details>` rather than a controlled component: the browser already
- * knows how to expand, focus and announce it, and it works before hydration.
- * It is closed by default — on a phone the contents would otherwise push the
- * article below the fold, which is the opposite of what a reader wants.
+ * Shown below `lg`, which is where the rail stops being rendered — one
+ * breakpoint rather than two, because the contents were previously a
+ * `<details>` under `md` and a rail over `lg`, and the band between the two had
+ * no contents list at all. A drawer covers every width the rail does not, so
+ * there is no width at which a reader can see neither.
  *
- * There is no scroll-spy here. The highlight answers "where am I in this
- * document", and on a phone the answer the reader wants is on the progress bar
- * they are already looking at; a highlight they would have to reopen the
- * disclosure to see is not an answer to anything.
+ * The trigger sits beside the title, which is where a reader looks for it, and
+ * the drawer is the phone-shaped version of the same list rather than a second
+ * implementation of it: the component above, with its scroll-spy and its jump.
+ *
+ * Three details are about the jump surviving the drawer:
+ *
+ * - It is non-modal. A modal dialog locks the body scroll for as long as it is
+ *   open, and the link the reader just tapped asks the browser to scroll the
+ *   page — under the lock that scroll is discarded and the reader is left
+ *   staring at the table of contents they asked to leave. Non-modal keeps the
+ *   page scrollable, and the sheet closes while the jump is already running.
+ * - There is no overlay, for the same reason: it would dim a page that is still
+ *   live, and swallow the first tap outside.
+ * - Focus is not returned to the trigger, which is what Radix does by default.
+ *   The trigger is in the header, so refocusing it drags the viewport back up
+ *   to where the reader started — undoing the jump they just made. The link
+ *   took them somewhere; leaving the focus alone is what lets them stay there.
+ *
+ * It closes on selection for the obvious reason and for one more: the list is
+ * over the article, so leaving it open would hide the section just arrived at.
  */
-export function InlineTableOfContents({ headings }: { headings: Heading[] }) {
+export function TableOfContentsDrawer({ headings }: { headings: Heading[] }) {
+  const [open, setOpen] = useState(false)
+
   return (
-    <details className="no-print mb-10 border-y border-line py-3 md:hidden">
-      <summary className="cursor-pointer list-none text-sm text-ink-muted marker:content-none">
-        On this page
-        <span className="ml-2 text-ink-subtle">({headings.length})</span>
-      </summary>
-      <nav aria-label="On this page" className="mt-3 flex flex-col">
-        {headings.map((heading) => (
-          <a
-            key={heading.id}
-            href={`#${heading.id}`}
-            data-depth={heading.level}
-            // Deliberately left open after a jump: the list is in the flow
-            // rather than over the article, so it scrolls away on its own, and
-            // a reader working through several sections should not have to
-            // reopen it between each one.
-            onClick={(event) => smoothJump(event, heading.id)}
-            className="toc-link"
-          >
-            {heading.text}
-          </a>
-        ))}
-      </nav>
-    </details>
+    <Sheet open={open} onOpenChange={setOpen} modal={false}>
+      <SheetTrigger
+        className="no-print inline-flex shrink-0 items-center gap-1.5 rounded-md border border-line px-2.5 py-1.5 text-[0.8125rem] text-ink-muted transition-colors duration-150 hover:bg-sunken hover:text-ink lg:hidden"
+        aria-label={`Contents (${headings.length} sections)`}
+      >
+        <List className="size-3.5" aria-hidden="true" />
+        Contents
+      </SheetTrigger>
+
+      <SheetContent
+        side="bottom"
+        overlay={false}
+        className="no-print border-line bg-canvas lg:hidden"
+        // See the note above: this is what keeps the jump from being undone.
+        onCloseAutoFocus={(event) => event.preventDefault()}
+      >
+        <SheetHeader>
+          <SheetTitle className="px-1 text-sm font-medium text-ink">Contents</SheetTitle>
+        </SheetHeader>
+
+        <TableOfContents
+          headings={headings}
+          title={null}
+          onNavigate={() => setOpen(false)}
+          className="pb-2"
+        />
+      </SheetContent>
+    </Sheet>
   )
 }

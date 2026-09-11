@@ -6,8 +6,9 @@ import { DocumentMeta } from './document-meta'
 import { DocumentShell } from './document-shell'
 import { PrevNext } from './prev-next'
 import { RelatedList } from './related-list'
+import { TableOfContentsDrawer } from './table-of-contents'
 import type { ContentDetail, ContentSummary } from '@/lib/content/queries'
-import type { Heading } from '@/lib/content/derive'
+import { shouldShowToc, type Heading } from '@/lib/content/derive'
 import type { Backlink } from '@/lib/graph/backlinks'
 import type { RelatedPost } from '@/lib/graph/related'
 import { sectionNavigation } from '@/lib/navigation-sections'
@@ -53,10 +54,11 @@ export function DocumentView({
   section,
 }: DocumentViewProps) {
   const context = { locale: settings.locale, timeZone: settings.timezone }
+  const headings = doc.headings as Heading[]
 
   return (
     <DocumentShell
-      headings={doc.headings as Heading[]}
+      headings={headings}
       tocEnabled={doc.toc}
       sections={sectionNavigation(section)}
       sectionLabel="Sections"
@@ -92,9 +94,22 @@ export function DocumentView({
     >
       <article>
         <header className="mb-10 border-b border-line pb-6">
-          <h1 className="text-[1.75rem] font-semibold leading-tight tracking-[-0.02em] text-ink sm:text-[2rem]">
-            {doc.title}
-          </h1>
+          <div className="flex items-start justify-between gap-4">
+            <h1 className="min-w-0 text-[1.75rem] font-semibold leading-tight tracking-[-0.02em] text-ink sm:text-[2rem]">
+              {doc.title}
+            </h1>
+
+            {/*
+              Beside the title, where a reader looks for it — and only where the
+              rail is not rendered. The two are one control: at no width should
+              both be on screen, and at no width should neither be.
+            */}
+            {shouldShowToc(doc.toc, headings) ? (
+              <div className="pt-1.5">
+                <TableOfContentsDrawer headings={headings} />
+              </div>
+            ) : null}
+          </div>
 
           {doc.description ? (
             <p className="mt-3 max-w-prose text-[0.9375rem] leading-relaxed text-ink-muted">

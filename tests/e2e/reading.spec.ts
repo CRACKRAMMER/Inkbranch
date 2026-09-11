@@ -94,7 +94,41 @@ test('a reader moves through a long document from its contents list', async ({ p
     )
   })
 
+  await test.step('opens the contents as a drawer where the rail is not rendered', async () => {
+    const trigger = page.getByRole('button', { name: 'Contents' })
+
+    // The wide viewport has the rail, which is the other half of this: there is
+    // one contents list per width, never two and never none.
+    if (!(await trigger.isVisible())) return
+
+    // A fresh load, so the drawer starts closed rather than wherever the step
+    // above left it.
+    await page.goto(`/posts/${slug}`)
+
+    // Closed means absent, not merely hidden: a reader at this width should
+    // find the list in the drawer and nowhere else in the article.
+    await expect(page.locator('a.toc-link:visible')).toHaveCount(0)
+    await expect(page.getByRole('dialog', { name: 'Contents' })).toHaveCount(0)
+
+    await trigger.click()
+
+    const drawer = page.getByRole('dialog', { name: 'Contents' })
+    await expect(drawer).toBeVisible()
+
+    const target = await fragmentFor(page, sections[3])
+    await drawer.getByRole('link', { name: sections[3], exact: true }).click()
+
+    // Picking a section puts the list away — otherwise it covers the section
+    // the reader just asked for — and the jump still happens behind it, which
+    // is the whole reason the drawer is not a modal dialog: a modal one locks
+    // the page scroll, and the scroll the link asks for would be discarded.
+    await expect(drawer).toBeHidden()
+    await expect(page).toHaveURL(new RegExp(`#${escapeForRegExp(target)}$`))
+    await expect(landing(page, sections[3])).toBeInViewport()
+  })
+
   await test.step('jumps to the section a reader picks', async () => {
+    await openContents(page)
     const target = await fragmentFor(page, sections[1])
     await page.getByRole('navigation', { name: 'On this page' })
       .getByRole('link', { name: sections[1], exact: true })
@@ -115,6 +149,7 @@ test('a reader moves through a long document from its contents list', async ({ p
   })
 
   await test.step('asks for an animated scroll, and only for the jump', async () => {
+    await openContents(page)
     const target = await fragmentFor(page, sections[3])
     const during = await clickInPage(page, target)
 
@@ -130,6 +165,7 @@ test('a reader moves through a long document from its contents list', async ({ p
 
   await test.step('does not animate for a reader who asked for less motion', async () => {
     await page.emulateMedia({ reducedMotion: 'reduce' })
+    await openContents(page)
     const target = await fragmentFor(page, sections[0])
 
     const during = await clickInPage(page, target)
@@ -174,22 +210,28 @@ function landing(page: Page, heading: string) {
 }
 
 /**
- * Reveal the contents list, where it is behind a disclosure.
+ * Reveal the contents list, where it is behind a drawer.
  *
- * There are two of them and only ever one is visible: the rail on a wide
- * viewport, and a `<details>` above the article below `md`, where the rail is
- * hidden. Checking whether the summary is visible rather than checking the
- * viewport width is the difference between testing the layout and testing a
- * media query — the same reason `showMetadata` in `support.ts` asks about the
- * switcher rather than the width.
+ * There are two presentations and only ever one of them is on screen: the rail
+ * on a wide viewport, and — below `lg`, where the rail is not rendered at all —
+ * a bottom drawer behind a trigger beside the title. Checking whether a link is
+ * already reachable rather than checking the viewport width is the difference
+ * between testing the layout and testing a media query — the same reason
+ * `showMetadata` in `support.ts` asks about the switcher rather than the width.
  *
- * The link selectors below are written as roles, so a closed `<details>` is not
- * a problem for finding them; it is a problem for *clicking* them, which is
- * what this is for.
+ * The drawer is a dialog, and a closed one has no contents in the DOM at all,
+ * so this has to run *before* anything looks for a link. It is written to be
+ * safe to call more than once, because the drawer closes itself when a section
+ * is picked: if a link is already visible, there is nothing to open, and
+ * clicking the trigger again would close the drawer instead.
  */
 async function openContents(page: Page): Promise<void> {
-  const summary = page.locator('summary', { hasText: 'On this page' })
-  if (await summary.isVisible()) await summary.click()
+  // `:visible`, not `first()`: on a phone the rail is still in the markup with
+  // `display: none`, and it comes first in the document.
+  if (await page.locator('a.toc-link:visible').first().isVisible()) return
+
+  const trigger = page.getByRole('button', { name: 'Contents' })
+  if (await trigger.isVisible()) await trigger.click()
 }
 
 /**

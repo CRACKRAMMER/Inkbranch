@@ -1,6 +1,6 @@
 import Link from 'next/link'
 
-import { InlineTableOfContents, TableOfContents } from './table-of-contents'
+import { TableOfContents } from './table-of-contents'
 import { ReadingProgress } from '@/components/site/reading-progress'
 import type { Heading } from '@/lib/content/derive'
 import { MIN_HEADINGS_FOR_TOC, shouldShowToc } from '@/lib/content/derive'
@@ -10,17 +10,18 @@ import { MIN_HEADINGS_FOR_TOC, shouldShowToc } from '@/lib/content/derive'
  * of contents.
  *
  * The columns are not equal and are not meant to be. The middle column carries
- * the reading measure — capped at 42rem, which is the 680–760px the design
- * calls for — and the outer two are fixed-width rails that hold secondary
- * navigation. Both rails are `position: sticky`, so they stay reachable while
- * the article scrolls past, and both are hidden below `lg`, where they would
- * cost the measure its width.
+ * the reading measure and the outer two are fixed-width rails that hold
+ * secondary navigation. Both rails are `position: sticky`, so they stay
+ * reachable while the article scrolls past, and both are hidden below `lg`,
+ * where they would cost the measure its width.
  *
- * On mobile the TOC does not disappear: `InlineTableOfContents` renders it as a
- * native `<details>` above the body. That is the difference between
- * restructuring the information and hiding it — `<details>` is keyboard
- * operable and screen-reader announced for free, and it works with JavaScript
- * disabled, because it is a browser feature rather than a component.
+ * The contents list is the one rail that does not simply disappear when the
+ * viewport narrows. Below `lg` the same list is a drawer hanging off a trigger
+ * beside the title — rendered by `DocumentView`, which owns the header, rather
+ * than here, which owns only the columns. Both are gated on the same
+ * `shouldShowToc` rule, so a document that is too short for a contents list
+ * does not get one at either width, and there is no width at which the reader
+ * gets neither.
  */
 
 export interface SectionLink {
@@ -84,7 +85,6 @@ export function DocumentShell({
 
           {/* The document */}
           <div className="min-w-0 py-10 lg:py-12">
-            <InlineTableOfContents headings={showToc ? headings : []} />
             <div id="article-body">{children}</div>
             {after}
           </div>

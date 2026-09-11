@@ -52,12 +52,25 @@ export function SheetOverlay({
 
 export type SheetContentProps = React.ComponentProps<typeof DialogPrimitive.Content> & {
   side?: SheetSide
+  /**
+   * Modal sheets dim and block the page behind them, which is right for a task
+   * the reader is in the middle of. A sheet opened with `modal={false}` on the
+   * root — one that is a shortcut into the page rather than a step away from it
+   * — must not: the dimming would be a lie about what is still usable.
+   */
+  overlay?: boolean
 }
 
-export function SheetContent({ className, children, side = 'right', ...props }: SheetContentProps) {
+export function SheetContent({
+  className,
+  children,
+  side = 'right',
+  overlay = true,
+  ...props
+}: SheetContentProps) {
   return (
     <DialogPrimitive.Portal>
-      <SheetOverlay />
+      {overlay ? <SheetOverlay /> : null}
       <SheetSideContext.Provider value={side}>
         <DialogPrimitive.Content
           data-slot="sheet-content"
