@@ -8,6 +8,7 @@ import {
   aggregatePending,
   aggregateRange,
   pendingDays,
+  refreshViewCounts,
   type RollupEvent,
 } from '@/lib/analytics/aggregate'
 import {
@@ -1196,6 +1197,17 @@ describe.skipIf(!hasTestDatabase)('analytics against a database', () => {
   const SUMMARY_DAY = '2023-05-10'
   const TOP_DAY = '2023-05-20'
 
+  /**
+   * Two days for the view-count fold, because the sum has to span them.
+   *
+   * A fold that read one day — today, or the range the dashboard defaults to —
+   * would give a plausible number for a document with a single day's traffic and
+   * a wrong one for everything else. This is the cheap way to be unable to make
+   * that mistake.
+   */
+  const COUNT_DAY = '2023-05-21'
+  const COUNT_DAY_2 = '2023-05-22'
+
   const POST_SLUG = `${RUN}-post`
   const POST_PATH = `/posts/${POST_SLUG}`
   const TOP_SLUG = `${RUN}-top`
@@ -1328,6 +1340,8 @@ describe.skipIf(!hasTestDatabase)('analytics against a database', () => {
       SUMMARY_FROM,
       SUMMARY_DAY,
       TOP_DAY,
+      COUNT_DAY,
+      COUNT_DAY_2,
       unaggregated,
       aggregated,
     ]) {
@@ -1675,6 +1689,105 @@ describe.skipIf(!hasTestDatabase)('analytics against a database', () => {
           (entry) => entry.kind,
         ),
       ).toEqual(['unresolved'])
+    })
+  })
+
+  /* ------------------------------------------------------------------------ */
+  /*  The count the admin list reads                                          */
+  /* ------------------------------------------------------------------------ */
+
+  describe('refreshViewCounts', () => {
+    const COUNT_SLUG = `${RUN}-counted`
+    const COUNT_PATH = `/posts/${COUNT_SLUG}`
+    const QUIET_SLUG = `${RUN}-quiet`
+
+    async function insertDocument(slug: string): Promise<string> {
+      const [row] = await db
+        .insert(contentIndex)
+        .values({
+          type: 'post',
+          slug,
+          path: `posts/${slug}.md`,
+          title: 'View count fixture',
+          status: 'published',
+          checksum: 'b'.repeat(64),
+        })
+        .returning({ id: contentIndex.id })
+
+      if (!row) throw new Error('Could not insert the view-count fixture')
+      contentIds.push(row.id)
+      return row.id
+    }
+
+    async function viewCountOf(id: string): Promise<number> {
+      const [row] = await db
+        .select({ viewCount: contentIndex.viewCount })
+        .from(contentIndex)
+        .where(eq(contentIndex.id, id))
+        .limit(1)
+      return row?.viewCount ?? -1
+    }
+
+    it('folds every day into the column, and rewrites nothing on the next pass', async () => {
+      await clearDay(COUNT_DAY)
+      await clearDay(COUNT_DAY_2)
+
+      const counted = await insertDocument(COUNT_SLUG)
+      const quiet = await insertDocument(QUIET_SLUG)
+
+      // Before: the column is at its default and nothing has written it. This is
+      // the state the admin list was in for every document.
+      expect(await viewCountOf(counted)).toBe(0)
+
+      await db.insert(analyticsDaily).values([
+        { day: COUNT_DAY, path: COUNT_PATH, contentId: counted, views: 3, visitors: 2 },
+        { day: COUNT_DAY, path: COUNT_PATH, contentId: counted, views: 1, visitors: 1, device: 'mobile' },
+        { day: COUNT_DAY_2, path: COUNT_PATH, contentId: counted, views: 4, visitors: 3 },
+        // A path with no document behind it: it has nowhere to be counted, and
+        // it must not stop the statement or land on someone else's row.
+        { day: COUNT_DAY, path: MISSING_PATH, views: 9, visitors: 9 },
+      ])
+
+      await refreshViewCounts()
+
+      // Summed across both days, and only over this document's rows.
+      expect(await viewCountOf(counted)).toBe(8)
+      // A document nobody has read stays where it is rather than being written.
+      expect(await viewCountOf(quiet)).toBe(0)
+
+      /*
+       * The second pass rewrites nothing, and that is the property the job
+       * depends on: it runs every minute, and a statement that rewrote every
+       * row every minute would be a table-wide write for no change. `updated: 0`
+       * is an exact assertion here rather than a loose one — after a pass,
+       * nothing can still differ.
+       */
+      expect(await refreshViewCounts()).toEqual({ updated: 0 })
+    })
+
+    it('takes a document back to zero when the views behind it are gone', async () => {
+      await clearDay(COUNT_DAY)
+      await clearDay(COUNT_DAY_2)
+
+      const id = await insertDocument(`${COUNT_SLUG}-gone`)
+      await db.insert(analyticsDaily).values({
+        day: COUNT_DAY,
+        path: `/posts/${COUNT_SLUG}-gone`,
+        contentId: id,
+        views: 5,
+        visitors: 5,
+      })
+
+      await refreshViewCounts()
+      expect(await viewCountOf(id)).toBe(5)
+
+      // The days a document was read on can lose their rows — retention, a
+      // rebuild, an operator clearing a bad day — and a count that only ever
+      // rises would keep reporting traffic that no longer exists anywhere.
+      await db.delete(analyticsDaily).where(eq(analyticsDaily.contentId, id))
+
+      await refreshViewCounts()
+      expect(await viewCountOf(id)).toBe(0)
     })
   })
 

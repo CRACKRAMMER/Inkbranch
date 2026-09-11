@@ -187,8 +187,15 @@ export function ContentList({
               >
                 Published
               </th>
+              {/*
+                `title` because the number needs a scope and the column has no
+                room for one: the analytics page reports views *in a range*, and
+                this reports all of them. Left unsaid, the two look like they
+                disagree about a document.
+              */}
               <th
                 scope="col"
+                title="Views, all time — from the daily analytics totals"
                 className="hidden py-2 pr-4 text-right font-medium text-ink-muted sm:table-cell"
               >
                 Views

@@ -5,6 +5,7 @@ import {
   aggregateDays,
   aggregatePending,
   pruneRawEvents,
+  refreshViewCounts,
   type AggregateDaysResult,
 } from '@/lib/analytics'
 import { isDay } from '@/lib/analytics/day'
@@ -481,6 +482,16 @@ async function runAnalyticsAggregate({ job, log }: JobContext): Promise<JobResul
 
   const deferred = pending.deferred
 
+  /*
+   * The Views column in the content list is a sum over the daily table, so it
+   * is refreshed here rather than by a pass of its own: this is the only place
+   * `analytics_daily` changes, and a rebuild of no day means there is nothing
+   * new to fold in. The guard is what keeps a quiet site from paying two scans
+   * a minute for an update that would write nothing.
+   */
+  const viewCounts =
+    pending.aggregated.length > 0 ? await refreshViewCounts() : { updated: 0 }
+
   log.info({
     event: 'job.analytics-aggregate',
     requested: named ? named.days.length : null,
@@ -490,6 +501,7 @@ async function runAnalyticsAggregate({ job, log }: JobContext): Promise<JobResul
     rows: pending.rows,
     views: pending.views,
     visitors: pending.visitors,
+    viewCounts: viewCounts.updated,
   })
 
   if (deferred.length > 0) {
@@ -511,6 +523,7 @@ async function runAnalyticsAggregate({ job, log }: JobContext): Promise<JobResul
     rows: pending.rows,
     views: pending.views,
     visitors: pending.visitors,
+    viewCounts: viewCounts.updated,
   }
 }
 

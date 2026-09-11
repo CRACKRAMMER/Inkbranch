@@ -26,12 +26,14 @@ export {
   aggregatePending,
   aggregateRange,
   pendingDays,
+  refreshViewCounts,
 } from './aggregate'
 export type {
   AggregateDaysResult,
   AggregatePendingResult,
   AggregateResult,
   PendingDays,
+  ViewCountRefresh,
 } from './aggregate'
 
 export {

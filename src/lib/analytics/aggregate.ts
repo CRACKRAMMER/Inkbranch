@@ -2,7 +2,7 @@ import 'server-only'
 import { and, eq, gt, gte, lt, sql } from 'drizzle-orm'
 import { env } from '@/env'
 import { db } from '@/lib/db'
-import { analyticsDaily, analyticsEvents, type DeviceType } from '@/lib/db/schema'
+import { analyticsDaily, analyticsEvents, contentIndex, type DeviceType } from '@/lib/db/schema'
 import { addDays, dayEnd, dayStart, daysFromRows, eachDay, isDay, utcDay } from './day'
 
 /**
@@ -436,4 +436,55 @@ export async function aggregatePending(
   const rebuilt = await aggregateDays(pending.days)
 
   return { ...rebuilt, deferred: pending.deferred }
+}
+
+/* -------------------------------------------------------------------------- */
+/*  The count the admin list shows                                             */
+/* -------------------------------------------------------------------------- */
+
+export interface ViewCountRefresh {
+  /** Documents whose stored count was rewritten. Zero on a quiet minute. */
+  updated: number
+}
+
+/**
+ * Fold the daily totals into `content_index.view_count`.
+ *
+ * The admin's content list has a Views column and a "sort by views" option, and
+ * both read this column. Nothing wrote it, so it was zero for every document:
+ * a column of zeroes reads as "nobody has ever read this", which is a claim the
+ * site cannot make, and the sort it offers ordered the whole list by nothing at
+ * all. Filling it is not a new feature — it is what the column and the index
+ * under it were already for.
+ *
+ * The source is `analytics_daily` rather than `analytics_events`, because that
+ * is what the analytics page totals: the same views, summed over a range there
+ * and over all of it here, so the two screens cannot disagree about a document.
+ *
+ * Written as one statement, keyed by primary key, and only over the rows that
+ * differ. That last part is what makes it safe to run on every aggregate pass:
+ * a document whose count has not moved is not rewritten, so this never touches
+ * `updated_at` and never turns a quiet minute into a table-wide write.
+ */
+export async function refreshViewCounts(): Promise<ViewCountRefresh> {
+  const result = await db.execute(sql`
+    with totals as (
+      select content_id, sum(views)::int as views
+      from ${analyticsDaily}
+      where content_id is not null
+      group by content_id
+    ),
+    changed as (
+      select c.id, coalesce(t.views, 0)::int as views
+      from ${contentIndex} c
+      left join totals t on t.content_id = c.id
+      where c.view_count is distinct from coalesce(t.views, 0)
+    )
+    update ${contentIndex} as c
+    set view_count = changed.views
+    from changed
+    where c.id = changed.id
+  `)
+
+  return { updated: result.rowCount ?? 0 }
 }
