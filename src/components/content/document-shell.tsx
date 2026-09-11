@@ -9,19 +9,26 @@ import { MIN_HEADINGS_FOR_TOC, shouldShowToc } from '@/lib/content/derive'
  * The three-column article layout: section navigation, the document, the table
  * of contents.
  *
- * The columns are not equal and are not meant to be. The middle column carries
- * the reading measure and the outer two are fixed-width rails that hold
- * secondary navigation. Both rails are `position: sticky`, so they stay
- * reachable while the article scrolls past, and both are hidden below `lg`,
- * where they would cost the measure its width.
+ * The columns are not equal and are not meant to be. The middle one carries the
+ * reading measure — the same `measure` the rest of the site uses, 720px, in the
+ * middle of the 680–760px the design asks for — and it is the column that is
+ * fixed, with the two rails sharing whatever is left. Both rails are
+ * `position: sticky`, so they stay reachable while the article scrolls past.
  *
- * The contents list is the one rail that does not simply disappear when the
- * viewport narrows. Below `lg` the same list is a drawer hanging off a trigger
- * beside the title — rendered by `DocumentView`, which owns the header, rather
- * than here, which owns only the columns. Both are gated on the same
- * `shouldShowToc` rule, so a document that is too short for a contents list
- * does not get one at either width, and there is no width at which the reader
- * gets neither.
+ * They are hidden below `xl`, and the breakpoint is arithmetic rather than
+ * taste: two rails plus their gaps and the page padding come to 528px, so at
+ * 1024px the three-column layout would leave the article 496px — *narrower*
+ * than the single column it replaced at 1023px, which is the one thing a
+ * reading layout must not do as the screen gets wider. Below `xl` the article
+ * is one column at the full measure, and the rails come back only where the
+ * measure can survive them.
+ *
+ * The contents list is the one rail that does not disappear when the viewport
+ * narrows. Below `xl` the same list is a drawer hanging off a trigger beside
+ * the title — rendered by `DocumentView`, which owns the header, rather than
+ * here, which owns only the columns. Both are gated on the same `shouldShowToc`
+ * rule, so a document too short for a contents list does not get one at either
+ * width, and there is no width at which the reader gets neither.
  */
 
 export interface SectionLink {
@@ -62,11 +69,18 @@ export function DocumentShell({
       <ReadingProgress targetId="article-body" />
 
       <div className={className}>
-        <div className="mx-auto grid max-w-[84rem] gap-x-10 px-5 sm:px-8 lg:grid-cols-[11rem_minmax(0,1fr)_13rem]">
+        {/*
+          The middle track is capped at the reading measure rather than taking
+          what is left over, and the two rails share the slack. Capping the
+          *track* rather than the element inside it is what keeps the rails
+          beside the text at a wide viewport instead of stranded at the edges of
+          the container with a gap in between.
+        */}
+        <div className="mx-auto grid max-w-[84rem] gap-x-10 px-5 sm:px-8 xl:grid-cols-[minmax(11rem,1fr)_minmax(0,var(--spacing-prose))_minmax(13rem,1fr)]">
           {/* Left rail — section navigation */}
           <nav
             aria-label={sectionLabel}
-            className="hidden lg:block lg:sticky lg:top-24 lg:self-start lg:max-h-[calc(100dvh-8rem)] lg:overflow-y-auto lg:py-12"
+            className="hidden xl:block xl:sticky xl:top-24 xl:self-start xl:max-h-[calc(100dvh-8rem)] xl:overflow-y-auto xl:py-12"
           >
             <ul className="flex flex-col gap-1">
               {sections.map((section) => (
@@ -84,13 +98,13 @@ export function DocumentShell({
           </nav>
 
           {/* The document */}
-          <div className="min-w-0 py-10 lg:py-12">
+          <div className="measure mx-auto w-full min-w-0 py-10 xl:py-12">
             <div id="article-body">{children}</div>
             {after}
           </div>
 
           {/* Right rail — table of contents */}
-          <div className="hidden lg:block lg:sticky lg:top-24 lg:self-start lg:max-h-[calc(100dvh-8rem)] lg:overflow-y-auto lg:py-12">
+          <div className="hidden xl:block xl:sticky xl:top-24 xl:self-start xl:max-h-[calc(100dvh-8rem)] xl:overflow-y-auto xl:py-12">
             {showToc ? (
               <TableOfContents headings={headings} />
             ) : (

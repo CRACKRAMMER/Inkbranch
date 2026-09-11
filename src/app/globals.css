@@ -96,7 +96,7 @@
   /* A single easing, so motion is consistent rather than per-component taste. */
   --ease-out-quiet: cubic-bezier(0.22, 1, 0.36, 1);
 
-  --spacing-prose: 42rem; /* 672px */
+  --spacing-prose: 45rem; /* 720px — the reading measure, mid-way through 680–760 */
 }
 
 /* Dark values are plain overrides; `@theme` cannot be re-declared per class. */
@@ -281,7 +281,15 @@
 /* -------------------------------------------------------------------------- */
 
 @utility measure {
-  /* Body text measure. 42rem ≈ 672px, inside the 680–760px brief at 15px. */
+  /*
+   * Body text measure: 45rem = 720px, inside the 680–760px the brief asks for.
+   *
+   * It was 42rem, which is 672px — eight pixels under the bottom of the range
+   * the brief names, and applied nowhere the article could reach: the article's
+   * width came from the grid alone, which left it at 816px on a wide screen.
+   * The value and the place it is applied were wrong together, and the comment
+   * here claimed compliance the number did not have.
+   */
   max-width: var(--spacing-prose);
 }
 

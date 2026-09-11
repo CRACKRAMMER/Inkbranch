@@ -127,6 +127,29 @@ test('a reader moves through a long document from its contents list', async ({ p
     await expect(landing(page, sections[3])).toBeInViewport()
   })
 
+  await test.step('keeps the reading measure inside the brief at every width', async () => {
+    const original = page.viewportSize()
+
+    // The widths below are the ones the layout has a decision to make at: the
+    // widest screen the container can reach, the breakpoint the rails come back
+    // at, either side of it, and the narrowest width that is not a phone.
+    for (const width of [1440, 1280, 1180, 1024, 900, 768]) {
+      await page.setViewportSize({ width, height: 900 })
+
+      const measured = await page
+        .locator('#article-body')
+        .evaluate((node) => node.getBoundingClientRect().width)
+
+      // 680–760px is what the brief asks for, and the number is what a reader
+      // gets: a measure is not a `max-width` in a stylesheet, it is the width
+      // of the column the text is actually in.
+      expect(measured, `article width at ${width}px`).toBeGreaterThanOrEqual(680)
+      expect(measured, `article width at ${width}px`).toBeLessThanOrEqual(760)
+    }
+
+    if (original) await page.setViewportSize(original)
+  })
+
   await test.step('jumps to the section a reader picks', async () => {
     await openContents(page)
     const target = await fragmentFor(page, sections[1])

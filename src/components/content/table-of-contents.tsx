@@ -161,7 +161,7 @@ export function TableOfContents({
 /**
  * The same contents as a bottom drawer, for the layouts without a rail.
  *
- * Shown below `lg`, which is where the rail stops being rendered — one
+ * Shown below `xl`, which is where the rail stops being rendered — one
  * breakpoint rather than two, because the contents were previously a
  * `<details>` under `md` and a rail over `lg`, and the band between the two had
  * no contents list at all. A drawer covers every width the rail does not, so
@@ -194,7 +194,7 @@ export function TableOfContentsDrawer({ headings }: { headings: Heading[] }) {
   return (
     <Sheet open={open} onOpenChange={setOpen} modal={false}>
       <SheetTrigger
-        className="no-print inline-flex shrink-0 items-center gap-1.5 rounded-md border border-line px-2.5 py-1.5 text-[0.8125rem] text-ink-muted transition-colors duration-150 hover:bg-sunken hover:text-ink lg:hidden"
+        className="no-print inline-flex shrink-0 items-center gap-1.5 rounded-md border border-line px-2.5 py-1.5 text-[0.8125rem] text-ink-muted transition-colors duration-150 hover:bg-sunken hover:text-ink xl:hidden"
         aria-label={`Contents (${headings.length} sections)`}
       >
         <List className="size-3.5" aria-hidden="true" />
@@ -204,7 +204,7 @@ export function TableOfContentsDrawer({ headings }: { headings: Heading[] }) {
       <SheetContent
         side="bottom"
         overlay={false}
-        className="no-print border-line bg-canvas lg:hidden"
+        className="no-print border-line bg-canvas xl:hidden"
         // See the note above: this is what keeps the jump from being undone.
         onCloseAutoFocus={(event) => event.preventDefault()}
       >
