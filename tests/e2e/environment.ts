@@ -95,16 +95,6 @@ export function e2eDatabaseUrl(): string {
   return url.toString()
 }
 
-/**
- * A connection to the server's default database, for creating and dropping the
- * E2E one. `CREATE DATABASE` cannot run inside the database it is creating.
- */
-export function maintenanceDatabaseUrl(): string {
-  const url = new URL(e2eDatabaseUrl())
-  url.pathname = '/postgres'
-  return url.toString()
-}
-
 /** True when the suite has a database to run against. */
 export const hasE2eDatabase = Boolean(process.env.TEST_DATABASE_URL)
 

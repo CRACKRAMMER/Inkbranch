@@ -12,7 +12,6 @@ import {
   E2E_UPLOAD_DIR,
   e2eDatabaseUrl,
   hasE2eDatabase,
-  maintenanceDatabaseUrl,
   serverEnv,
 } from './environment'
 
@@ -55,17 +54,40 @@ function runScript(script: string, env: Record<string, string>): void {
   )
 }
 
-/** Drop and recreate the E2E database, so a run never inherits an earlier one. */
+/**
+ * Empty the E2E database, so a run never inherits an earlier one.
+ *
+ * ## Why the schema is dropped and not the database
+ *
+ * This used to `DROP DATABASE … WITH (FORCE)` and `CREATE DATABASE`, which is
+ * the obvious way to get a clean slate and is wrong here for a reason that is
+ * easy to miss: **Playwright starts the web server before it runs
+ * `globalSetup`**. The server under test is therefore already connected — with
+ * a pool of live connections — to the very database being dropped.
+ *
+ * Postgres disconnects those clients when the database goes away. The server's
+ * pools have to notice and rebuild themselves, and while they are doing it a
+ * query can fail. Most of the time that is invisible, because the app's own
+ * queries retry their way to a fresh connection before a test looks. The proxy
+ * is the exception: its lookup fails open by design — a database it cannot
+ * reach costs a visitor their redirect rather than turning every URL into a
+ * 500 — so the failure surfaced as a redirect that had been saved correctly and
+ * was not being served, on the first assertion of the test and nowhere else.
+ *
+ * Dropping the *schema* empties the database without changing its identity, so
+ * every existing connection stays valid and nothing has to recover. The
+ * destination is the same — migrations run against an empty `public` schema
+ * either way — and one class of confusing, intermittent failure is gone.
+ *
+ * `CASCADE` because the schema is not empty: tables, types and the migration
+ * journal all live there and all go together.
+ */
 async function resetDatabase(url: string): Promise<void> {
-  const database = new URL(url).pathname.replace(/^\//, '')
-  const client = new Client({ connectionString: maintenanceDatabaseUrl() })
+  const client = new Client({ connectionString: url })
   await client.connect()
   try {
-    // `WITH (FORCE)` disconnects anything still attached — a server left running
-    // by a previous interrupted run holds a connection, and without this the
-    // drop fails and the whole suite refuses to start for an unrelated reason.
-    await client.query(`DROP DATABASE IF EXISTS "${database}" WITH (FORCE)`)
-    await client.query(`CREATE DATABASE "${database}"`)
+    await client.query('DROP SCHEMA IF EXISTS public CASCADE')
+    await client.query('CREATE SCHEMA public')
   } finally {
     await client.end()
   }

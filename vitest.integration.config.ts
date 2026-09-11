@@ -49,6 +49,21 @@ process.env.DATABASE_URL =
  *
  * Requires `TEST_DATABASE_URL`. Without it every suite here skips rather than
  * failing, so a checkout with no database still runs a green unit suite.
+ *
+ * ## Why the unit directory is included
+ *
+ * Eight files under `tests/unit/` hold a database-backed section beside their
+ * pure tests — the redirect lookup, settings, jobs, revisions, analytics,
+ * navigation, assets and the graph — and each one skips itself when
+ * `TEST_DATABASE_URL` is unset. That is right for `pnpm test`, which promises
+ * to need no database. The problem was the other end: `pnpm test:integration`
+ * included only `tests/integration/**`, so those sections ran in neither suite
+ * and seventy-nine tests were being skipped twice.
+ *
+ * They are included here because the split that matters is not unit versus
+ * integration, it is *needs a database* versus *does not*. The pure tests in
+ * that directory run again under this config, which costs seconds and is the
+ * price of not having to remember which of the eight files is which.
  */
 
 const serverOnlyNoop = path.join(
@@ -66,7 +81,7 @@ export default defineConfig({
   test: {
     environment: 'node',
     globals: false,
-    include: ['tests/integration/**/*.test.ts'],
+    include: ['tests/integration/**/*.test.ts', 'tests/unit/**/*.test.ts'],
     exclude: ['node_modules', '.next', 'tests/e2e'],
     setupFiles: ['./tests/setup.ts'],
     testTimeout: 30_000,

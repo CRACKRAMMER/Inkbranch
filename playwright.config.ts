@@ -10,6 +10,42 @@ const baseURL = E2E_BASE_URL
 const nextBin = path.join('node_modules', '.bin', 'next')
 
 /**
+ * Keep the suite's own requests away from whatever proxy the shell has set.
+ *
+ * Playwright's `request` fixture — an `APIRequestContext` — honours `HTTP_PROXY`
+ * and friends, while the browser it launches does not. On a machine with an
+ * ambient proxy that difference is invisible until it isn't: a request to
+ * `http://127.0.0.1:3100/some-path` is handed to the proxy, which has never
+ * heard of the server under test, and the suite records whatever it answers as
+ * if the application had answered it.
+ *
+ * This is a guard against a hazard that was observed here rather than a fix for
+ * a failure that was diagnosed to it — no test in this suite is known to have
+ * failed because of it. A `curl` to `127.0.0.1:3100` in this environment went to
+ * a proxy on `127.0.0.1:8888` and came back 503 while nothing was listening on
+ * the port at all, which is enough to show the trap is live.
+ *
+ * `127.0.0.1` and `localhost` are the only hosts this suite talks to, so
+ * exempting them is the whole fix. Both spellings are set because libproxy and
+ * the Node toolchain do not agree on which one to read.
+ */
+function exemptLoopback(current: string | undefined): string {
+  const hosts = new Set(
+    (current ?? '')
+      .split(',')
+      .map((host) => host.trim())
+      .filter(Boolean),
+  )
+  for (const host of ['127.0.0.1', 'localhost', '::1']) hosts.add(host)
+  return [...hosts].join(',')
+}
+
+// Added to whatever is already there rather than replacing it: an existing
+// exemption for the developer's own services is not this file's to discard.
+process.env.NO_PROXY = exemptLoopback(process.env.NO_PROXY)
+process.env.no_proxy = process.env.NO_PROXY
+
+/**
  * End-to-end configuration.
  *
  * `globalSetup` provisions a database and a content tree of its own — see

@@ -23,7 +23,17 @@ test('refuses a wrong password without disclosing whether the account exists', a
   await page.fill('#password', 'definitely-not-the-password')
   await page.getByRole('button', { name: 'Sign in' }).click()
 
-  const alert = page.getByRole('alert')
+  /*
+   * The form's own alert, by id.
+   *
+   * `getByRole('alert')` is the obvious selector and it is a latent flake: Next
+   * renders a route announcer — `<div role="alert" id="__next-route-announcer__">` —
+   * which matches the same role. The announcer is only in the accessibility
+   * tree after a client-side navigation, so the bare role resolves to one
+   * element or two depending on what happened earlier in the test, and the
+   * failure reads as a strict-mode violation rather than as a flake.
+   */
+  const alert = page.locator('#login-error')
   await expect(alert).toBeVisible()
   await expect(page).toHaveURL(/\/admin\/login/)
 
