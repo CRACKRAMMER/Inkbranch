@@ -14,10 +14,11 @@ import {
 /**
  * Redirects.
  *
- * Two halves that fail in different ways. `resolveRedirect` runs on the 404
- * path — every miss on the site pays for it, so it is one indexed read and
- * nothing else. Everything else is admin-side: it can afford to load the whole
- * table to answer "would this redirect close a loop?".
+ * Two halves that fail in different ways. `resolveRedirect` runs in the proxy,
+ * ahead of every route on the site, so it is one indexed read and nothing else,
+ * and it fails open — see its own note for why. Everything else is admin-side:
+ * it can afford to load the whole table to answer "would this redirect close a
+ * loop?".
  *
  * Loop detection is not a nicety. `a → b → a` is a browser-side infinite
  * redirect that no request log will show as an error, and a chain long enough
@@ -38,8 +39,28 @@ export const REDIRECT_STATUS_CODES = [301, 302, 307, 308] as const
  * redirect on either is a row that cannot fire. They are refused at write time
  * and skipped before the query at read time, which is where the saving is: a
  * missing image or a stale chunk is the most common 404 on the site.
+ *
+ * The trailing slash is load-bearing. `/_nextish` is a page the site could
+ * serve, and a bare `/_next` prefix would refuse a redirect on it.
  */
 const UNREACHABLE_PREFIXES = ['/_next/', '/api/'] as const
+
+/**
+ * True for `/admin` and everything beneath it.
+ *
+ * The admin is unreachable *by design*, and for a different reason than the
+ * prefixes above: a redirect on it would not be a row that fails to fire, it
+ * would be a row that fires and locks its own author out. The only interface
+ * that can delete a redirect is the admin, so once `/admin` redirects
+ * somewhere the row can only be removed with SQL by someone who has database
+ * access. `/_next` and `/api` cost a dead row; this costs the site.
+ *
+ * Matched exactly or with a following slash rather than by prefix, so the
+ * obviously-unrelated `/administrator` page is not caught by it.
+ */
+export function isAdminPath(path: string): boolean {
+  return path === '/admin' || path.startsWith('/admin/')
+}
 
 /* -------------------------------------------------------------------------- */
 /*  Errors                                                                     */
@@ -108,6 +129,7 @@ export function isResolvableRedirectSource(path: string): boolean {
   if (!path.startsWith('/')) return false
   if (path.startsWith('//')) return false
   if (path.length > 512) return false
+  if (isAdminPath(path)) return false
   return !UNREACHABLE_PREFIXES.some((prefix) => path.startsWith(prefix))
 }
 
@@ -121,13 +143,42 @@ export interface RedirectResolution {
   statusCode: number
 }
 
+/* -------------------------------------------------------------------------- */
+/*  Resolving, on the request path                                             */
+/* -------------------------------------------------------------------------- */
+
 /**
  * The redirect for `path`, or null.
  *
  * One indexed read of the unique index on `from_path`, and a fast `null` for
- * the paths that cannot match. `hits` is deliberately not incremented: this
- * runs on the miss path of every request, and turning that read into a write
- * would make every 404 contend on the same row's lock.
+ * the paths that cannot match. The refusal checks run before the query, so a
+ * request for a chunk, an API route or the admin costs a few string comparisons
+ * and no database round trip at all — which matters, because this is asked on
+ * every request the site receives and the answer is almost always no.
+ *
+ * ## Why there is no cache in front of this
+ *
+ * A module-level map refreshed on a timer was the obvious thing to write here,
+ * since the proxy sees every request. It was written, and then removed, for two
+ * reasons.
+ *
+ * The first is that it does not buy what it appears to. Settings and navigation
+ * are read on every render of the public tree through React's `cache`, which is
+ * scoped to a single request — so a page view already costs several queries
+ * before it renders a byte, and one indexed single-row lookup beside them is not
+ * the difference between a fast site and a slow one.
+ *
+ * The second is that a cross-request cache cannot be invalidated from the admin.
+ * The proxy is built as its own bundle, so a server action calling an
+ * `invalidateRedirectCache` would clear a different module instance than the one
+ * answering requests, and the only thing that would make a saved redirect appear
+ * is the timer. An author who saves a rule, visits the old URL to check it and
+ * gets a 404 has been told the feature is broken. Reading through is worth more
+ * than the query it saves.
+ *
+ * `hits` is deliberately not incremented. This runs on the miss path of every
+ * request, and turning the lookup into a write would make every 404 contend on
+ * the same row's lock — for a number the admin already shows as approximate.
  */
 export async function resolveRedirect(
   path: string,
@@ -135,17 +186,37 @@ export async function resolveRedirect(
   const normalized = normalizeRedirectPath(path)
   if (!isResolvableRedirectSource(normalized)) return null
 
-  const [row] = await db
-    .select({
-      fromPath: redirects.fromPath,
-      toPath: redirects.toPath,
-      statusCode: redirects.statusCode,
-    })
-    .from(redirects)
-    .where(and(eq(redirects.fromPath, normalized), eq(redirects.enabled, true)))
-    .limit(1)
+  try {
+    const [row] = await db
+      .select({
+        fromPath: redirects.fromPath,
+        toPath: redirects.toPath,
+        statusCode: redirects.statusCode,
+      })
+      .from(redirects)
+      .where(and(eq(redirects.fromPath, normalized), eq(redirects.enabled, true)))
+      .limit(1)
 
-  return row ?? null
+    return row ?? null
+  } catch (error) {
+    /*
+     * Fail open, and say so loudly.
+     *
+     * This runs in the proxy, ahead of every route. A query that throws here
+     * would become a 500 on a request that should have been an ordinary 404 —
+     * turning a database problem into every URL on the site appearing broken,
+     * including the ones that are not. Answering "no redirect" degrades one
+     * behaviour instead of all of them.
+     *
+     * A search engine that sees a 404 will eventually drop the page, so this is
+     * not free. It is the smaller failure.
+     */
+    console.error(
+      '[redirects] lookup failed; serving the request without a redirect:',
+      error instanceof Error ? error.message : error,
+    )
+    return null
+  }
 }
 
 /* -------------------------------------------------------------------------- */
@@ -269,6 +340,16 @@ export function validateRedirect(input: RedirectInput): ValidatedRedirect {
     throw new RedirectError('invalid_input', `Source path: ${fromProblem}`, {
       issues: [fromProblem],
     })
+  }
+  // Checked before the general case so the refusal explains the actual danger.
+  // "This will never fire" and "this will lock you out of the admin" are
+  // different mistakes, and only one of them is recoverable from the UI.
+  if (isAdminPath(fromPath)) {
+    throw new RedirectError(
+      'unreachable_source',
+      `A redirect on ${fromPath} is refused: the admin is the only place this row could be deleted from, ` +
+        'so redirecting it would leave nobody able to undo it.',
+    )
   }
   if (!isResolvableRedirectSource(fromPath)) {
     throw new RedirectError(

@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test'
 
 import { hasE2eDatabase } from './environment'
-import { showMetadata, signIn, typeBody } from './support'
+import { showMetadata, signIn, typeBody, uniqueSlug } from './support'
 
 /**
  * The authoring lifecycle, end to end, against a real server.
@@ -24,18 +24,6 @@ test.skip(
   !hasE2eDatabase,
   'TEST_DATABASE_URL is not set, so the E2E suite has no database to run against.',
 )
-
-/**
- * A slug no previous run can have used.
- *
- * The suite deletes what it creates, but a run that fails partway does not — and
- * a fixed slug would then collide on the next attempt, turning one failure into
- * a permanent one. The content tree is recreated per run, so this is belt and
- * braces; it costs nothing and removes a class of confusing re-run.
- */
-function uniqueSlug(): string {
-  return `e2e-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`
-}
 
 test('an author writes, publishes, finds and deletes a post', async ({ page }) => {
   const slug = uniqueSlug()

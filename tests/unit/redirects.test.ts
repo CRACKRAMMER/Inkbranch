@@ -73,6 +73,20 @@ describe('isResolvableRedirectSource', () => {
     expect(isResolvableRedirectSource('/api/search')).toBe(false)
     expect(isResolvableRedirectSource('/_nextish')).toBe(true)
   })
+
+  it('rejects the admin, which is the one redirect nobody could undo', () => {
+    expect(isResolvableRedirectSource('/admin')).toBe(false)
+    expect(isResolvableRedirectSource('/admin/posts')).toBe(false)
+    expect(isResolvableRedirectSource('/admin/login')).toBe(false)
+  })
+
+  it('does not reject a page that merely starts with the same letters', () => {
+    // The admin is matched exactly or with a following slash. A bare prefix
+    // test would refuse a redirect on this page, and the mistake would look
+    // like an unrelated bug in an unrelated feature.
+    expect(isResolvableRedirectSource('/administrator')).toBe(true)
+    expect(isResolvableRedirectSource('/admin-ish')).toBe(true)
+  })
 })
 
 describe('readCsvRecords', () => {
@@ -347,6 +361,16 @@ describe('validateRedirect', () => {
     expect(() =>
       validateRedirect({ fromPath: '/_next/chunk.js', toPath: '/new' }),
     ).toThrow(/can never fire/)
+  })
+
+  it('refuses to redirect the admin, and says why', () => {
+    // Not "this can never fire" — this one would fire, and that is the problem.
+    expect(() => validateRedirect({ fromPath: '/admin', toPath: '/new' })).toThrow(
+      /only place this row could be deleted from/,
+    )
+    expect(() =>
+      validateRedirect({ fromPath: '/admin/posts', toPath: '/new' }),
+    ).toThrow(/only place this row could be deleted from/)
   })
 
   it('rejects a target that is neither a path nor http(s)', () => {

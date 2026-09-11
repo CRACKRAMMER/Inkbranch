@@ -10,6 +10,18 @@ import { E2E_ADMIN_EMAIL, E2E_ADMIN_PASSWORD } from './environment'
  * duplication it saves.
  */
 
+/**
+ * A slug no previous run can have used.
+ *
+ * The suite deletes what it creates, but a run that fails partway does not —
+ * and a fixed slug would then collide on the next attempt, turning one failure
+ * into a permanent one. The content tree is recreated per run, so this is belt
+ * and braces; it costs nothing and removes a class of confusing re-run.
+ */
+export function uniqueSlug(): string {
+  return `e2e-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`
+}
+
 /** Sign in as the seeded administrator, and prove it worked. */
 export async function signIn(page: Page): Promise<void> {
   await page.goto('/admin/login')
