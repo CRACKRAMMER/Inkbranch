@@ -1,0 +1,56 @@
+# Everything not needed to build or run the app.
+#
+# The rule is deny-by-default where it is cheap to be, because the two things
+# that must never reach a build context are secrets and the author's own
+# content. `.env.local` holds the session secret and the database URL; copying
+# it into an image layer is a credential leak that survives every later
+# deletion, since layers are additive.
+
+# Secrets and local configuration.
+.env
+.env.*
+!.env.example
+
+# The author's content and media. Mounted as volumes at run time, never baked
+# into an image — the image is the application, and the application is the same
+# whatever is published with it.
+content/
+public/uploads/
+
+# Dependencies and build output: reinstalled inside the build stage, where the
+# platform and the lockfile are the ones that matter.
+node_modules/
+.pnpm-store/
+.next/
+out/
+dist/
+
+# Version control and editors.
+.git/
+.gitignore
+.github/
+.vscode/
+.idea/
+*.swp
+
+# Tests, fixtures and their reports. Not shipped, and their fixtures are large.
+tests/
+playwright-report/
+test-results/
+coverage/
+
+# Documentation and tooling that has no bearing on the image.
+*.md
+!README.md
+LICENSE
+.editorconfig
+.dockerignore
+Dockerfile
+docker-compose*.yml
+
+# Logs and OS noise.
+*.log
+npm-debug.log*
+pnpm-debug.log*
+.DS_Store
+Thumbs.db

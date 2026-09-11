@@ -1,0 +1,118 @@
+import type { NextConfig } from 'next'
+
+/**
+ * Security headers applied to every response.
+ *
+ * The CSP is deliberately strict for the public site. It still permits
+ * `'unsafe-inline'` for styles because Shiki emits inline `style` attributes on
+ * highlighted tokens, and KaTeX ships inline styles for layout. Scripts stay
+ * free of `'unsafe-inline'`: no third-party script is loaded anywhere.
+ */
+const securityHeaders = [
+  { key: 'X-Content-Type-Options', value: 'nosniff' },
+  { key: 'X-Frame-Options', value: 'SAMEORIGIN' },
+  { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },
+  { key: 'X-DNS-Prefetch-Control', value: 'on' },
+  {
+    key: 'Permissions-Policy',
+    value: 'camera=(), microphone=(), geolocation=(), interest-cohort=()',
+  },
+  {
+    key: 'Content-Security-Policy',
+    value: [
+      "default-src 'self'",
+      // Next.js injects inline bootstrap scripts; hashes are not stable across
+      // builds, so 'unsafe-inline' is scoped to scripts only in development.
+      process.env.NODE_ENV === 'production'
+        ? "script-src 'self' 'unsafe-inline'"
+        : "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
+      "style-src 'self' 'unsafe-inline'",
+      "img-src 'self' data: blob:",
+      "font-src 'self' data:",
+      "connect-src 'self'",
+      "frame-src 'self' https://www.youtube.com https://player.vimeo.com https://www.bilibili.com",
+      "object-src 'none'",
+      "base-uri 'self'",
+      "form-action 'self'",
+      "frame-ancestors 'self'",
+    ].join('; '),
+  },
+]
+
+const nextConfig: NextConfig = {
+  reactStrictMode: true,
+  poweredByHeader: false,
+
+  /*
+   * `standalone` writes a server bundle with only the modules it actually
+   * reached, so the runtime image does not carry `node_modules`. It is set
+   * unconditionally rather than behind an env check: it changes the shape of
+   * `.next` and nothing else, `next start` still works on the result, and a
+   * config that builds differently depending on where it runs is a config
+   * whose Docker build is not the build that was tested.
+   *
+   * The consequence worth knowing: `public/` and `.next/static/` are *not*
+   * copied into `.next/standalone`, so the Dockerfile copies them by hand.
+   */
+  output: 'standalone',
+
+  experimental: {
+    // Content files are read from disk at request time; keep the server bundle
+    // from trying to trace the whole content tree into the build output.
+    serverSourceMaps: false,
+  },
+
+  // `sharp` is used by the image optimiser and by our own asset pipeline.
+  serverExternalPackages: ['@node-rs/argon2', 'sharp'],
+
+  images: {
+    formats: ['image/avif', 'image/webp'],
+    deviceSizes: [360, 480, 640, 828, 1080, 1200, 1600, 1920],
+    imageSizes: [16, 32, 64, 96, 128, 256, 384],
+    // Uploads are served from our own origin only. Remote patterns are added
+    // from site settings at runtime if the owner configures a CDN.
+    remotePatterns: [],
+  },
+
+  async headers() {
+    return [
+      {
+        /*
+         * Every path except `/api/assets`.
+         *
+         * Config headers are applied to the response after the route has run,
+         * so a matching rule here silently replaces a header the route set
+         * itself. `/api/assets` serves user-uploaded files — including SVG,
+         * which is a script execution context when a browser navigates to it
+         * directly — and its handler sets `default-src 'none'; sandbox` for
+         * exactly that case. Letting this rule overwrite that CSP would leave
+         * uploaded SVG protected by nothing but its sniffed content type.
+         *
+         * The negative lookahead is the documented way to express "all paths
+         * but this one": the outer group is matched as a regular expression,
+         * and a path beginning with `api/assets` fails the lookahead.
+         */
+        source: '/((?!api/assets).*)',
+        headers: securityHeaders,
+      },
+      {
+        // Content-addressed uploads: safe to cache aggressively.
+        source: '/uploads/:path*',
+        headers: [
+          { key: 'Cache-Control', value: 'public, max-age=31536000, immutable' },
+        ],
+      },
+    ]
+  },
+
+  async rewrites() {
+    return { beforeFiles: [], afterFiles: [], fallback: [] }
+  },
+
+  typedRoutes: false,
+  turbopack: {
+    root: import.meta.dirname,
+  },
+}
+
+export default nextConfig

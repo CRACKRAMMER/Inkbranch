@@ -1,0 +1,44 @@
+# dependencies
+node_modules/
+.pnpm-store/
+
+# next
+.next/
+out/
+next-env.d.ts
+*.tsbuildinfo
+
+# env
+.env
+.env.local
+.env.*.local
+
+# runtime state
+.cache/
+data/
+logs/
+*.log
+content/.locks/
+content/.tmp/
+
+# uploads are user data, but not source
+public/uploads/*
+!public/uploads/.gitkeep
+
+# test artifacts
+coverage/
+playwright-report/
+test-results/
+tests/.tmp/
+
+# editor / os
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# backups
+backups/
+
+# claude code local settings (machine-specific permissions)
+.claude/settings.local.json

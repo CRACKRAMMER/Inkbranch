@@ -1,0 +1,16 @@
+# pnpm 12 reads its settings from this file, not from package.json.
+
+# Only these dependencies may run install scripts. Everything else is blocked,
+# so a compromised transitive package cannot execute code during `pnpm install`.
+# sharp and @node-rs/argon2 ship prebuilt platform binaries and need no scripts.
+allowBuilds:
+  esbuild: true
+  unrs-resolver: true
+
+# pnpm 12 defaults this to 1440 (24h) and refuses to install a package published
+# inside that window. Dependencies here are pinned to exact current-stable
+# versions and pnpm-lock.yaml is committed, which is a stronger and more
+# reproducible guarantee than a time delay — so the gate is disabled.
+# Re-enable it (e.g. `minimumReleaseAge: 1440`) if you prefer the delay and are
+# willing to pin slightly older releases.
+minimumReleaseAge: 0
