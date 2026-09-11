@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -98,6 +99,24 @@ export function e2eDatabaseUrl(): string {
 /** True when the suite has a database to run against. */
 export const hasE2eDatabase = Boolean(process.env.TEST_DATABASE_URL)
 
+/**
+ * True when this machine has git.
+ *
+ * `tests/e2e/git.spec.ts` is the only file that needs it, and it needs it in
+ * two places: in the server process, which runs the commit, and in the test
+ * process, which reads the log back. Both are this machine, so one look suffices
+ * — and a machine without git gets that spec skipped rather than a setup that
+ * throws before any test can report why.
+ */
+export const hasGit = (() => {
+  try {
+    execFileSync('git', ['--version'], { stdio: 'pipe' })
+    return true
+  } catch {
+    return false
+  }
+})()
+
 /** Where the server listens. */
 export const E2E_PORT = Number(process.env.E2E_PORT ?? 3100)
 export const E2E_BASE_URL = process.env.E2E_BASE_URL ?? `http://127.0.0.1:${E2E_PORT}`
@@ -161,6 +180,24 @@ export const E2E_BASE_URL = process.env.E2E_BASE_URL ?? `http://127.0.0.1:${E2E_
  * — as `analytics.spec.ts` explains at length — every beacon this suite's
  * browser sends is dropped, because the server is configured `https://` and the
  * browser speaks `http://`. Nothing else in the suite can see a difference.
+ *
+ * ## Why content auto-commit is *permitted* here
+ *
+ * `GIT_INTEGRATION_ENABLED=1` is the deployment half of a two-key switch, and on
+ * its own it changes nothing at all: the site's own settings are off by default,
+ * so every save takes the decision's `not-asked` branch and returns before git
+ * is spawned. That is the state the whole suite is in except for one file.
+ *
+ * `tests/e2e/git.spec.ts` is that file. It turns the two settings on, saves, and
+ * turns them off again — including when it fails, which is why the turn-off is
+ * an `afterEach`. It needs the flag *on* rather than off because the value is
+ * read from the server's environment at start-up: a run cannot test both
+ * halves, and the half worth testing is the one where a commit really happens.
+ * The refusal note ("auto-commit is off for this deployment") is a pure function
+ * of the decision, and `tests/unit/git.test.ts` holds it.
+ *
+ * `global-setup.ts` makes the content tree a repository with no commits in it,
+ * so every commit the spec finds was made by the server under test.
  */
 export function serverEnv(): Record<string, string> {
   return {
@@ -175,5 +212,6 @@ export function serverEnv(): Record<string, string> {
     WORKER_ENABLED: '0',
     ANALYTICS_ENABLED: '1',
     CONTENT_SYNC_ON_BOOT: '1',
+    GIT_INTEGRATION_ENABLED: '1',
   }
 }

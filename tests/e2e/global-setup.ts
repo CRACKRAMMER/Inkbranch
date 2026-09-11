@@ -12,6 +12,7 @@ import {
   E2E_UPLOAD_DIR,
   e2eDatabaseUrl,
   hasE2eDatabase,
+  hasGit,
   serverEnv,
 } from './environment'
 
@@ -21,6 +22,12 @@ import {
  * Four steps, and the order is the whole point: the content tree has to exist
  * before the server starts, the schema has to exist before the seed runs, and
  * the admin has to exist before a test tries to sign in.
+ *
+ * The tree also comes out of here as an empty git repository, which the
+ * application's content walker ignores — `isIgnored` in `src/lib/content/paths.ts`
+ * skips dotted directories, which is the same rule that keeps `.tmp/` and
+ * `.locks/` out of the index. So the repository is invisible to every spec
+ * except the one that reads it.
  *
  * ## Why this runs the project's own CLI entry points
  *
@@ -93,6 +100,44 @@ async function resetDatabase(url: string): Promise<void> {
   }
 }
 
+/**
+ * Make the content tree a git repository, with nothing in it.
+ *
+ * ## Why it has no commits
+ *
+ * `tests/e2e/git.spec.ts` asserts on `git log`. A repository that started with
+ * an initial commit — a `.gitignore`, say, which is the customary thing to put
+ * there — would make that log a mixture of the suite's provisioning and the
+ * server's behaviour, and the assertion would have to say "somewhere after the
+ * third entry". Starting empty means every commit in it was made by the server
+ * under test, in response to a save, while the spec was watching.
+ *
+ * ## Why the identity is local
+ *
+ * `git commit` fails outright without a `user.email` and a `user.name`. Reading
+ * them from the machine's global configuration would make the suite pass or fail
+ * depending on who is running it, and would make this file the thing that
+ * depends on a developer's own git setup rather than the thing a developer's
+ * setup cannot break. `git config` without `--global`, in the repository, writes
+ * to `.git/config` — which is inside the tree this run owns and deletes.
+ *
+ * ## Why a missing git is not an error
+ *
+ * The spec that needs this skips when git is absent (see `hasGit`), so a machine
+ * without it still gets an honest run of everything else. Throwing here would
+ * instead take the whole suite down before a single test could report.
+ */
+function prepareRepository(directory: string): void {
+  const run = (...args: string[]): void => {
+    execFileSync('git', args, { cwd: directory, stdio: 'pipe' })
+  }
+  // `--quiet` because git's hint about the default branch name is noise in a log
+  // that is otherwise about a database.
+  run('init', '--quiet')
+  run('config', 'user.email', 'e2e@example.test')
+  run('config', 'user.name', 'E2E Suite')
+}
+
 export default async function globalSetup(): Promise<void> {
   if (!hasE2eDatabase) {
     throw new Error(
@@ -107,6 +152,12 @@ export default async function globalSetup(): Promise<void> {
   fs.rmSync(E2E_ROOT, { recursive: true, force: true })
   fs.mkdirSync(E2E_CONTENT_DIR, { recursive: true })
   fs.mkdirSync(E2E_UPLOAD_DIR, { recursive: true })
+
+  if (hasGit) {
+    prepareRepository(E2E_CONTENT_DIR)
+  } else {
+    console.warn('git is not installed: the content tree is not a repository, and git.spec.ts will skip.')
+  }
 
   const env = serverEnv()
 
