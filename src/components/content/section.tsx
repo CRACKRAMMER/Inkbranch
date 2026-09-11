@@ -14,9 +14,11 @@ import { cn } from '@/lib/utils/cn'
  * heading style.
  *
  * The heading is an `h2` because on every page that uses this, the `h1` is the
- * page title. A section that needs a different level can pass `as`.
+ * page title. A section that needs a different level can pass `as` — `/about`
+ * does, because its sections sit under a name that is itself an `h2`.
  */
 export function Section({
+  as: Heading = 'h2',
   title,
   href,
   linkLabel = 'All',
@@ -24,6 +26,8 @@ export function Section({
   className,
   id,
 }: {
+  /** Heading level. Defaults to `h2`, which is right when the page title is the `h1`. */
+  as?: 'h2' | 'h3'
   title: string
   /** When set, the heading gets a link through to the complete list. */
   href?: string
@@ -35,12 +39,12 @@ export function Section({
   return (
     <section id={id} className={cn('mt-16', className)} aria-labelledby={id ? `${id}-title` : undefined}>
       <div className="mb-5 flex items-baseline justify-between gap-4 border-b border-line pb-2">
-        <h2
+        <Heading
           id={id ? `${id}-title` : undefined}
           className="text-xs font-medium uppercase tracking-wider text-ink-subtle"
         >
           {title}
-        </h2>
+        </Heading>
         {href ? (
           <Link
             href={href}

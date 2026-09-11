@@ -1,22 +1,39 @@
 import type { Metadata } from 'next'
 import Link from 'next/link'
 
+import { EntryList, type Entry } from '@/components/content/entry-list'
 import { PageHeader } from '@/components/content/page-header'
+import { Section } from '@/components/content/section'
 import { Container } from '@/components/site/container'
-import { countByType } from '@/lib/content/queries'
+import { TYPE_LABELS } from '@/lib/content/labels'
+import { countByType, listRecentlyUpdated, type ContentSummary } from '@/lib/content/queries'
 import { buildPageMetadata, siteIdentityFromSettings } from '@/lib/seo/metadata'
 import { getSettings } from '@/lib/settings'
+import { formatDate, toIsoDate } from '@/lib/utils/date'
 
 /**
  * About.
  *
- * Assembled from settings rather than from a Markdown file, because everything
- * here is a fact the author changes once a year and should not have to open a
- * text editor to fix. The profile paragraph is stored as plain text and
- * rendered as paragraphs — deliberately not as Markdown, because settings are
- * written from a form and the one input this site renders as HTML is content,
- * which goes through the sanitising pipeline. A second path into the page would
- * be a second thing to get wrong.
+ * Not a résumé. Seven blocks — profile, focus, what the author is doing now,
+ * the tools they use, what they maintain, where to find them, and what they
+ * wrote last — and no dates of employment, because a CV answers a question
+ * nobody reading a blog is asking.
+ *
+ * The blocks that say something about the author are assembled from settings
+ * rather than from a Markdown file, because each is a fact they change once a
+ * year and should not have to open a text editor to fix. The profile paragraph
+ * is stored as plain text and rendered as paragraphs — deliberately not as
+ * Markdown, because settings are written from a form and the one input this
+ * site renders as HTML is content, which goes through the sanitising pipeline.
+ * A second path into the page would be a second thing to get wrong.
+ *
+ * The last two blocks are not settings at all. Projects and Latest writing are
+ * read from the content index, so an about page written a year ago still points
+ * at what the author is actually doing — which is the one thing an about page
+ * cannot get from a paragraph. Both come from a single `listRecentlyUpdated`
+ * split in memory: they are one question ("what changed lately?") with two
+ * answers, and two queries would ask it twice, cost a second round trip, and
+ * allow the two lists to disagree about which documents are the newest.
  *
  * The page is allowed to be short. An about page padded to fill a screen reads
  * as an obligation; one that says four true things reads as an answer.
@@ -35,7 +52,11 @@ export async function generateMetadata(): Promise<Metadata> {
 }
 
 export default async function AboutPage() {
-  const [settings, counts] = await Promise.all([getSettings(), countByType()])
+  const [settings, counts, updated] = await Promise.all([
+    getSettings(),
+    countByType(),
+    listRecentlyUpdated(12),
+  ])
 
   const name = settings.authorName || settings.siteName
   // Blank lines separate paragraphs. `split` on a run of newlines rather than
@@ -46,6 +67,28 @@ export default async function AboutPage() {
     : []
 
   const total = counts.post + counts.note + counts.project
+
+  const dateContext = { locale: settings.locale, timeZone: settings.timezone }
+
+  /*
+   * Twelve rows are fetched to fill two lists of at most four and five. The
+   * slack is the point: the newest twelve documents are rarely the four
+   * projects and the five pieces of writing the page wants, and a limit equal
+   * to the visible count would let one busy month of notes crowd every project
+   * off the page.
+   */
+  const projects = updated.filter((item) => item.type === 'project').slice(0, 4)
+  const writing = updated.filter((item) => item.type !== 'project').slice(0, 5)
+  const spansTypes = new Set(writing.map((item) => item.type)).size > 1
+
+  const toEntry = (item: ContentSummary): Entry => ({
+    href: item.url,
+    title: item.title,
+    dateLabel: formatDate(item.publishedAt ?? item.updatedAt, dateContext, 'short'),
+    dateTime: toIsoDate(item.publishedAt ?? item.updatedAt),
+    readingTime: item.readingTime,
+    typeLabel: spansTypes ? TYPE_LABELS[item.type] : undefined,
+  })
 
   return (
     <Container>
@@ -75,14 +118,14 @@ export default async function AboutPage() {
             </p>
           )}
 
+          {/*
+            The three main-column blocks are `h3`: they are parts of the
+            author's answer, which is the `h2` above them. The aside is a
+            different register — separate, parallel blocks rather than
+            sub-headings — and keeps its `h2`.
+          */}
           {settings.aboutStack.length > 0 ? (
-            <section aria-labelledby="stack" className="mt-12">
-              <h3
-                id="stack"
-                className="mb-4 border-b border-line pb-2 text-xs font-medium uppercase tracking-wider text-ink-subtle"
-              >
-                Uses
-              </h3>
+            <Section as="h3" id="stack" title="Uses">
               <dl className="flex flex-col gap-3">
                 {settings.aboutStack.map((group) => (
                   <div key={group.group} className="grid gap-x-6 gap-y-1 sm:grid-cols-[10rem_1fr]">
@@ -91,7 +134,53 @@ export default async function AboutPage() {
                   </div>
                 ))}
               </dl>
-            </section>
+            </Section>
+          ) : null}
+
+          {projects.length > 0 ? (
+            <Section as="h3" id="projects" title="Projects" href="/projects" linkLabel="All projects">
+              <ul className="flex flex-col gap-5">
+                {projects.map((project) => (
+                  <li key={project.slug}>
+                    <div className="flex items-baseline justify-between gap-4">
+                      <Link
+                        href={project.url}
+                        className="text-base leading-snug text-ink transition-colors duration-150 hover:text-brand"
+                      >
+                        {project.title}
+                      </Link>
+                      {project.projectStatus ? (
+                        <span className="shrink-0 font-mono text-xs text-ink-subtle">
+                          {project.projectStatus}
+                        </span>
+                      ) : null}
+                    </div>
+                    {project.description ? (
+                      <p className="mt-1.5 max-w-[68ch] text-sm leading-relaxed text-ink-muted">
+                        {project.description}
+                      </p>
+                    ) : null}
+                  </li>
+                ))}
+              </ul>
+            </Section>
+          ) : null}
+
+          {writing.length > 0 ? (
+            <Section
+              as="h3"
+              id="writing"
+              title="Latest writing"
+              href="/archive"
+              linkLabel="Archive"
+            >
+              {/*
+                No descriptions, and no tags. This is the page's footer, not
+                another index — the point is that there is recent writing and
+                where it goes, and five titled dates say both.
+              */}
+              <EntryList entries={writing.map(toEntry)} />
+            </Section>
           ) : null}
         </div>
 

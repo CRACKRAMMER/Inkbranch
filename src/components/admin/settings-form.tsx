@@ -478,7 +478,11 @@ function AboutSection({ api }: { api: Api }) {
           rows={6}
           value={api.draft.aboutProfile}
           error={api.errorFor('aboutProfile')}
-          description="Plain text or Markdown. The body of the about page."
+          // Not Markdown, and the field used to say it was. Blank lines
+          // separate paragraphs and everything else is literal, so a `#` here
+          // produces a `#` — see the note in the about page on why settings
+          // never take the HTML path.
+          description="Plain text. Blank lines separate paragraphs."
           onChange={(value) => api.set('aboutProfile', value)}
         />
 

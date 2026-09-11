@@ -7,6 +7,7 @@ import { PageHeader } from '@/components/content/page-header'
 import { Pagination } from '@/components/content/pagination'
 import { TagDot } from '@/components/content/tag-dot'
 import { Container } from '@/components/site/container'
+import { TYPE_LABELS } from '@/lib/content/labels'
 import {
   countContent,
   getTag,
@@ -34,13 +35,6 @@ import { formatDate, toIsoDate } from '@/lib/utils/date'
  * somewhere to go that is genuinely adjacent — which the global tag list,
  * ordered by size, does not.
  */
-
-/** The type label shown before a title when a tag spans more than one type. */
-const TYPE_LABELS: Record<string, string> = {
-  post: 'Article',
-  note: 'Note',
-  project: 'Project',
-}
 
 export async function generateMetadata({
   params,

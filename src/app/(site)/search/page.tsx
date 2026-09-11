@@ -4,6 +4,7 @@ import Link from 'next/link'
 import { PageHeader } from '@/components/content/page-header'
 import { TagList } from '@/components/content/tag-list'
 import { Container } from '@/components/site/container'
+import { TYPE_LABELS } from '@/lib/content/labels'
 import { search, type SearchHit } from '@/lib/search'
 import { DEFAULT_SEARCH_LIMIT, MAX_SEARCH_LIMIT } from '@/lib/search/provider'
 import { buildPageMetadata, siteIdentityFromSettings } from '@/lib/seo/metadata'
@@ -169,12 +170,6 @@ export default async function SearchPage({
   )
 }
 
-const TYPE_LABELS: Record<string, string> = {
-  post: 'Article',
-  note: 'Note',
-  project: 'Project',
-}
-
 /**
  * One result.
  *
@@ -192,7 +187,7 @@ function Result({
     <article>
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-xs">
         <span className="font-mono uppercase tracking-wider text-ink-subtle">
-          {TYPE_LABELS[hit.type] ?? hit.type}
+          {TYPE_LABELS[hit.type]}
         </span>
         {hit.publishedAt ? (
           <time dateTime={hit.publishedAt.toISOString()} className="text-ink-subtle">
