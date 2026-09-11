@@ -80,6 +80,55 @@ export async function signIn(page: Page): Promise<void> {
   await expect(page).toHaveURL(/\/admin(\?|$)/)
 }
 
+/** One node of the page's structured data, as a consumer would read it. */
+export type JsonLdNode = Record<string, unknown>
+
+/**
+ * Every JSON-LD node the page publishes.
+ *
+ * Parsed rather than matched as text, because the claim being tested is about
+ * the graph: an assertion on a string containing `"@type":"Person"` passes
+ * whether or not the `@id` next to it points anywhere. `JSON.parse` on what the
+ * script element actually contains is also the only way to notice that the
+ * escaping `serializeJsonLd` applies to `<`, `>` and `&` still produces the text
+ * the author wrote — a page whose title contains an ampersand is the case that
+ * would break a serializer that escaped for HTML instead of for a script.
+ *
+ * A page can publish a single object or an array of them; both arrive here as a
+ * list.
+ */
+export async function jsonLdNodes(page: Page): Promise<JsonLdNode[]> {
+  const texts = await page.locator('script[type="application/ld+json"]').allTextContents()
+
+  return texts.flatMap((text) => {
+    const parsed: unknown = JSON.parse(text)
+    const nodes = Array.isArray(parsed) ? (parsed as JsonLdNode[]) : [parsed as JsonLdNode]
+
+    // `JsonLd` emits more than one node as a `@graph` rather than as a bare
+    // array — one object with a `@context` and everything under it, which is
+    // the form a consumer expects when the nodes are one graph. The container
+    // has no `@type` of its own, so a reader that did not look inside it would
+    // find a single node that matches nothing and report the page as having no
+    // structured data at all.
+    return nodes.flatMap((node) =>
+      Array.isArray(node['@graph']) ? (node['@graph'] as JsonLdNode[]) : [node],
+    )
+  })
+}
+
+/** The one node of a given `@type`, or a failure naming what was there instead. */
+export function jsonLdNodeOfType(nodes: JsonLdNode[], type: string): JsonLdNode {
+  const matches = nodes.filter((node) => node['@type'] === type)
+  expect(
+    matches,
+    `expected exactly one ${type} node, found ${matches.length} in [${nodes
+      .map((node) => String(node['@type']))
+      .join(', ')}]`,
+  ).toHaveLength(1)
+
+  return matches[0]
+}
+
 /**
  * Put a Markdown body into the editor's source.
  *

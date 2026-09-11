@@ -1,7 +1,14 @@
 import { expect, test } from '@playwright/test'
 
 import { hasE2eDatabase } from './environment'
-import { showMetadata, signIn, typeBody, uniqueSlug } from './support'
+import {
+  jsonLdNodeOfType,
+  jsonLdNodes,
+  showMetadata,
+  signIn,
+  typeBody,
+  uniqueSlug,
+} from './support'
 
 /**
  * The authoring lifecycle, end to end, against a real server.
@@ -100,6 +107,27 @@ test('an author writes, publishes, finds and deletes a post', async ({ page }) =
     await expect(body.getByRole('heading', { level: 2, name: 'A heading' })).toBeVisible()
     await expect(body.locator('li', { hasText: 'another one' })).toBeVisible()
     await expect(body.locator('pre code')).toContainText('const answer')
+  })
+
+  await test.step('names its author as the node the about page publishes', async () => {
+    /*
+     * The other end of the reference `about.spec.ts` asserts. Two pages, two
+     * JSON-LD documents, one `@id`: a post whose author is a bare name is an
+     * author nobody can resolve, and a post whose author id is *nearly* the
+     * about page's — a different host, a trailing slash, a different fragment —
+     * is the same failure with a shape that looks right in both documents read
+     * separately. So the id is compared to the one the live about page actually
+     * publishes rather than to a string this test builds.
+     */
+    await page.goto(`/posts/${slug}`)
+    const article = jsonLdNodeOfType(await jsonLdNodes(page), 'BlogPosting')
+    const author = article.author as Record<string, unknown>
+
+    await page.goto('/about')
+    const person = jsonLdNodeOfType(await jsonLdNodes(page), 'Person')
+
+    expect(author['@id']).toBe(person['@id'])
+    expect(author.name).toBe(person.name)
   })
 
   await test.step('finds it in search', async () => {

@@ -128,6 +128,12 @@ export interface ArticleJsonLdInput {
   url?: string
   /** Absolute or site-relative image. Omit for no image field at all. */
   imageUrl?: string | null
+  /**
+   * `@id` of the author node, from `authorNodeId`. Omitted when the site has no
+   * author name — and the caller passes that same `null` through, so the
+   * reference and the Person page appear and disappear together.
+   */
+  authorId?: string | null
 }
 
 /**
@@ -178,8 +184,15 @@ export function buildArticleJsonLd(
     mainEntityOfPage: { '@type': 'WebPage', '@id': url },
     datePublished: doc.publishedAt?.toISOString(),
     dateModified: (doc.updatedAt ?? doc.publishedAt)?.toISOString(),
+    // A name as well as the reference: a consumer that does not merge graphs
+    // still reads who wrote this, and one that does follows `@id` to the
+    // Person on the about page rather than inventing a second author.
     author: site.authorName
-      ? compact({ '@type': 'Person', name: site.authorName })
+      ? compact({
+          '@type': 'Person',
+          '@id': input.authorId ?? undefined,
+          name: site.authorName,
+        })
       : undefined,
     publisher: compact({
       '@type': 'Organization',
@@ -272,14 +285,51 @@ export interface PersonJsonLdInput {
   sameAs?: readonly string[]
 }
 
+/** Where the author's own page lives. */
+export const ABOUT_PATH = '/about'
+
+/**
+ * The `@id` of the author, or `null` when there is no author to name.
+ *
+ * One node, referenced from everywhere the author is mentioned. An article's
+ * `author` carrying only a name is a different Person every time it appears —
+ * four articles by "Xie Chengan" are four strangers who happen to share a
+ * string — and a consumer that wants to know who wrote the site has nowhere to
+ * look. With an `@id` the article's author and the Person on the about page are
+ * the same entity, and the article's own reference is enough to resolve it.
+ *
+ * `null` rather than a default when the site has no author name, because there
+ * is nothing true to say: an unset author is not the site name, and a `@id`
+ * pointing at a node no page defines is worse than no reference at all — a
+ * consumer that resolves it finds nothing and cannot tell that from a mistake.
+ * Callers pass the result straight through as `authorId`, so the reference and
+ * the node are published or withheld together.
+ *
+ * The fragment is on the about page's URL rather than a URL of its own because
+ * the Person is that page's main entity: `#person` is where the page's subject
+ * already is, and it costs no extra address that could 404.
+ */
+export function authorNodeId(
+  authorName: string | null | undefined,
+  aboutUrl: string = ABOUT_PATH,
+): string | null {
+  if (!authorName?.trim()) return null
+  return `${absoluteUrl(aboutUrl)}#person`
+}
+
 export function buildPersonJsonLd(
   input: PersonJsonLdInput,
 ): Record<string, unknown> {
+  const url = absoluteUrl(input.url ?? ABOUT_PATH)
+
   return compact({
     '@context': SCHEMA,
     '@type': 'Person',
+    // The same id `authorNodeId` hands to every article, computed from the same
+    // URL, so the two cannot drift into two nodes with one name.
+    '@id': authorNodeId(input.name, url) ?? undefined,
     name: input.name,
-    url: input.url ? absoluteUrl(input.url) : undefined,
+    url,
     image: input.image ? absoluteUrl(input.image) : undefined,
     description: input.description ?? undefined,
     jobTitle: input.jobTitle ?? undefined,

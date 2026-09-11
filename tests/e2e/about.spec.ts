@@ -1,18 +1,29 @@
 import { expect, test, type Page } from '@playwright/test'
 
-import { hasE2eDatabase } from './environment'
-import { showMetadata, signIn, typeBody, uniqueSlug } from './support'
+import { E2E_ADMIN_NAME, E2E_PORT, hasE2eDatabase } from './environment'
+import {
+  jsonLdNodeOfType,
+  jsonLdNodes,
+  showMetadata,
+  signIn,
+  typeBody,
+  uniqueSlug,
+} from './support'
 
 /**
  * The about page, end to end.
  *
- * Two claims, and neither is a claim about one file. The first is that the page
+ * Three claims, and none is a claim about one file. The first is that the page
  * is assembled from settings: a paragraph typed into a textarea, a focus item
  * added as a row, a stack group, a currently row, a contact link — five
  * different editors, one settings row, one public page. The second is that the
  * last two of its seven blocks are not settings at all: Projects and Latest
  * writing are read from the content index, so the only way to prove them is to
- * publish a document through the admin and go looking for it.
+ * publish a document through the admin and go looking for it. The third is what
+ * a machine reads rather than what a person sees: the author these settings
+ * describe is published as a `Person` node with an `@id` — asserted here
+ * because this is the page that id names, with `authoring.spec.ts` asserting
+ * the other end of the same reference.
  *
  * It also writes the kind of setting nothing else in this suite writes. Every
  * other spec touches a boolean toggle; the list editors here are where a person
@@ -27,6 +38,19 @@ import { showMetadata, signIn, typeBody, uniqueSlug } from './support'
  * accumulating is the empty-the-lists step: a second run replaces the first
  * run's rows rather than sitting next to them.
  */
+
+/*
+ * The origin the deployment under test believes it is served from.
+ *
+ * Written out rather than read from `@/env`, and the difference is not
+ * pedantry: this file runs in the Playwright process, whose environment is the
+ * one `playwright.config.ts` gave it, while the value being asserted on was
+ * rendered by the server under `SITE_URL`. Importing the app's env module here
+ * reads the test runner's defaults and compares the page against
+ * `http://localhost:3000` — a test that fails while the site is right. The two
+ * specs that already needed an origin (feeds, analytics) build it the same way.
+ */
+const SITE_ORIGIN = `https://127.0.0.1:${E2E_PORT}`
 
 test.skip(
   !hasE2eDatabase,
@@ -52,6 +76,7 @@ test('the about page is assembled from settings and from the index', async ({ pa
   const stackItem = `TypeScript ${slug}`
   const currentValue = `A book about ${slug}`
   const mailto = `mailto:${slug}@example.com`
+  const profileUrl = `https://github.com/${slug}`
 
   await test.step('fills in every block the settings hold', async () => {
     await signIn(page)
@@ -88,6 +113,18 @@ test('the about page is assembled from settings and from the index', async ({ pa
     await contact.getByRole('button', { name: 'Add a contact' }).click()
     await field(contact, 'Label').fill('Email')
     await field(contact, 'Destination').fill(mailto)
+
+    /*
+     * A second row, and the pair is the fixture for the structured-data step
+     * below: one destination that identifies the author elsewhere and one that
+     * only reaches them. The second row is addressed by index — `field()` is
+     * exact about the name and there are now two "Label" fields — and the
+     * generic name the helper warns about is exactly why that has to be spelled
+     * out here.
+     */
+    await contact.getByRole('button', { name: 'Add a contact' }).click()
+    await contact.getByRole('textbox', { name: 'Label', exact: true }).last().fill('GitHub')
+    await contact.getByRole('textbox', { name: 'Destination', exact: true }).last().fill(profileUrl)
 
     await page.getByRole('button', { name: 'Save changes' }).click()
     await expect(page.getByText(/All changes saved at/)).toBeVisible()
@@ -145,6 +182,25 @@ test('the about page is assembled from settings and from the index', async ({ pa
     // two blocks that both rendered every row would pass.
     await expect(writing.getByRole('link', { name: projectTitle })).toHaveCount(0)
     await expect(projects.getByRole('link', { name: postTitle })).toHaveCount(0)
+  })
+
+  await test.step('publishes the author as a node the rest of the site points at', async () => {
+    // Still on `/about` from the step above, which is the page the `@id` names.
+    const person = jsonLdNodeOfType(await jsonLdNodes(page), 'Person')
+
+    expect(person.name).toBe(E2E_ADMIN_NAME)
+    expect(person.url).toBe(`${SITE_ORIGIN}/about`)
+    expect(person['@id']).toBe(`${SITE_ORIGIN}/about#person`)
+
+    /*
+     * The two contact rows, and the difference between them is the assertion.
+     * `sameAs` means "the same entity, elsewhere" — a GitHub profile is that;
+     * a `mailto:` reaches the author but identifies nobody, and a consumer
+     * treating it as a profile URL would be reading an address as an identity.
+     * Both rows were entered through the same form in the step above, so this
+     * is the filter being tested rather than the fixture.
+     */
+    expect(person.sameAs).toEqual([profileUrl])
   })
 
   await test.step('deletes what it published', async () => {

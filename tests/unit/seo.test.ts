@@ -20,6 +20,7 @@ import {
   type SiteIdentity,
 } from '@/lib/seo/metadata'
 import {
+  authorNodeId,
   buildArticleJsonLd,
   buildBreadcrumbJsonLd,
   buildPersonJsonLd,
@@ -393,6 +394,72 @@ describe('buildBreadcrumbJsonLd and buildPersonJsonLd', () => {
     })
     expect(data.url).toBe(`${siteOrigin}/about`)
     expect(data).not.toHaveProperty('image')
+  })
+})
+
+/* -------------------------------------------------------------------------- */
+/*  The author node                                                            */
+/* -------------------------------------------------------------------------- */
+
+describe('authorNodeId', () => {
+  it('names the person on the about page', () => {
+    expect(authorNodeId('Xie Chengan')).toBe(`${siteOrigin}/about#person`)
+  })
+
+  it('has no id to offer when the site has no author name', () => {
+    // Not the site name, and not an empty-string id: an article whose author is
+    // a `@id` pointing at a node no page defines is worse than one that names
+    // nobody, because a consumer that resolves it finds nothing and cannot tell
+    // that from a mistake.
+    expect(authorNodeId('')).toBeNull()
+    expect(authorNodeId('   ')).toBeNull()
+    expect(authorNodeId(null)).toBeNull()
+    expect(authorNodeId(undefined)).toBeNull()
+  })
+
+  it('follows the about page when it moves', () => {
+    // The id is derived from the page's URL rather than hard-coded, so a site
+    // that relocates its about page relocates the node with it.
+    expect(authorNodeId('Xie Chengan', '/me')).toBe(`${siteOrigin}/me#person`)
+  })
+})
+
+describe('the author reference and the author node', () => {
+  it('gives the article and the Person node the same id', () => {
+    // The whole point of the shared helper: one entity, two documents. If these
+    // two ever disagree the site has two strangers with one name.
+    const person = buildPersonJsonLd({ name: 'Xie Chengan', url: '/about' })
+    const article = buildArticleJsonLd({
+      site,
+      doc: doc(),
+      authorId: authorNodeId(site.authorName),
+    })
+
+    expect(article.author).toMatchObject({
+      '@type': 'Person',
+      '@id': person['@id'],
+      name: 'Xie Chengan',
+    })
+  })
+
+  it('carries a name alongside the reference, for consumers that do not resolve it', () => {
+    const article = buildArticleJsonLd({
+      site,
+      doc: doc(),
+      authorId: authorNodeId(site.authorName),
+    })
+
+    expect(article.author).toHaveProperty('name', 'Xie Chengan')
+  })
+
+  it('emits no dangling id when the caller has no author node', () => {
+    // `authorNodeId` returns null for a site with no author name, and that null
+    // travels straight through: the reference and the node are published
+    // together or not at all.
+    const article = buildArticleJsonLd({ site, doc: doc() })
+
+    expect(article.author).toEqual({ '@type': 'Person', name: 'Xie Chengan' })
+    expect(article.author).not.toHaveProperty('@id')
   })
 })
 

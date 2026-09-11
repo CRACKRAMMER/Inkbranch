@@ -7,7 +7,12 @@ import { readDocument } from '@/lib/content/reader'
 import { getBacklinks } from '@/lib/graph/backlinks'
 import { getRelatedPosts } from '@/lib/graph/related'
 import { renderMarkdown } from '@/lib/markdown/renderer'
-import { JsonLd, buildArticleJsonLd, buildBreadcrumbJsonLd } from '@/lib/seo/jsonld'
+import {
+  JsonLd,
+  authorNodeId,
+  buildArticleJsonLd,
+  buildBreadcrumbJsonLd,
+} from '@/lib/seo/jsonld'
 import { buildContentMetadata, siteIdentityFromSettings } from '@/lib/seo/metadata'
 import { getSettings } from '@/lib/settings'
 
@@ -66,7 +71,15 @@ export default async function PostPage({
     <>
       <JsonLd
         data={[
-          buildArticleJsonLd({ site, doc }),
+          buildArticleJsonLd({
+            site,
+            doc,
+            // The author node the about page publishes, referenced rather
+            // than repeated: `authorNodeId` returns null when there is no
+            // author name, and the about page withholds the node on the same
+            // condition, so the two are always published together.
+            authorId: authorNodeId(settings.authorName),
+          }),
           buildBreadcrumbJsonLd([
             { name: 'Home', url: '/' },
             { name: 'Writing', url: '/posts' },
