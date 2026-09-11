@@ -52,6 +52,17 @@ These five rules decide every trade-off in the codebase. When in doubt, re-read 
 `content/*.md` → parse frontmatter → render Markdown (Shiki, server-side) → cache → RSC payload → HTML.
 No database round-trip is required to render an article.
 
+### Pages that are not a document
+
+Most public pages are one document or a list of them. `/about` is seven blocks with no file behind
+it: profile, focus, currently, stack, projects, contact and latest writing. Five are settings —
+editable from `/admin/settings`, because they are facts the author changes once a year and should
+not have to open an editor to fix — and two are read from `content_index`, so a page written last
+year still says what the author is working on now. The profile is rendered as paragraphs and never
+as Markdown: settings are written from a form, and the one input this site turns into HTML is
+content, which goes through a sanitiser. The home page is composed the same way — identity from
+settings, blocks from the index — and `src/app/(site)/about/page.tsx` carries the reasoning.
+
 ### Write path
 
 ```
@@ -449,7 +460,7 @@ Recorded honestly, because a design document that only lists wins is marketing.
 
 1. **Bigram CJK tokenization** over-segments rare terms and cannot do prefix matching on single Chinese characters. Acceptable for a single-author site; Meilisearch is the escape hatch, and the provider interface exists for it.
 2. **In-process search index** does not survive to multi-instance deployments. A second replica would either build its own copy (fine, it is cheap) or talk to an external provider.
-3. **Revisions in `bytea`** grow the database. Pruning is a scheduled job, and the default of 50 per document bounds it.
+3. **Revisions in `bytea`** grow the database. Pruning happens in the write path rather than in a job: a named save trims the document's named revisions to `revisionsMaxPerContent` (50 by default) as soon as the new one is written, and autosaves are trimmed by the store within its own transaction to a larger bound of their own. The bound is therefore per document — deleting a document cascades its history away, and no background task has to run for the database to stay finite.
 4. **Git auto-commit** shells out to `git` and assumes the content directory is already a repository (or inside one) with a configured identity — a container needs git installed for it to do anything. It is off by default, needs two switches to agree, and never pushes. Commits are serialised within one process only; two processes committing at once contend on the index lock and the loser is logged and skipped.
 5. **No multi-author workflow.** Roles exist in the schema (`owner` / `editor`), but there is no review queue or editorial approval step.
 6. **Analytics are aggregate-only by design.** No funnels, no sessions, no cohorts — this is a deliberate product boundary, not an unfinished feature.

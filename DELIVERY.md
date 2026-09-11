@@ -398,62 +398,53 @@ backups/2026-09-11T10-30-00Z/
 
 ## 10. Future Improvements（后续改进）
 
-以下是实际阅读代码后确认的**未完成项与缺口**，一条一条列出，不含推测。
+以下是实际阅读代码后确认的**未完成项与缺口**，一条一条列出，不含推测。这一节随实现移动：
+上一版列在功能缺口里的六项——重定向未生效、Analytics 两端未接、按 tag / 分类的 RSS 缺失、
+Git 自动提交只有开关、Worker 循环无人启动、About 页缺两个区块——都已经补齐（依次对应设定稿
+第二十五、二十八、二十六、四十二、三十九、四十三节），因此不再出现在下面。
 
 **功能缺口**
 
-1. **重定向不生效**。`src/lib/redirects.ts` 里的 `resolveRedirect` 有完整实现与单元测试，
-   但**没有任何生产调用方**（全仓 grep 只命中定义、测试和注释）；`src/middleware.ts` 只
-   注入 `x-pathname`，matcher 限定 `/admin/:path*`；`next.config.ts` 的 `rewrites()`
-   返回空数组。结论：重定向行可以创建、可以 CSV 导入、可以在后台列出，但请求进来时不会
-   被应用。设定稿第二十五节要求"Middleware 高效处理"，这一点与设定稿不符。
-2. **Analytics 两端都没接上**。站点侧没有任何客户端代码发送 page-view beacon（全仓没有
-   调用 `/api/analytics` 的地方，`src/components/` 下也没有 sendBeacon）；聚合侧
-   `aggregateDay` / `aggregateRange` / `pruneRawEvents` 只被测试调用，没有任何任务、
-   cron、路由或后台动作会运行它们。后果是 `analytics_daily` 永远是空的，而后台
-   Analytics 页只读这张表——即使 beacon 发出来，页面也只会显示 0。采集器、聚合、留存
-   三部分的实现与测试都在，缺的是两端。
-3. **每个 tag / 每个分类的 RSS 缺失**。只实现了 `/rss.xml` 与 `/atom.xml`；没有
-   `src/app/rss/` 目录，`/rss/linux.xml` 与 `/rss/category/linux.xml` 都不存在，而设定稿
-   第二十六节明确要求这两个。
-4. **Git 自动提交只有开关没有实现**。`src/lib/git` 目录不存在，全仓没有 `execFile` /
-   `spawn` / `git commit` 调用；只有 `site_settings` 里的 `gitEnabled` / `gitAutoCommit` /
-   `gitCommitTemplate` 三个设置项与后台的表单开关。设定稿第四十二节要求"后台保存后可
-   配置 auto commit"。
-5. **Worker 循环没有任何地方启动它**。`runWorker` 只被 `scripts/worker.ts` 调用；HTTP
-   进程（`src/instrumentation.ts`）只做姿态检查，`docker-compose.yml` 也没有 worker
-   服务。因为运行时镜像里没有 `tsx`，纯 Docker 部署下这个循环目前无法运行。影响范围
-   有限：定时发布的**可见性**由读路径保证（`src/lib/content/queries.ts` 把
-   `scheduled` 且时间已到的文档视为可见，所以"09:00 发布"这个承诺仍然被遵守），但状态
-   翻转、定期 content sync / drift check / search reindex 不会自动发生。
-6. **资源缩略图变体没有实现**。`src/lib/assets/` 生成 webp/avif 变体并保存宽高与 blur
+1. **资源缩略图变体没有实现**。`src/lib/assets/` 生成 webp/avif 变体并保存宽高与 blur
    占位，但没有 thumbnail 变体；后台列表用 CSS 缩放原图。设定稿第二十节列出了 thumbnail。
-7. **编辑器的两个快捷键没有绑定**：`Ctrl/Cmd+K` 插入链接与 `Ctrl/Cmd+Shift+I` 上传图片
+2. **编辑器的两个快捷键没有绑定**：`Ctrl/Cmd+K` 插入链接与 `Ctrl/Cmd+Shift+I` 上传图片
    （`Cmd+S` 保存、`Cmd+P` 预览、粘贴图片、拖拽图片上传都已实现）。设定稿第十七节列出
    了这四个快捷键。
-8. **TOC 平滑滚动没有实现**。滚动监听、当前章节高亮、层级缩进、移动端抽屉（`<details>`
+3. **TOC 平滑滚动没有实现**。滚动监听、当前章节高亮、层级缩进、移动端抽屉（`<details>`
    与底部 Sheet 两种形态）都有，但全仓找不到 `scroll-behavior: smooth` 或
    `scrollIntoView({ behavior: 'smooth' })`。设定稿第八节要求平滑滚动。
-9. **About 页缺两个区块**。已有 Profile / Stack / Currently / Focus / Contact，缺设定稿
-   第四十三节列出的 Projects 与 Latest writing。
-10. **sitemap 不含 tag 与 series 页**。代码注释自己承认这是"真实的缺口而不是一个决定"。
-11. **没有 `loading.tsx`**。`src/components/ui/skeleton.tsx` 存在但没有任何引用点，设定稿
-    第四十九节要求加载时用 Skeleton。
-12. **JSON-LD 只输出 Article 与 Breadcrumb**。`buildWebsiteJsonLd` 与
-    `buildPersonJsonLd` 已实现并有测试，但没有生产调用方。
-13. **终端样式是空规则**。`globals.css` 里 `.is-terminal .code-line::after { content: ''; }`
-    产出的是空字符串，且 `bash` 没有被归入 terminal 语言（只认 `terminal`、`console`、
-    `shellsession`），所以设定稿第七节的"terminal / bash output"目前只是抑制了语言徽标。
+4. **sitemap 不含 tag 与 series 页**。`src/lib/seo/sitemap.ts` 的 `STATIC_ROUTES` 是八条
+   静态路由，加上每篇文档一条 URL，就这些；tag 页与 series 页各自有页面、有 RSS，但没有
+   任何一条 URL 进 sitemap。代码注释自己承认这是"真实的缺口而不是一个决定"。
+5. **没有 `loading.tsx`**。`src/components/ui/skeleton.tsx` 存在但没有任何引用点，设定稿
+   第四十九节要求加载时用 Skeleton。
+6. **JSON-LD 只输出 Article 与 Breadcrumb**。`buildWebsiteJsonLd` 与
+   `buildPersonJsonLd` 已实现并有测试，但没有生产调用方。
+7. **终端样式是空规则**。`globals.css` 里 `.code-block__pre.is-terminal .code-line::after
+   { content: ''; }` 产出的是空字符串，且 `bash` 没有被归入 terminal 语言
+   （`src/lib/markdown/code-meta.ts` 只认 `terminal`、`console`、`shellsession`），所以
+   设定稿第七节的"terminal / bash output"目前只是抑制了语言徽标。
 
 **架构性限制**（属于已知取舍，不是遗漏）
 
-14. 搜索索引与关系索引都在进程内，多副本部署会成为陈旧窗口的来源（副本自己构建一份索引
-    是正确的，但写时的失效只到达处理本次保存的那个副本）。
-15. CJK 采用 bigram 分词，对罕见词会过度切分、无法做单字前缀匹配；`SearchProvider`
-    接口就是为换 Meilisearch 留的缝。
-16. 修订以完整快照存在 `bytea` 中会增长数据库，靠定时裁剪与默认 50 份上限约束——而裁剪
-    依赖上面第 5 条提到的 worker。
-17. 没有多作者工作流：schema 里有 `owner` / `editor` 角色，但没有评审队列或编辑审批。
+8. 搜索索引与关系索引都在进程内，多副本部署会成为陈旧窗口的来源（副本自己构建一份索引
+   是正确的，但写时的失效只到达处理本次保存的那个副本）。
+9. CJK 采用 bigram 分词，对罕见词会过度切分、无法做单字前缀匹配；`SearchProvider`
+   接口就是为换 Meilisearch 留的缝。
+10. 修订以完整快照存在 `bytea` 中会增长数据库。约束是**内联**的而非后台任务：每次具名保存
+    之后 `pruneRevisions` 按 `revisionsMaxPerContent`（默认 50）裁剪该文档的具名修订，
+    自动保存由存储层在自己的事务里按 `AUTOSAVE_REVISIONS_KEPT` 单独裁剪
+    （`src/lib/revision/store.ts`）。裁剪按文档进行，且总在写入之后——删掉文档，修订随之
+    级联删除；没有任何 worker 任务参与这一步（`JOB_KINDS` 里没有 revision 相关类型）。
+11. 没有多作者工作流：schema 里有 `owner` / `editor` 角色，但没有评审队列或编辑审批。
+
+**有意保留的"没有读取方"**
+
+12. `site_settings.googleVerification` 与 `commentsEnabled` 没有任何生产读取点。这是披露
+    而不是遗漏：后台在各自的输入框下面直接写明"加入它不会验证站点"/"打开它不会改变任何
+    页面"。另有 `SETTINGS_CACHE_TAG`，后台的"清除缓存"动作会 `updateTag` 它，但当前没有
+    `'use cache'` 消费者（`getSettings` 是每请求 memo）——这同样写在
+    `src/app/admin/actions/system.ts` 的注释里，按钮的回复也照实说。
 
 ---
 
@@ -476,11 +467,5 @@ backups/2026-09-11T10-30-00Z/
    `rehype-autolink-headings`、`remark-frontmatter`）并不在依赖里。能力都在，但由自研插件
    实现：`rehype-code.ts`（Shiki 集成）、`slugger.ts`（标题 id）、`remark-blocks.ts` /
    `remark-alerts.ts`（callout 与 GitHub Alert）、`remark-deflist`（定义列表）。
-5. **§12 目录图** 里的 `src/lib/git/` 不存在（见第 10 节第 4 条）。
-6. **§4** 写 "Postgres 16+"，而 `docker-compose.yml` 固定 `postgres:17-alpine`。二者不冲突
+5. **§4** 写 "Postgres 16+"，而 `docker-compose.yml` 固定 `postgres:17-alpine`。二者不冲突
    （schema 不需要 16 以上的特性），只是版本口径不一致。
-7. `docker-compose.yml` 的注释说 worker 循环负责"scheduled publishing, analytics rollups,
-   orphan pruning"，而 `src/lib/jobs/handlers.ts` 明确写着 `analytics.aggregate` /
-   `analytics.prune` / `assets.cleanup` 三种任务**不存在**，因为"它们的模块还不存在"
-   ——这句话本身也已经过时（`src/lib/analytics/` 与 `src/lib/assets/` 都已经存在，只是没有
-   对应的任务处理器）。
