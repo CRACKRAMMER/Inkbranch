@@ -1,8 +1,9 @@
 import 'server-only'
-import { and, eq, gt, gte, lt } from 'drizzle-orm'
+import { and, eq, gt, gte, lt, sql } from 'drizzle-orm'
+import { env } from '@/env'
 import { db } from '@/lib/db'
 import { analyticsDaily, analyticsEvents, type DeviceType } from '@/lib/db/schema'
-import { dayEnd, dayStart, eachDay, isDay } from './day'
+import { addDays, dayEnd, dayStart, daysFromRows, eachDay, isDay, utcDay } from './day'
 
 /**
  * Raw events into `analytics_daily`.
@@ -289,4 +290,150 @@ export async function aggregateRange(
   }
 
   return results
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Catching up                                                                */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Days one run will rebuild.
+ *
+ * A backlog is drained a bounded number of days at a time rather than in one
+ * unbounded transaction per day, and this is the bound. It is the default
+ * retention window plus a day, so the worst case an operator can reach without
+ * changing a setting and losing their history — a worker that was down for
+ * exactly as long as events are kept — still finishes in a single run.
+ */
+export const MAX_AGGREGATE_DAYS_PER_RUN = 31
+
+export interface AggregateDaysResult {
+  /** Days that had raw events and were rebuilt from them. */
+  aggregated: string[]
+  /** Days that had none and were left exactly as they were. */
+  empty: string[]
+  rows: number
+  views: number
+  visitors: number
+}
+
+/** Aggregate each day in the order given, summing what each one rebuilt. */
+export async function aggregateDays(
+  days: readonly string[],
+): Promise<AggregateDaysResult> {
+  const result: AggregateDaysResult = {
+    aggregated: [],
+    empty: [],
+    rows: 0,
+    views: 0,
+    visitors: 0,
+  }
+
+  for (const day of days) {
+    const one = await aggregateDay(day)
+
+    if (one.skipped) {
+      result.empty.push(day)
+      continue
+    }
+
+    result.aggregated.push(day)
+    result.rows += one.rows
+    result.views += one.views
+    result.visitors += one.visitors
+  }
+
+  return result
+}
+
+export interface PendingDays {
+  /** The days to aggregate this run, newest two first. */
+  days: string[]
+  /** Days that were due but did not fit; the next run takes them. */
+  deferred: string[]
+}
+
+/**
+ * The days that need aggregating, derived from the tables rather than recorded.
+ *
+ * Two of them are always here whatever the tables say:
+ *
+ * - **Today**, because today is not over. Events keep arriving until midnight,
+ *   so a day rolled up an hour ago is a partial day, and a dashboard that only
+ *   ever rolled up a day once would show today's traffic frozen at whatever time
+ *   the worker last ran.
+ * - **Yesterday**, because the last event of a day can be written after the last
+ *   run of that day. Midnight is not an event; nothing wakes the worker to say
+ *   the day is finished.
+ *
+ * The rest are the holes: days inside the lookback that have raw events and no
+ * row in `analytics_daily`. That is what a worker that was down for a week
+ * leaves behind, and reading it out of the data means there is no checkpoint to
+ * keep in step with the tables — and nothing to go wrong when a run does not
+ * happen, which is the failure a checkpoint is worst at.
+ *
+ * ## Why the lookback is the retention window
+ *
+ * A day of raw events either has been pruned or is still waiting to be rolled
+ * up; the two sets are complements. Looking back exactly as far as retention
+ * keeps events therefore covers every day that could still need this. A shorter
+ * window would strand the oldest days — retention refuses to delete a day the
+ * daily table has never seen, and nothing would roll it up — which turns a
+ * backup that failed into a table that grows for ever.
+ */
+export async function pendingDays(now: Date = new Date()): Promise<PendingDays> {
+  const today = utcDay(now)
+  // Not configurable on its own: the argument above is that it is exactly the
+  // retention window, and a second setting is a second way to get it wrong.
+  const lookback = env.ANALYTICS_RAW_RETENTION_DAYS + 1
+  const from = addDays(today, -lookback)
+
+  // Read as text for the reason `./day` opens with: a `date` comes back through
+  // the driver at the server's local midnight, which is the previous day west of
+  // UTC.
+  const eventDays = await db.execute(sql`
+    select distinct to_char(
+      ${analyticsEvents.createdAt} at time zone 'UTC', 'YYYY-MM-DD'
+    ) as day
+    from ${analyticsEvents}
+    where ${analyticsEvents.createdAt} >= ${dayStart(from).toISOString()}
+    order by 1
+  `)
+
+  const dailyDays = await db.execute(sql`
+    select distinct to_char(${analyticsDaily.day}, 'YYYY-MM-DD') as day
+    from ${analyticsDaily}
+    where ${analyticsDaily.day} >= ${from}
+    order by 1
+  `)
+
+  const done = new Set(daysFromRows(dailyDays.rows))
+  // The query orders ascending, so the oldest hole is first — which is the one
+  // retention is waiting on, and therefore the one that must not be deferred.
+  const holes = daysFromRows(eventDays.rows).filter((day) => !done.has(day))
+
+  // A `Set` keeps insertion order, so a `today` that is also a hole stays at the
+  // front rather than being re-added where the hole was.
+  const due = [...new Set([today, addDays(today, -1), ...holes])]
+
+  return {
+    days: due.slice(0, MAX_AGGREGATE_DAYS_PER_RUN),
+    deferred: due.slice(MAX_AGGREGATE_DAYS_PER_RUN),
+  }
+}
+
+/** The days that need it, and what rebuilding them produced. */
+export interface AggregatePendingResult extends AggregateDaysResult {
+  /** Days that were due but did not fit in this run. */
+  deferred: string[]
+}
+
+/** Find the days that are behind and rebuild them. */
+export async function aggregatePending(
+  now: Date = new Date(),
+): Promise<AggregatePendingResult> {
+  const pending = await pendingDays(now)
+  const rebuilt = await aggregateDays(pending.days)
+
+  return { ...rebuilt, deferred: pending.deferred }
 }

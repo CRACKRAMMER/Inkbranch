@@ -105,8 +105,14 @@ services:
       ANALYTICS_ENABLED: ${ANALYTICS_ENABLED:-1}
 
       # The worker loop inside the app: scheduled publishing, analytics
-      # rollups, orphan pruning.
+      # rollups, orphan pruning. `WORKER_ENABLED=0` leaves an instance serving
+      # requests and nothing else — the queue claims with a lease, so several
+      # instances with the loop on divide the work rather than duplicating it.
+      WORKER_ENABLED: ${WORKER_ENABLED:-1}
       WORKER_INTERVAL_MS: ${WORKER_INTERVAL_MS:-60000}
+      # Days of finished job history to keep. Failed jobs are what an operator
+      # reads after an incident; the table would otherwise grow without bound.
+      JOB_RETENTION_DAYS: ${JOB_RETENTION_DAYS:-7}
     volumes:
       - ./content:/app/content
       - ./public/uploads:/app/public/uploads

@@ -1,4 +1,5 @@
-import { and, desc, eq, inArray, sql } from 'drizzle-orm'
+import { and, asc, desc, eq, inArray, lt, sql } from 'drizzle-orm'
+import { env } from '@/env'
 import { db } from '@/lib/db'
 import { scheduledJobs, type ScheduledJobRow } from '@/lib/db/schema'
 import type { JobKind } from './handlers'
@@ -56,6 +57,8 @@ export const MAX_LIST_LIMIT = 200
 
 /** `locked_by` is 80 characters; a longer id would be rejected by Postgres. */
 const LOCKED_BY_MAX_LENGTH = 80
+
+const MS_PER_DAY = 24 * 60 * 60 * 1000
 
 export type JobStatus = ScheduledJobRow['status']
 
@@ -367,6 +370,90 @@ export async function listJobs(
     )
     .orderBy(desc(scheduledJobs.createdAt))
     .limit(limit)
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Retention                                                                  */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Rows one prune removes.
+ *
+ * A first run against a table that has never been pruned has years to catch up
+ * on, and removing them all in one statement would hold locks for as long as it
+ * took. The cap turns that into a series of small deletes; the worker runs the
+ * prune on its maintenance tick, so the backlog drains over the next few
+ * minutes and nothing is left half-done.
+ */
+export const DEFAULT_PRUNE_JOBS_LIMIT = 5000
+
+export interface PruneJobsOptions {
+  /** Days of history to keep. Defaults to `JOB_RETENTION_DAYS`. */
+  olderThanDays?: number
+  limit?: number
+  now?: Date
+}
+
+export interface PruneJobsResult {
+  deleted: number
+  /** True when the cap was reached: there is more to remove on the next run. */
+  more: boolean
+}
+
+/**
+ * Delete finished jobs past the retention window.
+ *
+ * ## Why this is not optional
+ *
+ * The cadence enqueues its kinds on every interval whether or not anything
+ * happened, because "did this run?" has to be answerable from the table and a
+ * tick that recorded nothing would be indistinguishable from a worker that was
+ * dead. That makes this the one table in the schema that grows on a timer: on
+ * the default interval it is a few thousand rows a day, and a few million a
+ * year, for a blog whose author will look at the most recent fifty.
+ *
+ * ## What is kept, and what is not
+ *
+ * Terminal rows go — `done` and `failed` alike, because a failure that is still
+ * interesting a week later is a failure nobody fixed, and the record of it is in
+ * the log. Rows still in flight are never touched: a `pending` row is work
+ * somebody asked for, and a `running` row may be being worked on right now by
+ * another worker.
+ *
+ * The comparison uses `finished_at`, falling back to `created_at` for the rows
+ * that never reached a finish — so a row cannot outlive its welcome by having no
+ * timestamp to be measured against.
+ */
+export async function pruneFinishedJobs(
+  options: PruneJobsOptions = {},
+): Promise<PruneJobsResult> {
+  const days = Math.max(1, Math.trunc(options.olderThanDays ?? env.JOB_RETENTION_DAYS))
+  const limit = Math.max(1, Math.trunc(options.limit ?? DEFAULT_PRUNE_JOBS_LIMIT))
+  const cutoff = new Date((options.now ?? new Date()).getTime() - days * MS_PER_DAY)
+
+  const doomed = db
+    .select({ id: scheduledJobs.id })
+    .from(scheduledJobs)
+    .where(
+      and(
+        inArray(scheduledJobs.status, ['done', 'failed']),
+        lt(
+          sql`coalesce(${scheduledJobs.finishedAt}, ${scheduledJobs.createdAt})`,
+          cutoff,
+        ),
+      ),
+    )
+    // Oldest first, so a run that hits the cap has made progress on the part
+    // that has been waiting longest rather than re-scanning the same rows.
+    .orderBy(asc(scheduledJobs.createdAt))
+    .limit(limit)
+
+  const result = await db
+    .delete(scheduledJobs)
+    .where(inArray(scheduledJobs.id, doomed))
+
+  const deleted = result.rowCount ?? 0
+  return { deleted, more: deleted >= limit }
 }
 
 /* -------------------------------------------------------------------------- */

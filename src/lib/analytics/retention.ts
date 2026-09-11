@@ -3,7 +3,7 @@ import { sql } from 'drizzle-orm'
 import { env } from '@/env'
 import { db } from '@/lib/db'
 import { analyticsDaily, analyticsEvents } from '@/lib/db/schema'
-import { addDays, dayEnd, dayStart, utcDay } from './day'
+import { addDays, dayEnd, dayStart, daysFromRows, utcDay } from './day'
 
 /**
  * Raw-event retention.
@@ -61,15 +61,6 @@ export function partitionPrunableDays(
 }
 
 /**
- * Days are read as text because the driver hands a `date` back as a JavaScript
- * `Date` at the server's local midnight, which is the previous day west of UTC.
- * `to_char` in the query keeps the day the column actually holds.
- */
-function toDays(rows: Record<string, unknown>[]): string[] {
-  return rows.map((row) => String(row.day))
-}
-
-/**
  * Delete raw events older than `ANALYTICS_RAW_RETENTION_DAYS`, minus any day the
  * daily table has not seen yet.
  *
@@ -103,8 +94,8 @@ export async function pruneRawEvents(
   `)
 
   const { prunable, withheld } = partitionPrunableDays(
-    toDays(eventDayRows.rows),
-    toDays(aggregatedRows.rows),
+    daysFromRows(eventDayRows.rows),
+    daysFromRows(aggregatedRows.rows),
   )
 
   let deleted = 0

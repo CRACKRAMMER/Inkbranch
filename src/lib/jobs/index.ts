@@ -10,6 +10,7 @@ export {
   CLAIM_STALE_MS,
   DEFAULT_LIST_LIMIT,
   DEFAULT_MAX_ATTEMPTS,
+  DEFAULT_PRUNE_JOBS_LIMIT,
   JobQueueError,
   MAX_ERROR_LENGTH,
   MAX_LIST_LIMIT,
@@ -22,6 +23,7 @@ export {
   failJob,
   isClaimStale,
   listJobs,
+  pruneFinishedJobs,
   retryDecision,
   retryDelayMs,
   truncateError,
@@ -29,6 +31,8 @@ export {
   type FailJobOptions,
   type JobStatus,
   type ListJobsOptions,
+  type PruneJobsOptions,
+  type PruneJobsResult,
   type RetryDecision,
 } from './queue'
 
@@ -51,6 +55,7 @@ export {
 
 export {
   CADENCE_FAILURE_COOL_OFF_MS,
+  CADENCE_KINDS,
   DEFAULT_JOB_TIMEOUT_MS,
   DEFAULT_POLL_MS,
   DEFAULT_SHUTDOWN_GRACE_MS,
@@ -61,3 +66,13 @@ export {
   type WorkerOptions,
   type WorkerSummary,
 } from './worker'
+
+export { jsonLineLogger } from './log'
+
+export {
+  START_RETRY_BASE_MS,
+  START_RETRY_MAX_MS,
+  startEmbeddedWorker,
+  type EmbeddedWorker,
+  type EmbeddedWorkerOptions,
+} from './embedded'

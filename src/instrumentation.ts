@@ -23,10 +23,30 @@
  * `NEXT_RUNTIME` is read rather than assumed: `register` is also invoked for
  * the edge runtime, where none of these variables are read and where throwing
  * would break a deployment that is otherwise fine.
+ *
+ * ## Why the job worker starts here too
+ *
+ * This is the only hook a Next.js server has for "this process is now going to
+ * serve people", which is exactly the condition the worker's loop needs: it has
+ * to run in a process that is long-lived, that has the same filesystem and the
+ * same database as the request handlers, and that is not a build. An earlier
+ * version of this file only checked the environment, and the consequence was a
+ * worker that existed, was tested, and was started by nothing at all — scheduled
+ * posts published by the read path, and analytics never rolled up.
+ *
+ * The start is deliberately not awaited and deliberately cannot throw: see
+ * `@/lib/jobs/embedded` for why a database that is not ready yet must not take
+ * the server down with it. `WORKER_ENABLED=0` skips it, for an instance that
+ * should serve requests and nothing else.
  */
 export async function register(): Promise<void> {
   if (process.env.NEXT_RUNTIME !== 'nodejs') return
 
-  const { assertProductionPosture } = await import('@/env')
+  const { assertProductionPosture, env } = await import('@/env')
   assertProductionPosture()
+
+  if (!env.WORKER_ENABLED) return
+
+  const { startEmbeddedWorker } = await import('@/lib/jobs')
+  startEmbeddedWorker()
 }

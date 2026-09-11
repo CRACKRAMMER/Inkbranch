@@ -1,7 +1,10 @@
 import { afterAll, describe, expect, it } from 'vitest'
-import { sql } from 'drizzle-orm'
+import { and, eq, inArray, like, sql } from 'drizzle-orm'
+import { env } from '@/env'
+import { MAX_AGGREGATE_DAYS_PER_RUN } from '@/lib/analytics/aggregate'
+import { addDays, dayStart, utcDay } from '@/lib/analytics/day'
 import { db } from '@/lib/db'
-import { scheduledJobs } from '@/lib/db/schema'
+import { analyticsDaily, analyticsEvents, assets, scheduledJobs } from '@/lib/db/schema'
 import {
   CLAIM_STALE_MS,
   DEFAULT_MAX_ATTEMPTS,
@@ -15,16 +18,22 @@ import {
   failJob,
   isClaimStale,
   listJobs,
+  pruneFinishedJobs,
   retryDecision,
   retryDelayMs,
   truncateError,
 } from '@/lib/jobs/queue'
 import {
   JOB_KINDS,
+  JobHandlerError,
   isKnownJobKind,
   isPublishDue,
   jobHandlers,
   resolveHandler,
+  type JobKind,
+  type JobLogger,
+  type JobLogEvent,
+  type JobResult,
 } from '@/lib/jobs/handlers'
 import { hasTestDatabase } from '../setup'
 
@@ -58,12 +67,31 @@ describe('job kind registry', () => {
     expect(resolveHandler('content.explode')).toBeNull()
   })
 
-  it('leaves the kinds whose modules do not exist out of the registry', () => {
-    // `src/lib/analytics` and an asset-cleanup entry point do not exist yet. A
-    // handler that reported an aggregation it never ran would be worse than a
-    // kind that cannot be enqueued, so they are absent on purpose — and this
-    // expectation is what fails, loudly, on the day one of them lands.
-    for (const kind of ['analytics.aggregate', 'analytics.prune', 'assets.cleanup']) {
+  it('registers the housekeeping kinds, which nothing else would notice losing', () => {
+    // These three were absent until their modules existed, and the expectation
+    // that they were absent is what failed on the day they landed. It is kept
+    // as a list because of what they have in common: nothing on a page depends
+    // on them, so a kind that quietly disappeared from the registry would take
+    // scheduled publishing or analytics rollups with it and the site would go
+    // on serving, looking fine, with the work silently never done.
+    for (const kind of [
+      'analytics.aggregate',
+      'analytics.prune',
+      'assets.orphan-scan',
+    ] as const) {
+      expect(isKnownJobKind(kind)).toBe(true)
+      expect(resolveHandler(kind)).toBeTypeOf('function')
+    }
+  })
+
+  it('has no kind that deletes an asset', () => {
+    // The orphan scan reports and never deletes. The set it would delete
+    // against is derived — a page that is currently failing to render leaves
+    // its images looking unreferenced — so a handler that acted on it would
+    // remove files that published pages still point at. That decision is worth
+    // an assertion, because the next person to see an orphan-scan report will
+    // be tempted to write exactly this kind.
+    for (const kind of ['assets.cleanup', 'assets.prune', 'assets.delete']) {
       expect(isKnownJobKind(kind)).toBe(false)
       expect(resolveHandler(kind)).toBeNull()
     }
@@ -367,6 +395,76 @@ describe.runIf(hasTestDatabase)('queue against Postgres', () => {
     expect(requeued?.runAt.getTime()).toBeGreaterThan(Date.now())
   })
 
+  it('prunes finished jobs past the retention window, and nothing else', async () => {
+    const DAY_MS = 24 * 60 * 60 * 1000
+    const old = new Date(Date.now() - 30 * DAY_MS)
+    const recent = new Date(Date.now() - 1_000)
+
+    const [finishedLongAgo, failedLongAgo, neverRanOld] = await db
+      .insert(scheduledJobs)
+      .values([
+        { type: 'content.sync', status: 'done', payload: { marker }, attempts: 1, createdAt: old, finishedAt: old },
+        { type: 'content.sync', status: 'failed', payload: { marker }, attempts: 3, createdAt: old, finishedAt: old },
+        // Finished, but with no `finished_at` — a row written by an older
+        // version, or edited by hand. Its creation time is what it is judged by.
+        { type: 'content.sync', status: 'done', payload: { marker }, attempts: 1, createdAt: old },
+      ])
+      .returning()
+
+    // Everything this prune must leave alone, whatever the window is.
+    const [finishedRecently, stillPending, stillRunning] = await db
+      .insert(scheduledJobs)
+      .values([
+        { type: 'content.sync', status: 'done', payload: { marker }, attempts: 1, createdAt: recent, finishedAt: recent },
+        { type: 'content.sync', status: 'pending', payload: { marker }, createdAt: old },
+        {
+          type: 'content.sync',
+          status: 'running',
+          payload: { marker },
+          attempts: 1,
+          createdAt: old,
+          lockedAt: new Date(),
+          lockedBy: `${marker}-running`,
+        },
+      ])
+      .returning()
+
+    const survivors = async () =>
+      (
+        await db
+          .select({ id: scheduledJobs.id })
+          .from(scheduledJobs)
+          .where(
+            inArray(scheduledJobs.id, [
+              finishedLongAgo!.id,
+              failedLongAgo!.id,
+              neverRanOld!.id,
+              finishedRecently!.id,
+              stillPending!.id,
+              stillRunning!.id,
+            ]),
+          )
+      )
+        .map((row) => row.id)
+        .sort()
+
+    const protectedIds = [finishedRecently!.id, stillPending!.id, stillRunning!.id].sort()
+
+    // One row at a time, so the cap is a cap: a first run against a table that
+    // has never been pruned makes progress rather than holding a lock for as
+    // long as the backlog takes.
+    const first = await pruneFinishedJobs({ olderThanDays: 7, limit: 1 })
+    expect(first.deleted).toBe(1)
+    expect(first.more).toBe(true)
+
+    const second = await pruneFinishedJobs({ olderThanDays: 7, limit: 1_000 })
+    expect(second.deleted).toBeGreaterThanOrEqual(2)
+
+    // The three that were old and finished are gone; the one that never ran,
+    // the one that ran a moment ago and the one still claimed are not.
+    expect(await survivors()).toEqual(protectedIds)
+  })
+
   /**
    * Claim until this test's row comes up.
    *
@@ -384,4 +482,297 @@ describe.runIf(hasTestDatabase)('queue against Postgres', () => {
     }
     return null
   }
+})
+
+/* -------------------------------------------------------------------------- */
+/*  Housekeeping                                                               */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The three handlers that only a timer ever calls.
+ *
+ * They are tested together because of what they have in common, which is also
+ * what makes them worth testing at all: nothing on a page waits for them. If
+ * one stopped working the site would go on serving and look entirely healthy
+ * while scheduled posts never appeared, the dashboard's numbers quietly stopped
+ * moving and the job reported success every interval.
+ *
+ * Each one is called through `resolveHandler`, so the test covers the wiring as
+ * well as the work — a handler registered under the wrong kind, or registered
+ * nowhere, fails here rather than in production.
+ */
+describe.runIf(hasTestDatabase)('housekeeping handlers', () => {
+  const marker = `housekeeping-${process.pid}-${Date.now().toString(36)}`
+  /** Paths this suite created, so cleanup touches nothing else. */
+  const PATH_PREFIX = `/__jobs_test__/${marker}/`
+  /** Job rows this suite created, for the same reason. */
+  const created = new Set<string>()
+
+  afterAll(async () => {
+    if (created.size > 0) {
+      await db.delete(scheduledJobs).where(inArray(scheduledJobs.id, [...created]))
+    }
+    await db.delete(analyticsEvents).where(like(analyticsEvents.path, `${PATH_PREFIX}%`))
+    await db.delete(analyticsDaily).where(like(analyticsDaily.path, `${PATH_PREFIX}%`))
+  })
+
+  interface RecordedLog {
+    info: JobLogEvent[]
+    error: JobLogEvent[]
+    logger: JobLogger
+  }
+
+  /** A logger that keeps what it was told, so the log is asserted on too. */
+  function recordingLogger(): RecordedLog {
+    const info: JobLogEvent[] = []
+    const error: JobLogEvent[] = []
+    return {
+      info,
+      error,
+      logger: {
+        info: (event) => info.push(event),
+        error: (event) => error.push(event),
+      },
+    }
+  }
+
+  const names = (events: JobLogEvent[]): unknown[] => events.map((event) => event.event)
+
+  /**
+   * Run a handler exactly the way the worker does.
+   *
+   * The row is inserted rather than built by hand: handlers receive a
+   * `ScheduledJobRow`, and a literal would be this suite's idea of the shape
+   * rather than the database's.
+   */
+  async function runJob(
+    type: JobKind,
+    payload: Record<string, unknown> = {},
+  ): Promise<{ result: JobResult; log: RecordedLog }> {
+    const [job] = await db
+      .insert(scheduledJobs)
+      .values({
+        type,
+        status: 'running',
+        payload,
+        attempts: 1,
+        lockedAt: new Date(),
+        lockedBy: `${marker}-worker`,
+      })
+      .returning()
+
+    created.add(job!.id)
+
+    const handler = resolveHandler(type)
+    if (!handler) throw new Error(`No handler registered for ${type}`)
+
+    const log = recordingLogger()
+    const result = await handler({
+      job: job!,
+      signal: new AbortController().signal,
+      log: log.logger,
+    })
+
+    return { result, log }
+  }
+
+  async function insertEvent(day: string, path: string): Promise<void> {
+    await db.insert(analyticsEvents).values({
+      path,
+      visitorHash: 'housekeeping',
+      device: 'desktop',
+      referrerDomain: '',
+      contentId: null,
+      createdAt: new Date(dayStart(day).getTime() + 60_000),
+    })
+  }
+
+  async function eventCount(day: string): Promise<number> {
+    const rows = await db
+      .select({ id: analyticsEvents.id })
+      .from(analyticsEvents)
+      .where(and(eq(analyticsEvents.path, `${PATH_PREFIX}withheld`), sql`to_char(${analyticsEvents.createdAt} at time zone 'UTC', 'YYYY-MM-DD') = ${day}`))
+    return rows.length
+  }
+
+  describe('analytics.aggregate', () => {
+    /**
+     * Days far enough in the past that no sweep looks at them.
+     *
+     * The sweep is driven by a payload naming days, and running a real one
+     * would aggregate whatever the real clock's retention window covers —
+     * including rows another suite seeded for the present day.
+     */
+    const DAY = '2022-03-01'
+    const QUIET_DAY = '2022-03-02'
+
+    async function clear(): Promise<void> {
+      for (const day of [DAY, QUIET_DAY]) {
+        await db.delete(analyticsDaily).where(eq(analyticsDaily.day, day))
+        await db.execute(sql`
+          delete from ${analyticsEvents}
+          where to_char(${analyticsEvents.createdAt} at time zone 'UTC', 'YYYY-MM-DD') = ${day}
+            and ${analyticsEvents.path} like ${`${PATH_PREFIX}%`}
+        `)
+      }
+    }
+
+    it('rebuilds the days a payload names, and reports the ones with nothing', async () => {
+      await clear()
+      await insertEvent(DAY, `${PATH_PREFIX}named`)
+      await insertEvent(DAY, `${PATH_PREFIX}named`)
+
+      const { result, log } = await runJob('analytics.aggregate', {
+        days: [QUIET_DAY, DAY, DAY],
+      })
+
+      // Deduplicated and sorted, so the same list cannot be counted twice or
+      // aggregated in an order the caller guessed at.
+      expect(result.requested).toEqual([DAY, QUIET_DAY])
+      expect(result.aggregated).toEqual([DAY])
+      expect(result.empty).toEqual([QUIET_DAY])
+      expect(result.deferred).toEqual([])
+      expect(result.views).toBe(2)
+      expect(result.rows).toBe(1)
+
+      expect(names(log.info)).toContain('job.analytics-aggregate')
+      // Nothing was left behind, so there is nothing for an operator to act on.
+      expect(names(log.error)).not.toContain('job.analytics-aggregate.behind')
+    })
+
+    it('takes the oldest days and defers the rest of a long list', async () => {
+      // A caller with more days than one run will do is given the oldest batch,
+      // and told what waited. The alternative — aggregating all of it in one
+      // run, or dropping the remainder — is either a long lock or silent loss.
+      const days = Array.from({ length: MAX_AGGREGATE_DAYS_PER_RUN + 4 }, (_, index) =>
+        addDays('2022-04-01', index),
+      )
+
+      const { result, log } = await runJob('analytics.aggregate', { days })
+
+      // `requested` is what this run took on, not what the payload held: the
+      // two together are the caller's list, and neither is counted twice.
+      expect(result.requested).toEqual(days.slice(0, MAX_AGGREGATE_DAYS_PER_RUN))
+      expect(result.empty).toEqual(days.slice(0, MAX_AGGREGATE_DAYS_PER_RUN))
+      expect(result.deferred).toEqual(days.slice(MAX_AGGREGATE_DAYS_PER_RUN))
+      // Deferral is not a failure, but it is the one thing an operator can act
+      // on, so it is reported at a level that shows up.
+      expect(names(log.error)).toContain('job.analytics-aggregate.behind')
+    })
+
+    it('refuses a payload it cannot read instead of sweeping instead', async () => {
+      // "Aggregate these forty days" and "aggregate whatever looks behind" cost
+      // the same and mean different things. A payload bug that silently ran the
+      // wrong one would be invisible until someone compared the dashboard
+      // against the traffic.
+      for (const days of ['yesterday', [], ['not-a-day'], [7], null]) {
+        await expect(runJob('analytics.aggregate', { days })).rejects.toThrow(
+          JobHandlerError,
+        )
+        await expect(runJob('analytics.aggregate', { days })).rejects.toThrow(/days/)
+      }
+    })
+
+    it('finds the days that are behind without being told which', async () => {
+      // Yesterday rather than a fixture day: the sweep works out what is behind
+      // from the tables, and yesterday is the one day it always has an opinion
+      // about whatever the retention window is set to.
+      const yesterday = addDays(utcDay(), -1)
+      const path = `${PATH_PREFIX}swept`
+      await db.delete(analyticsEvents).where(eq(analyticsEvents.path, path))
+      await db.delete(analyticsDaily).where(eq(analyticsDaily.path, path))
+      await insertEvent(yesterday, path)
+
+      const { result, log } = await runJob('analytics.aggregate')
+
+      expect(result.requested).toBeNull()
+      expect(result.aggregated).toContain(yesterday)
+
+      const rows = await db
+        .select({ views: analyticsDaily.views })
+        .from(analyticsDaily)
+        .where(and(eq(analyticsDaily.day, yesterday), eq(analyticsDaily.path, path)))
+
+      expect(rows).toEqual([{ views: 1 }])
+      expect(names(log.info)).toContain('job.analytics-aggregate')
+    })
+  })
+
+  describe('analytics.prune', () => {
+    it('hands the days it had to withhold to an aggregation job', async () => {
+      // A day past the window whose events are the only copy of it. Retention
+      // refuses to delete it — the next run would too — so it is handed to the
+      // job that gives it a copy in `analytics_daily`, and only then deleted.
+      const day = addDays(utcDay(), -(env.ANALYTICS_RAW_RETENTION_DAYS + 45))
+      await db.delete(analyticsEvents).where(eq(analyticsEvents.path, `${PATH_PREFIX}withheld`))
+      await insertEvent(day, `${PATH_PREFIX}withheld`)
+
+      // A leftover from an interrupted run would make the enqueue below a
+      // no-op — the dedupe key collapses onto the pending row — and the
+      // assertion would then be about that row rather than the one this run
+      // created, which is a test passing for the wrong reason.
+      await db
+        .delete(scheduledJobs)
+        .where(
+          and(
+            eq(scheduledJobs.type, 'analytics.aggregate'),
+            sql`${scheduledJobs.payload}->>'reason' = 'retention-withheld'`,
+          ),
+        )
+
+      const { result, log } = await runJob('analytics.prune')
+
+      const id = result.aggregateJobId
+      expect(typeof id).toBe('string')
+      // Registered for cleanup here rather than at the end: a failure in
+      // between would leave a pending job in this database, and the next run's
+      // `claimNextJob` — which takes the oldest due row — would claim that one
+      // instead of its own fixture.
+      created.add(id as string)
+
+      const [queued] = await db
+        .select()
+        .from(scheduledJobs)
+        .where(eq(scheduledJobs.id, id as string))
+
+      expect(queued?.type).toBe('analytics.aggregate')
+      expect(queued?.status).toBe('pending')
+      expect(queued?.payload.days).toContain(day)
+      expect(queued?.payload.reason).toBe('retention-withheld')
+
+      // The point of withholding, asserted where it matters: the events that
+      // are the only copy of that day are still there.
+      expect(await eventCount(day)).toBe(1)
+
+      // Not a failure — the job did what it could — but aggregation is behind,
+      // which is the one thing an operator can do something about.
+      expect(names(log.error)).toContain('job.analytics-prune.withheld')
+      expect(names(log.info)).toContain('job.analytics-prune')
+    })
+  })
+
+  describe('assets.orphan-scan', () => {
+    it('reports what nothing points at, and deletes none of it', async () => {
+      const before = await db.select({ id: assets.id }).from(assets)
+
+      const { result, log } = await runJob('assets.orphan-scan')
+
+      expect(typeof result.found).toBe('number')
+      expect(typeof result.truncated).toBe('boolean')
+
+      const sample = result.sample as { id: string; path: string; bytes: number }[]
+      expect(Array.isArray(sample)).toBe(true)
+      // The count is the full figure and the sample is capped, because this
+      // ends up in a `jsonb` column of the job row.
+      expect(sample.length).toBe(Math.min(result.found as number, 20))
+
+      // The decision this job exists to express: what counts as a reference is
+      // derived, so a tree that has not been synced makes every asset in it
+      // look unreferenced. Acting on that deletes files published pages still
+      // point at, so the job reports and a human decides.
+      expect(await db.select({ id: assets.id }).from(assets)).toHaveLength(before.length)
+
+      expect(names(log.info)).toContain('job.assets-orphan-scan')
+    })
+  })
 })

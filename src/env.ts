@@ -77,7 +77,30 @@ const schema = z.object({
 
   GIT_INTEGRATION_ENABLED: bool('0'),
 
+  /**
+   * Run the job queue's worker loop inside the server process.
+   *
+   * On by default, because the deployment this project ships — one container,
+   * one database, one author — has nowhere else to put it. Turning it off is for
+   * the two cases where that is wrong: a second app instance that should serve
+   * requests without competing for the same jobs (though the queue's claims make
+   * that safe, it is not free), and a process that must do nothing but serve.
+   * `pnpm worker` is the other way to run one, and ignores this flag: it *is* the
+   * worker.
+   */
+  WORKER_ENABLED: bool('1'),
   WORKER_INTERVAL_MS: int(60_000),
+
+  /**
+   * How long a finished job row is kept.
+   *
+   * The cadence enqueues its kinds on every interval, so this table is written
+   * to on a timer whether or not anything happened — a few thousand rows a day
+   * on the default settings, and a few million a year if nothing ever removed
+   * them. A week is long enough to answer "did that run?" and to see a failure
+   * that repeats.
+   */
+  JOB_RETENTION_DAYS: int(7),
 
   TEST_DATABASE_URL: z.string().optional(),
 })

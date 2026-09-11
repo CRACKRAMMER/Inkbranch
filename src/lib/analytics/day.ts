@@ -65,3 +65,16 @@ export function eachDay(from: string, to: string): string[] {
 
   return days
 }
+
+/**
+ * The `day` column of a driver result, as `YYYY-MM-DD` strings.
+ *
+ * The other half of the trap this file opens with: a query that selects a `date`
+ * through the column mapper hands back a `Date` at the server's local midnight,
+ * so the value has to be read as the text the query produced —
+ * `to_char(day, 'YYYY-MM-DD') as day` — rather than re-derived here. This only
+ * names the column the two callers already know they selected.
+ */
+export function daysFromRows(rows: readonly Record<string, unknown>[]): string[] {
+  return rows.map((row) => String(row.day))
+}

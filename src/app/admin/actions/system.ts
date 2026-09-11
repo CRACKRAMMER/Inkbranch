@@ -69,18 +69,35 @@ export interface SystemOperationResult {
   queued?: JobKind
 }
 
-/** Where each queued operation lands. One place, so the copy and the code agree. */
-const QUEUE_TARGETS: Record<'queue-sync' | 'queue-publish' | 'queue-reindex', JobKind> = {
+/**
+ * Where each queued operation lands. One place, so the copy and the code agree.
+ *
+ * `satisfies` rather than an annotation, so the literal kinds survive in the
+ * inferred type: `QueueableKind` below is read off this map, and an annotation
+ * would widen every value to `JobKind` and take the point of it with them.
+ */
+const QUEUE_TARGETS = {
   'queue-sync': 'content.sync',
   'queue-publish': 'content.publish-scheduled',
   'queue-reindex': 'search.reindex',
-}
+} satisfies Record<'queue-sync' | 'queue-publish' | 'queue-reindex', JobKind>
 
-const QUEUED_COPY: Record<JobKind, string> = {
+/**
+ * The kinds this page can queue — which is deliberately not every kind.
+ *
+ * Keyed by what `QUEUE_TARGETS` maps to rather than by `JobKind`, so adding an
+ * operation above still fails to compile until it has a sentence, while the
+ * kinds nobody presses a button for do not have to pretend to have one. The
+ * analytics roll-up, the raw-event prune and the orphan scan are the worker's own
+ * housekeeping: they run on its cadence, and three more levers on a page an
+ * author visits to reconcile content would be three more things to explain.
+ */
+type QueueableKind = (typeof QUEUE_TARGETS)[keyof typeof QUEUE_TARGETS]
+
+const QUEUED_COPY: Record<QueueableKind, string> = {
   'content.sync': 'A content sync is queued.',
   'content.publish-scheduled': 'A publish pass is queued.',
   'search.reindex': 'A search reindex is queued.',
-  'content.drift-check': 'A drift check is queued.',
 }
 
 export async function runSystemOperationAction(

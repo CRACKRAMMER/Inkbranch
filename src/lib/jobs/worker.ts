@@ -3,7 +3,7 @@ import { desc, eq } from 'drizzle-orm'
 import { env } from '@/env'
 import { closeDatabase, db, pingDatabase } from '@/lib/db'
 import { scheduledJobs, type ScheduledJobRow } from '@/lib/db/schema'
-import { claimNextJob, completeJob, enqueue, failJob } from './queue'
+import { claimNextJob, completeJob, enqueue, failJob, pruneFinishedJobs } from './queue'
 import {
   resolveHandler,
   UnknownJobKindError,
@@ -60,18 +60,66 @@ export const CADENCE_FAILURE_COOL_OFF_MS = 30 * 60_000
 /** Longest worker id accepted; `locked_by` is 80 characters. */
 const WORKER_ID_MAX_LENGTH = 80
 
+/** One kind of work the worker creates for itself, and how often. */
+interface CadenceEntry {
+  kind: JobKind
+  /**
+   * How long this kind may go unrun.
+   *
+   * Floored in practice by the check interval: the loop looks at this table on
+   * every `WORKER_INTERVAL_MS`, so raising that value raises every period below
+   * it. It is a floor rather than a floor *and* a ceiling on purpose — a period
+   * is a promise about staleness, and running something later than promised is
+   * the failure an operator would notice, while running it slightly sooner never
+   * is.
+   */
+  everyMs: number
+}
+
 /**
- * Work the worker creates for itself, on `WORKER_INTERVAL_MS`.
+ * Work the worker creates for itself.
  *
  * Enqueued rather than run inline, so that the cadence takes the same claim,
  * retry and timeout path as everything else — and so that a run that never
  * happened is visible as a job that never appeared.
+ *
+ * ## Why each kind has its own period
+ *
+ * A single period for all of them means every entry is set by the most impatient
+ * one. Two are minutes-old-or-nothing (a drift check, a publish pass), and if
+ * the rest share their period then a search reindex — a migration work list that
+ * changes when a developer changes a constant — is queried once a minute for
+ * years, and an orphan scan walks the entire asset table at the same rate. The
+ * numbers below are each kind's own answer to "how stale may this be?", which is
+ * the only question a cadence period is really asking.
  */
-const CADENCE: readonly JobKind[] = [
-  'content.drift-check',
-  'content.publish-scheduled',
-  'search.reindex',
+const CADENCE: readonly CadenceEntry[] = [
+  // Reconciles derived data and flips scheduled posts. Both are cheap queries
+  // and both are things an author is waiting to see.
+  { kind: 'content.drift-check', everyMs: 60_000 },
+  { kind: 'content.publish-scheduled', everyMs: 60_000 },
+  // Today is not over until midnight, so today's roll-up is always partial and
+  // is rebuilt on every run rather than appended to. Frequent for that reason,
+  // not because the numbers are needed quickly.
+  { kind: 'analytics.aggregate', everyMs: 60_000 },
+  // A migration work list: it has something to do only after a version bump.
+  { kind: 'search.reindex', everyMs: 60 * 60_000 },
+  // A day of history crosses the cutoff once a day, and an orphan is created by
+  // an upload rather than by time.
+  { kind: 'analytics.prune', everyMs: 6 * 60 * 60_000 },
+  { kind: 'assets.orphan-scan', everyMs: 6 * 60 * 60_000 },
 ]
+
+/**
+ * The kinds the worker creates for itself.
+ *
+ * Exported because it is a fact about the deployment rather than about this
+ * loop: these are the jobs that happen because a timer says so and not because
+ * anybody asked, so a kind missing from this list is work that silently stops
+ * happening. `JOB_KINDS` is the wrong thing to ask — it includes `content.sync`,
+ * which only a person or an importer ever enqueues.
+ */
+export const CADENCE_KINDS: readonly JobKind[] = CADENCE.map((entry) => entry.kind)
 
 export class WorkerStartupError extends Error {
   readonly code = 'WORKER_STARTUP'
@@ -214,6 +262,15 @@ export async function runWorker(
     // interval; without it, the first cadence waits one interval.
     let nextMaintenanceAt = env.CONTENT_SYNC_ON_BOOT ? 0 : Date.now() + intervalMs
 
+    /*
+     * When each kind is next due. Empty at boot, which is what makes the first
+     * check run every kind once: a worker that starts has no idea what the last
+     * one did, and asking each kind whether it has work is the only way to find
+     * out. The alternative — persisting the last-run time of each kind — would
+     * be a second copy of something the job table already records.
+     */
+    const nextDueAt = new Map<JobKind, number>()
+
     log.info({
       event: 'worker.start',
       workerId,
@@ -229,7 +286,8 @@ export async function runWorker(
       try {
         if (Date.now() >= nextMaintenanceAt) {
           nextMaintenanceAt = Date.now() + intervalMs
-          await runCadence(log)
+          await runCadence(log, nextDueAt)
+          await pruneJobHistory(log)
           summary.maintenanceRuns += 1
         }
 
@@ -339,16 +397,63 @@ async function assertReady(): Promise<void> {
 /*  Cadence                                                                    */
 /* -------------------------------------------------------------------------- */
 
-async function runCadence(log: JobLogger): Promise<void> {
-  for (const kind of CADENCE) {
-    const enqueued = await enqueueCadence(kind)
+/**
+ * Enqueue whatever is due, and say so either way.
+ *
+ * The log line is written for kinds that were not enqueued as well as for the
+ * ones that were: "the cadence ran and this kind was already pending" and "the
+ * cadence did not reach this kind" are different states, and only the first
+ * means the worker is doing its job.
+ */
+async function runCadence(
+  log: JobLogger,
+  nextDueAt: Map<JobKind, number>,
+): Promise<void> {
+  const now = Date.now()
+
+  for (const entry of CADENCE) {
+    const due = nextDueAt.get(entry.kind)
+    if (due !== undefined && now < due) continue
+
+    // Recorded before the enqueue rather than after: a cadence that throws is
+    // caught by the loop and backed off, and a kind left unmarked would be
+    // retried on every tick of that backoff — which is the flood the backoff
+    // exists to prevent.
+    nextDueAt.set(entry.kind, now + entry.everyMs)
+
+    const enqueued = await enqueueCadence(entry.kind)
     log.info({
       event: 'worker.cadence',
-      kind,
+      kind: entry.kind,
+      everyMs: entry.everyMs,
       enqueued: enqueued !== null,
       ...(enqueued ? { jobId: enqueued.id } : {}),
     })
   }
+}
+
+/**
+ * Delete finished jobs past `JOB_RETENTION_DAYS`.
+ *
+ * The worker maintains its own table, on the same tick as the cadence that
+ * fills it. Left alone this table grows by a few thousand rows a day for as long
+ * as the site exists, and the reason it grows is the cadence itself: a tick that
+ * recorded nothing would be indistinguishable from a worker that had died, so
+ * every tick writes a row whether or not there was work.
+ *
+ * A sweep that hits its cap says so, and the next tick continues from where it
+ * stopped — which is why this is a log line rather than an error.
+ */
+async function pruneJobHistory(log: JobLogger): Promise<void> {
+  const result = await pruneFinishedJobs()
+  if (result.deleted === 0) return
+
+  log.info({
+    event: 'worker.prune-jobs',
+    deleted: result.deleted,
+    remaining: result.more,
+    retentionDays: env.JOB_RETENTION_DAYS,
+  })
 }
 
 /**
@@ -546,7 +651,14 @@ async function recordOutcome(
 /* -------------------------------------------------------------------------- */
 
 /** Sleep, waking early when a shutdown is requested. */
-function sleep(ms: number, shutdown?: AbortSignal): Promise<void> {
+/**
+ * Wait, or stop waiting when a shutdown is requested.
+ *
+ * Exported for `./embedded`, which waits between attempts to start this loop and
+ * has to be interruptible for the same reason: a supervisor that sleeps through
+ * an abort delays a shutdown by the length of its sleep.
+ */
+export function sleep(ms: number, shutdown?: AbortSignal): Promise<void> {
   if (shutdown?.aborted) return Promise.resolve()
 
   return new Promise((resolve) => {
@@ -560,6 +672,7 @@ function sleep(ms: number, shutdown?: AbortSignal): Promise<void> {
   })
 }
 
-function describeError(error: unknown): string {
+/** A message for a log line, from a value that may not be an `Error`. */
+export function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }

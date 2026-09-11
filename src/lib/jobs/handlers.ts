@@ -1,5 +1,14 @@
 import { and, asc, eq, isNotNull, lte } from 'drizzle-orm'
 import { env } from '@/env'
+import {
+  MAX_AGGREGATE_DAYS_PER_RUN,
+  aggregateDays,
+  aggregatePending,
+  pruneRawEvents,
+  type AggregateDaysResult,
+} from '@/lib/analytics'
+import { isDay } from '@/lib/analytics/day'
+import { findUnusedAssets } from '@/lib/assets/manage'
 import { db } from '@/lib/db'
 import { contentIndex, type ScheduledJobRow } from '@/lib/db/schema'
 import { parseFrontmatter } from '@/lib/content/frontmatter'
@@ -21,13 +30,11 @@ import { enqueue } from './queue'
  * column cannot name work the worker is unable to run. Adding a kind means
  * adding it here, where the record below stops compiling until it has a handler.
  *
- * Not marked `server-only`: the worker runs under `tsx` outside Next.js, and
- * `server-only` is not a dependency of this project.
- *
- * Deliberately absent: `analytics.aggregate`, `analytics.prune` and
- * `assets.cleanup`. Their modules (`src/lib/analytics`, `src/lib/assets`) do not
- * exist yet. A handler that reports an aggregation it did not perform is worse
- * than a job kind that cannot be enqueued, so they arrive with their modules.
+ * Not marked `server-only`: the worker runs under `tsx` outside Next.js. The
+ * entry points that run it outside Next pass `--conditions=react-server`, which
+ * is what makes the server modules it imports — `@/lib/analytics` among them —
+ * resolve rather than throw. `pnpm worker` sets it; so does the embedded worker,
+ * by being inside the server process at all.
  */
 
 export const JOB_KINDS = [
@@ -35,6 +42,9 @@ export const JOB_KINDS = [
   'content.drift-check',
   'content.publish-scheduled',
   'search.reindex',
+  'analytics.aggregate',
+  'analytics.prune',
+  'assets.orphan-scan',
 ] as const
 
 export type JobKind = (typeof JOB_KINDS)[number]
@@ -115,6 +125,9 @@ export const jobHandlers: Record<JobKind, JobHandler> = Object.freeze({
   'content.drift-check': runDriftCheck,
   'content.publish-scheduled': runPublishScheduled,
   'search.reindex': runSearchReindex,
+  'analytics.aggregate': runAnalyticsAggregate,
+  'analytics.prune': runAnalyticsPrune,
+  'assets.orphan-scan': runAssetOrphanScan,
 })
 
 /** The handler for a kind, or null when nothing can run it. */
@@ -429,5 +442,222 @@ async function runSearchReindex({ log }: JobContext): Promise<JobResult> {
         `No push implementation for search provider "${String(unreachable)}"`,
       )
     }
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/*  analytics.aggregate                                                        */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Roll raw page views into the daily table the dashboard reads.
+ *
+ * The work is `@/lib/analytics`'s; this handler decides *which* days and records
+ * what happened, in that order of importance. There is nothing to pass in for
+ * the usual case — the module derives the days that are behind from the tables
+ * themselves, which is the only version of "what still needs doing" that cannot
+ * go stale — and a payload naming days is honoured for the one caller that has
+ * a list rather than a query: the retention pass below, which is holding days
+ * older than the window that query looks back over.
+ *
+ * A job that reports an aggregation it did not perform would be worse than no
+ * job at all, so the result carries the days that were actually rebuilt, the
+ * days that had nothing to rebuild, and the days that had to wait.
+ */
+async function runAnalyticsAggregate({ job, log }: JobContext): Promise<JobResult> {
+  const named = requestedDays(job.payload)
+
+  /*
+   * Days that did not fit are deferred, whichever way the list was arrived at: a
+   * caller that hands over a hundred days gets the first batch now and the rest
+   * on the next run, and says so, rather than dropping them quietly. The
+   * declared type is the union of both shapes because the two branches differ
+   * only in where `deferred` comes from — the payload, or the sweep's own
+   * backlog.
+   */
+  const pending: AggregateDaysResult & { deferred: string[] } = named
+    ? { ...(await aggregateDays(named.days)), deferred: named.deferred }
+    : await aggregatePending()
+
+  const deferred = pending.deferred
+
+  log.info({
+    event: 'job.analytics-aggregate',
+    requested: named ? named.days.length : null,
+    aggregated: pending.aggregated.length,
+    empty: pending.empty.length,
+    deferred: deferred.length,
+    rows: pending.rows,
+    views: pending.views,
+    visitors: pending.visitors,
+  })
+
+  if (deferred.length > 0) {
+    // Reported at error level because it is the one thing an operator can act
+    // on: a backlog that does not shrink between runs means the cadence is not
+    // keeping up with the traffic, not that this run went wrong.
+    log.error({
+      event: 'job.analytics-aggregate.behind',
+      deferred: deferred.length,
+      oldest: deferred[0],
+    })
+  }
+
+  return {
+    requested: named?.days ?? null,
+    aggregated: pending.aggregated,
+    empty: pending.empty,
+    deferred,
+    rows: pending.rows,
+    views: pending.views,
+    visitors: pending.visitors,
+  }
+}
+
+/**
+ * The days a job payload names, or null when it names none.
+ *
+ * A payload that asks for days and names none this can read is refused rather
+ * than quietly turned into the full sweep: "aggregate these forty days" and
+ * "aggregate whatever looks behind" are different jobs with the same cost, and a
+ * payload bug that silently ran one instead of the other would be invisible
+ * until someone compared the dashboard against the traffic.
+ */
+function requestedDays(payload: Record<string, unknown>): {
+  days: string[]
+  deferred: string[]
+} | null {
+  const raw = payload.days
+  if (raw === undefined) return null
+
+  if (!Array.isArray(raw)) {
+    throw new JobHandlerError(
+      'analytics.aggregate',
+      `Job payload "days" is not an array (got ${typeof raw})`,
+    )
+  }
+
+  const named = [
+    ...new Set(raw.filter((day): day is string => typeof day === 'string' && isDay(day))),
+  ].sort()
+
+  if (named.length === 0) {
+    throw new JobHandlerError(
+      'analytics.aggregate',
+      `Job payload "days" names no day this can read: ${JSON.stringify(raw).slice(0, 200)}`,
+    )
+  }
+
+  return {
+    days: named.slice(0, MAX_AGGREGATE_DAYS_PER_RUN),
+    deferred: named.slice(MAX_AGGREGATE_DAYS_PER_RUN),
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/*  analytics.prune                                                            */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Delete raw page views past their retention window.
+ *
+ * The rule that makes this safe lives in `@/lib/analytics/retention`, and the
+ * interesting half of it is a refusal: a day whose events have not been rolled
+ * up yet is left alone, because the events are the only copy of that day and
+ * deleting them would destroy it. This handler's job is what happens next —
+ * those days are handed to an aggregation job, so that the next prune can
+ * finish what this one had to leave.
+ *
+ * A non-empty withheld list is not this job failing. It is aggregation being
+ * behind, and it is reported as such: at error level, because an operator is the
+ * only one who can do anything about it, but with the job itself recorded as
+ * done, because it was.
+ */
+async function runAnalyticsPrune({ log }: JobContext): Promise<JobResult> {
+  const result = await pruneRawEvents()
+
+  const aggregate =
+    result.withheldDays.length > 0
+      ? await enqueue({
+          type: 'analytics.aggregate',
+          // Collapses repeats while one is pending. The cadence enqueues the
+          // same kind under its own key, which is deliberate: those two jobs ask
+          // for different days, and deduplicating across them would silently
+          // replace one list with the other.
+          dedupeKey: 'retention',
+          payload: { days: result.withheldDays, reason: 'retention-withheld' },
+        })
+      : null
+
+  if (result.withheldDays.length > 0) {
+    log.error({
+      event: 'job.analytics-prune.withheld',
+      days: result.withheldDays.length,
+      oldest: result.withheldDays[0],
+      newest: result.withheldDays[result.withheldDays.length - 1],
+      aggregateJobId: aggregate?.id ?? null,
+    })
+  }
+
+  log.info({
+    event: 'job.analytics-prune',
+    deleted: result.deleted,
+    withheld: result.withheldDays.length,
+  })
+
+  return {
+    deleted: result.deleted,
+    withheld: result.withheldDays.length,
+    oldestWithheld: result.withheldDays[0] ?? null,
+    aggregateJobId: aggregate?.id ?? null,
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/*  assets.orphan-scan                                                         */
+/* -------------------------------------------------------------------------- */
+
+/** Orphans one scan looks for. The job says when it stopped at the cap. */
+const ORPHAN_SCAN_LIMIT = 200
+/** Orphans named in the job's result. The count beside them is the full figure. */
+const MAX_REPORTED_ORPHANS = 20
+
+/**
+ * Find uploads nothing references. **Report them; do not delete them.**
+ *
+ * The obvious version of this job deletes, and it is the wrong one. What counts
+ * as a reference is derived data — image links are extracted into `content_links`
+ * by the content sync — so a tree that has not been synced yet makes every asset
+ * in it look unreferenced, and the failure mode of acting on that is a deleted
+ * file that a published page still points at. `findUnusedAssets` calls what it
+ * returns a proposal, and the admin is where a proposal is accepted: a human,
+ * seeing which documents reference what, with a confirmation in front of them.
+ *
+ * What is left is still worth running on a timer. An upload directory that only
+ * grows is a disk that fills up silently, and a count that appears in the job
+ * list every interval is a standing answer to "is anything rotting in here?"
+ * that nobody has to remember to ask for.
+ */
+async function runAssetOrphanScan({ log }: JobContext): Promise<JobResult> {
+  const orphans = await findUnusedAssets({ limit: ORPHAN_SCAN_LIMIT })
+  const bytes = orphans.reduce((total, asset) => total + asset.size, 0)
+  const truncated = orphans.length >= ORPHAN_SCAN_LIMIT
+
+  log.info({
+    event: 'job.assets-orphan-scan',
+    found: orphans.length,
+    bytes,
+    truncated,
+  })
+
+  return {
+    found: orphans.length,
+    bytes,
+    truncated,
+    sample: orphans.slice(0, MAX_REPORTED_ORPHANS).map((asset) => ({
+      id: asset.id,
+      path: asset.path,
+      bytes: asset.size,
+    })),
   }
 }
