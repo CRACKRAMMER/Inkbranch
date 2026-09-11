@@ -1,6 +1,5 @@
-import fs from 'node:fs'
-import path from 'node:path'
 import process from 'node:process'
+import { loadEnvFiles } from './lib/load-env'
 import type { JobLogger, JobLogEvent } from '@/lib/jobs'
 
 /**
@@ -89,24 +88,4 @@ try {
     name: error instanceof Error ? error.name : 'Error',
   })
   process.exitCode = 1
-}
-
-/**
- * Load `.env.local` then `.env`, in the order Next.js prefers them.
- *
- * `process.loadEnvFile` never overwrites a variable that is already set, so
- * loading the higher-precedence file first is what gives it precedence — and a
- * real environment variable, from the shell or the container, wins over both.
- */
-function loadEnvFiles(): string[] {
-  const loaded: string[] = []
-
-  for (const file of ['.env.local', '.env']) {
-    const full = path.join(process.cwd(), file)
-    if (!fs.existsSync(full)) continue
-    process.loadEnvFile(full)
-    loaded.push(file)
-  }
-
-  return loaded
 }

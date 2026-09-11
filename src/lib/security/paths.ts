@@ -19,6 +19,45 @@ export class PathSecurityError extends Error {
 }
 
 /**
+ * Join path segments under a directory that only exists at run time.
+ *
+ * ## Why this is a function and not a `path.join` at each call site
+ *
+ * The content tree and the upload tree are named by environment variables, so
+ * neither `path.resolve(process.cwd(), env.CONTENT_DIR)` nor anything joined
+ * onto the result can be resolved by the bundler's file tracer. Faced with a
+ * path it cannot resolve, the tracer does the safe thing and assumes the whole
+ * project is reachable — which put `src/`, `tests/`, the Dockerfile and the
+ * author's `content/` into `.next/standalone`, and therefore into the runtime
+ * image: a 79 MB image that ships the test suite and a copy of the blog it
+ * serves.
+ *
+ * `turbopackIgnore` tells the tracer to stop here. It has no effect on the path
+ * that is actually built, and no effect on containment — `assertInside` remains
+ * the thing that decides whether a path may be used.
+ *
+ * It lives in a function so the suppression is stated once. The first attempt
+ * put the comment on the two root definitions, which fixed those two warnings
+ * and left every join *onto* those roots still opaque and still traced.
+ *
+ * ## Why `resolve` and not `join`
+ *
+ * These roots are *configurable*, and an absolute `CONTENT_DIR` is the normal
+ * case in tests and a supported one in production. `path.join('/srv/app',
+ * '/tmp/content')` is `/srv/app/tmp/content`; `path.resolve` gives
+ * `/tmp/content`. `join` would silently reinterpret every absolute root as
+ * relative to the working directory — and the symptom is not a crash but a
+ * second tree, quietly created next to the code, with the test suite's
+ * containment guards firing against it instead of against the real one.
+ *
+ * The calls that join a *relative* segment onto an already-absolute root agree
+ * under both functions, which is why one implementation covers every call site.
+ */
+export function joinRuntimePath(root: string, ...segments: string[]): string {
+  return path.resolve(/* turbopackIgnore: true */ root, ...segments)
+}
+
+/**
  * True when `target` resolves to `root` itself or something beneath it.
  * Both paths are resolved first, so `..`, symlink-free relative segments and
  * mixed separators are all normalised away before the comparison.

@@ -8,6 +8,7 @@ import { env } from '@/env'
 import {
   checkArchiveBudget,
   checkArchiveEntry,
+  joinRuntimePath,
   type ArchiveLimits,
 } from '@/lib/security/paths'
 import { slugFromFilename, uniqueSlug } from '@/lib/utils/slug'
@@ -220,6 +221,14 @@ export interface ImportInspectOptions {
 export interface ImportScanOptions extends ImportInspectOptions {
   /** Describes the source in the report. */
   source?: string
+  /**
+   * Replace an existing document instead of reporting it as skipped.
+   *
+   * Part of the shared options rather than of one scanner's signature: it was
+   * once on two of the three, which is how `--scan-dir --overwrite` came to
+   * accept the flag and silently skip every conflict anyway.
+   */
+  overwrite?: boolean
 }
 
 /** Fixes the importer can apply, offered in the report before anything is written. */
@@ -373,6 +382,38 @@ export const PROBLEM_LABELS: Record<ImportProblemCode, string> = {
   'broken-image': 'broken images',
 }
 
+/**
+ * The same names for a count of one, so a single problem does not read as
+ * "1 absolute paths". A separate table rather than a rule that trims an "s",
+ * because the labels are phrases: "files that are not Markdown" has no singular
+ * that trimming would find.
+ */
+const PROBLEM_LABELS_ONE: Record<ImportProblemCode, string> = {
+  'missing-title': 'missing title',
+  'missing-date': 'missing date',
+  'invalid-date': 'unreadable date',
+  'missing-description': 'missing description',
+  'invalid-frontmatter': 'unparsable frontmatter',
+  'invalid-schema': 'invalid frontmatter',
+  'unknown-frontmatter-key': 'unknown frontmatter key',
+  'invalid-slug': 'unusable slug',
+  'unsupported-extension': 'file that is not Markdown',
+  'invalid-encoding': 'file that is not UTF-8',
+  'empty-file': 'empty file',
+  'oversized-file': 'oversized file',
+  'batch-too-large': 'batch size',
+  'too-many-files': 'file count',
+  'path-traversal': 'path that escapes the destination',
+  'absolute-path': 'absolute path',
+  'unsupported-entry': 'unsupported archive entry',
+  'unsupported-compression': 'unsupported compression',
+  unreadable: 'unreadable file',
+  'duplicate-slug': 'duplicate slug',
+  'slug-conflict': 'slug that is already in use',
+  'broken-link': 'broken internal link',
+  'broken-image': 'broken image',
+}
+
 const SEVERITY_RANK: Record<ImportSeverity, number> = {
   error: 0,
   warning: 1,
@@ -449,7 +490,10 @@ function pathProblem(sourcePath: string): ImportProblem | null {
     return {
       code,
       severity: 'error',
-      message,
+      // The screen's own reason is carried along: it is the archive-specific
+      // half of the answer ("parent traversal"), and this problem is the only
+      // one the caller will see for this entry.
+      message: `${message} (${check.reason})`,
       suggestion:
         'Import only files that sit inside the archive, by a relative path with no “..”. ' +
         'Nothing was read and nothing was written for this entry.',
@@ -612,7 +656,6 @@ function inspectFrontmatter(
   })).filter((entry) => entry.value !== undefined && entry.value !== null)
 
   const result = frontmatterSchemaFor(type).safeParse(known)
-  const titleWillBeFixed = Boolean(options.applyTitleFix)
   const declaredTitle = typeof known.title === 'string' ? known.title.trim() : ''
 
   if (!result.success) {
@@ -1443,6 +1486,7 @@ export async function scanImportDirectory(
     // stray `.DS_Store`. Noting them is useful; calling each one an error would
     // bury the files that are actually broken.
     options: { ...options, nonMarkdownSeverity: options.nonMarkdownSeverity ?? 'info' },
+    overwrite: options.overwrite ?? false,
     truncated,
   })
 }
@@ -1457,7 +1501,7 @@ export async function scanImportDirectory(
  */
 export function scanImportArchive(
   buffer: Buffer,
-  options: ImportScanOptions & { overwrite?: boolean },
+  options: ImportScanOptions,
 ): ImportPlan {
   const source = options.source ?? 'archive'
 
@@ -1505,9 +1549,11 @@ export function scanImportArchive(
     if (meta.name.endsWith('/')) {
       const check = checkArchiveEntry(meta.name)
       if (!check.ok) {
+        const { code, message } = classifyPath(meta.name)
         problems.push({
-          ...classifyPath(meta.name),
+          code,
           severity: 'error',
+          message: `${message} (${check.reason})`,
           path: meta.name,
           suggestion: 'Remove the entry from the archive; nothing was read.',
         })
@@ -1527,21 +1573,10 @@ export function scanImportArchive(
 
     const check = checkArchiveEntry(meta.name)
     if (!check.ok) {
-      const { code, message } = classifyPath(meta.name)
-      entries.push({
-        sourcePath: meta.name,
-        bytes: null,
-        problems: [
-          {
-            code,
-            severity: 'error',
-            message: `${message} (${check.reason})`,
-            suggestion:
-              'Archives may only contain relative paths that stay inside themselves. ' +
-              'Nothing was read and nothing was written for this entry.',
-          },
-        ],
-      })
+      // Reported by `pathProblem` when the entry reaches the inspector, which
+      // is where every other path problem is raised. Pushing one here as well
+      // gave the same entry two errors and two different suggestions.
+      entries.push({ sourcePath: meta.name, bytes: null })
       continue
     }
 
@@ -1653,7 +1688,7 @@ export interface UploadedFile {
  */
 export function scanImportFiles(
   files: readonly UploadedFile[],
-  options: ImportScanOptions & { overwrite?: boolean },
+  options: ImportScanOptions,
 ): ImportPlan {
   const entries: ImportEntryInput[] = files.map((file) => ({
     sourcePath: file.name,
@@ -1724,7 +1759,9 @@ export async function collectExistingContent(): Promise<ExistingContent> {
 /** Upload keys (`2026/09/diagram.webp`) relative to the upload root. */
 export async function collectUploadKeys(): Promise<Set<string>> {
   const keys = new Set<string>()
-  const root = path.resolve(process.cwd(), env.UPLOAD_DIR)
+  // Through `joinRuntimePath` so the file tracer does not treat this unresolved
+  // root as a reason to bundle the whole project. See that function.
+  const root = joinRuntimePath(process.cwd(), env.UPLOAD_DIR)
 
   const walk = async (dir: string, depth: number): Promise<void> => {
     if (depth > IMPORT_LIMITS.maxPathDepth) return
@@ -1925,7 +1962,7 @@ export function importReportLines(plan: ImportPlan): string[] {
   codes.sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
 
   for (const [code, count] of codes) {
-    const label = PROBLEM_LABELS[code] ?? code
+    const label = count === 1 ? PROBLEM_LABELS_ONE[code] : (PROBLEM_LABELS[code] ?? code)
     const severity = severityOf.get(code) ?? 'warning'
     const mark = severity === 'error' ? '✗' : severity === 'info' ? '·' : '⚠'
     lines.push(`${mark} ${count} ${label}`)

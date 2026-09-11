@@ -1,6 +1,11 @@
 import path from 'node:path'
 import { env } from '@/env'
-import { PathSecurityError, assertInside, toPosix } from '@/lib/security/paths'
+import {
+  PathSecurityError,
+  assertInside,
+  joinRuntimePath,
+  toPosix,
+} from '@/lib/security/paths'
 import type { ContentType } from './schema'
 
 /**
@@ -11,14 +16,21 @@ import type { ContentType } from './schema'
  * with `path.join` on their own.
  */
 
-/** Root of the Markdown tree, resolved once. */
-export const CONTENT_ROOT = path.resolve(process.cwd(), env.CONTENT_DIR)
+/**
+ * Root of the Markdown tree, resolved once.
+ *
+ * Built through `joinRuntimePath` so the bundler's file tracer does not follow
+ * it — see that function for why an unresolvable root here ships the whole
+ * project in the server output. The path is still resolved normally at run
+ * time, from the environment the server was given.
+ */
+export const CONTENT_ROOT = joinRuntimePath(process.cwd(), env.CONTENT_DIR)
 
 /** Where in-flight writes live until they are atomically renamed into place. */
-export const TMP_DIR = path.join(CONTENT_ROOT, '.tmp')
+export const TMP_DIR = joinRuntimePath(CONTENT_ROOT, '.tmp')
 
 /** Advisory lock files, one per document being written. */
-export const LOCK_DIR = path.join(CONTENT_ROOT, '.locks')
+export const LOCK_DIR = joinRuntimePath(CONTENT_ROOT, '.locks')
 
 export const CONTENT_TYPE_DIRS: Record<ContentType, string> = {
   post: 'posts',
@@ -52,7 +64,7 @@ export function typeDirectory(type: ContentType): string {
 
 /** Absolute path of the directory holding a content type. */
 export function typeDirPath(type: ContentType): string {
-  return assertInside(CONTENT_ROOT, path.join(CONTENT_ROOT, typeDirectory(type)))
+  return assertInside(CONTENT_ROOT, joinRuntimePath(CONTENT_ROOT, typeDirectory(type)))
 }
 
 /**
@@ -84,19 +96,29 @@ export function documentPath(relativePath: string): string {
   }
   return assertInside(
     CONTENT_ROOT,
-    path.join(CONTENT_ROOT, ...segments),
+    joinRuntimePath(CONTENT_ROOT, ...segments),
     'document',
   )
 }
 
-/** Build the canonical relative path for a new document. */
+/**
+ * Build the canonical relative path for a new document.
+ *
+ * `path.posix.join` rather than `path.join`, and not because of the separators:
+ * this is string building, and the result is a *relative* path stored in the
+ * database and appended to a URL. `path.join` here made the bundler's file
+ * tracer treat the function as a dynamic filesystem access and copy the whole
+ * project into the server output — into the runtime image, along with the test
+ * suite and the author's content. `path.posix.join` says what this is: a path
+ * assembled from known names, with no filesystem behind it.
+ */
 export function buildRelativePath(
   type: ContentType,
   slug: string,
   extension = '.md',
 ): string {
   const filename = slug.endsWith(extension) ? slug : `${slug}${extension}`
-  return toPosix(path.join(typeDirectory(type), filename))
+  return path.posix.join(typeDirectory(type), filename)
 }
 
 /**
@@ -129,7 +151,7 @@ export function requiredContentDirs(): string[] {
     TMP_DIR,
     LOCK_DIR,
     ...Object.values(CONTENT_TYPE_DIRS).map((dir) =>
-      path.join(CONTENT_ROOT, dir),
+      joinRuntimePath(CONTENT_ROOT, dir),
     ),
   ]
 }
@@ -137,7 +159,7 @@ export function requiredContentDirs(): string[] {
 /** Path of a document's lock file. Slug is hashed to stay within name limits. */
 export function lockPath(relativePath: string): string {
   const safe = relativePath.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 100)
-  return assertInside(LOCK_DIR, path.join(LOCK_DIR, `${safe}.lock`), 'lock file')
+  return assertInside(LOCK_DIR, joinRuntimePath(LOCK_DIR, `${safe}.lock`), 'lock file')
 }
 
 /** Path for a temporary write target. */
@@ -148,7 +170,7 @@ export function tempPath(relativePath: string): string {
     .slice(2, 8)}`
   return assertInside(
     TMP_DIR,
-    path.join(TMP_DIR, `${safe}.${unique}.tmp`),
+    joinRuntimePath(TMP_DIR, `${safe}.${unique}.tmp`),
     'temporary file',
   )
 }

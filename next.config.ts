@@ -60,6 +60,34 @@ const nextConfig: NextConfig = {
     // Content files are read from disk at request time; keep the server bundle
     // from trying to trace the whole content tree into the build output.
     serverSourceMaps: false,
+
+    /*
+     * The ceiling on a server action's request body, raised from the 1 MB default.
+     *
+     * Both of the application's own limits are above that default — an asset
+     * upload is capped at `MAX_UPLOAD_SIZE` (20 MB) and an import archive at
+     * `IMPORT_LIMITS.maxArchiveBytes` (32 MB) — so without this the framework
+     * refused first and the operator saw a body-limit error from Next instead of
+     * the message the code had already written for them. A limit nobody chose,
+     * enforced somewhere the error does not explain.
+     *
+     * 40 MB is the larger of the two plus room for multipart framing, which is
+     * charged against this limit too (boundaries, part headers, field metadata —
+     * the framework's own guidance is 10–20 KB for a typical upload). It is a
+     * constant and the other two are configurable, so raising `MAX_UPLOAD_SIZE`
+     * above roughly 40 MB needs this raised with it; the comment is here so that
+     * the dependency is findable from either end.
+     *
+     * Not unbounded, deliberately: the body is buffered in memory before the
+     * action runs, so this number is also the amount of memory one request can
+     * commit the server to.
+     *
+     * `experimental`, not top level. The option is documented only there, and
+     * `NextConfig` rejects it anywhere else — which is how this was caught.
+     */
+    serverActions: {
+      bodySizeLimit: '40mb',
+    },
   },
 
   // `sharp` is used by the image optimiser and by our own asset pipeline.

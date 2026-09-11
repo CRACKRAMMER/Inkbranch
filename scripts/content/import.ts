@@ -119,7 +119,9 @@ void run('content:import', async () => {
   heading('Scanning')
 
   // One set of options for every source, so the three cannot disagree about what
-  // a conflict is or which links resolve.
+  // a conflict is or which links resolve. `overwrite` is in here rather than at
+  // the three call sites because forgetting it at one of them is exactly how
+  // `--scan-dir --overwrite` came to accept the flag and skip anyway.
   const existing = await collectExistingContent()
   const images = await collectUploadKeys()
   const options = {
@@ -131,6 +133,7 @@ void run('content:import', async () => {
     knownTargets: existing.targets,
     knownImages: images,
     applyTitleFix: titleFix,
+    overwrite,
   }
 
   const plan = await (async () => {
@@ -141,11 +144,7 @@ void run('content:import', async () => {
         )
       })
       info(`${path.basename(zipPath)} (${formatBytes(buffer.length)})`)
-      return scanImportArchive(buffer, {
-        ...options,
-        source: path.resolve(zipPath),
-        overwrite,
-      })
+      return scanImportArchive(buffer, { ...options, source: path.resolve(zipPath) })
     }
 
     if (scanDir !== undefined) {
@@ -156,13 +155,20 @@ void run('content:import', async () => {
     const files = []
     for (const value of fromPaths) {
       const absolute = path.resolve(value)
+      // Stat before reading. The other order made the sentence below unreachable:
+      // `readFile` throws EISDIR on a directory first, so `--from ~/blog` — the
+      // mistake this message exists for — answered with a bare errno.
+      const stat = await fs.stat(absolute).catch((error: unknown) => {
+        throw new Error(
+          `Cannot read ${value}: ${error instanceof Error ? error.message : String(error)}`,
+        )
+      })
+      if (!stat.isFile()) throw new Error(`${value} is not a file. Use --scan-dir for a directory.`)
       const data = await fs.readFile(absolute).catch((error: unknown) => {
         throw new Error(
           `Cannot read ${value}: ${error instanceof Error ? error.message : String(error)}`,
         )
       })
-      const stat = await fs.stat(absolute)
-      if (!stat.isFile()) throw new Error(`${value} is not a file. Use --scan-dir for a directory.`)
       if (data.length > IMPORT_LIMITS.maxFileBytes) {
         // Refused here as well as in the engine so the message names the flag.
         throw new Error(
@@ -172,11 +178,7 @@ void run('content:import', async () => {
       files.push({ name: path.basename(absolute), data })
     }
     info(`${files.length} file${files.length === 1 ? '' : 's'}`)
-    return scanImportFiles(files, {
-      ...options,
-      source: fromPaths.join(', '),
-      overwrite,
-    })
+    return scanImportFiles(files, { ...options, source: fromPaths.join(', ') })
   })()
 
   heading('Report')

@@ -8,6 +8,7 @@ import { db } from '@/lib/db'
 import { siteSettings } from '@/lib/db/schema'
 import {
   SETTINGS_DEFAULTS,
+  SETTINGS_KEYS,
   isSettingsKey,
   settingsPatchSchema,
   settingsSchema,
@@ -25,7 +26,13 @@ import {
  * a component renders it.
  */
 
-export { SETTINGS_DEFAULTS, isSettingsKey, settingsPatchSchema, settingsSchema }
+export {
+  SETTINGS_DEFAULTS,
+  SETTINGS_KEYS,
+  isSettingsKey,
+  settingsPatchSchema,
+  settingsSchema,
+}
 export type { Settings, SettingsKey, SettingsPatch }
 
 /**

@@ -326,15 +326,26 @@ describe('frontmatter problems', () => {
     ).toBe('warning')
   })
 
-  it('reports a missing title once, not once per schema issue', () => {
-    // The schema refuses the file *and* has an opinion about the missing title.
-    // Both used to be reported, so the count said "2 missing titles" about one
-    // file and offered two different things to do about it.
-    const [candidate] = inspect([
-      entry('untitled.md', '---\ndate: 2026-01-01\n---\n\nbody\n'),
-    ]) as [ImportCandidate]
+  it('says one thing about a missing title, not two', () => {
+    // The schema refuses the file for the absent title, and the block that
+    // handles missing titles has its own message and a fix to offer. Reporting
+    // both put an unfixable `invalid-schema` error next to the fixable warning,
+    // and an error outranks a warning — so the file was refused even when the
+    // operator had asked for the derived title.
+    const source = '---\ndate: 2026-01-01\n---\n\n# Derived Heading\n\nbody\n'
 
-    expect(candidate.problems.filter((p) => p.code === 'missing-title')).toHaveLength(1)
+    const [refused] = inspect([entry('untitled.md', source)]) as [ImportCandidate]
+    expect(refused.action).toBe('reject')
+    expect(refused.problems.filter((p) => p.code === 'missing-title')).toHaveLength(1)
+    expect(codes(refused)).not.toContain('invalid-schema')
+
+    const [fixed] = inspect([entry('untitled.md', source)], {
+      type: 'post',
+      applyTitleFix: true,
+    }) as [ImportCandidate]
+    expect(fixed.action).toBe('create')
+    expect(fixed.problems.filter((p) => p.code === 'missing-title')).toHaveLength(1)
+    expect(codes(fixed)).not.toContain('invalid-schema')
   })
 
   it('titles a note from its content instead of refusing it', () => {
@@ -525,6 +536,11 @@ describe('archives', () => {
 
     expect(evil.action).toBe('reject')
     expect(codes(evil)).toContain('path-traversal')
+    // Named once. The archive reader screens entry names too, and both screens
+    // used to file their own error, so one entry produced two of them — and the
+    // batch summary counted a single hostile name twice.
+    expect(evil.problems.filter((p) => p.code === 'path-traversal')).toHaveLength(1)
+    expect(evil.problems[0]?.message).toContain('parent traversal')
     expect(plan.counts.create).toBe(1)
   })
 
@@ -695,6 +711,36 @@ describe('scanImportDirectory', () => {
         type: 'post',
       }),
     ).rejects.toThrowError(ImportScanError)
+  })
+
+  it('honours overwrite for a scanned directory, the same as for an upload', async () => {
+    // The flag once reached the archive and upload readers but not this one, so
+    // `--scan-dir --apply --overwrite` accepted the flag and skipped every
+    // conflict anyway. Nothing failed; the run just did not do what it said.
+    // A title of its own, so applying this plan cannot collide with another
+    // test's document.
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'myblog-import-overwrite-'))
+    await fs.writeFile(path.join(root, 'mine.md'), datedPost(unique('Rewritten')))
+
+    try {
+      const first = await scanImportDirectory(root, { type: 'post' })
+      const candidate = first.entries[0] as ImportCandidate
+      expect(candidate.action).toBe('create')
+      track(candidate.targetPath)
+      await applyImport(first)
+
+      const existing = new Set([candidate.targetPath.replace(/\.md$/, '')])
+
+      const skipped = await scanImportDirectory(root, { type: 'post', existing })
+      expect((skipped.entries[0] as ImportCandidate).action).toBe('skip')
+      expect(skipped.counts.overwrite).toBe(0)
+
+      const replaced = await scanImportDirectory(root, { type: 'post', existing, overwrite: true })
+      expect((replaced.entries[0] as ImportCandidate).action).toBe('overwrite')
+      expect(replaced.counts.skip).toBe(0)
+    } finally {
+      await fs.rm(root, { recursive: true, force: true })
+    }
   })
 })
 
@@ -892,8 +938,9 @@ describe('importReportLines', () => {
     const lines = importReportLines(plan).join('\n')
     expect(lines).toMatch(/^4 files scanned/m)
     expect(lines).toMatch(/✓ 4 to import/)
-    expect(lines).toMatch(/⚠ \d+ missing dates/)
-    expect(lines).toMatch(/⚠ 1 duplicate slugs/)
+    expect(lines).toMatch(/⚠ \d+ missing dates?/)
+    // One, so the label is singular; the count is what the spec's shape needs.
+    expect(lines).toMatch(/⚠ 1 duplicate slug\n/)
     expect(lines).toMatch(/words, about/)
   })
 
@@ -905,7 +952,7 @@ describe('importReportLines', () => {
     const lines = importReportLines(plan).join('\n')
 
     expect(lines).toMatch(/✗ 1 unparsable frontmatter/)
-    expect(lines).toMatch(/⚠ \d+ missing dates/)
+    expect(lines).toMatch(/⚠ \d+ missing dates?/)
   })
 
   it('leads with the reason a file cannot be imported', () => {

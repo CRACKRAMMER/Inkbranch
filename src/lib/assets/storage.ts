@@ -12,7 +12,11 @@ import { normalizeImageKey } from '@/lib/content/links'
 import { db } from '@/lib/db'
 import { assets, type AssetRow } from '@/lib/db/schema'
 import { sniffMime } from '@/lib/security/mime'
-import { resolveRelative, sanitizeFilename } from '@/lib/security/paths'
+import {
+  joinRuntimePath,
+  resolveRelative,
+  sanitizeFilename,
+} from '@/lib/security/paths'
 
 import {
   formatBytes,
@@ -87,8 +91,14 @@ export class AssetTooLargeError extends AssetStoreError {
 /*  Paths                                                                      */
 /* -------------------------------------------------------------------------- */
 
-/** Root of the upload tree, resolved once. */
-export const UPLOAD_ROOT = path.resolve(process.cwd(), env.UPLOAD_DIR)
+/**
+ * Root of the upload tree, resolved once.
+ *
+ * Built through `joinRuntimePath` for the same reason as `CONTENT_ROOT`: a root
+ * the bundler cannot resolve makes the file tracer assume the entire project is
+ * reachable, and uploads are a mounted volume rather than part of the build.
+ */
+export const UPLOAD_ROOT = joinRuntimePath(process.cwd(), env.UPLOAD_DIR)
 
 /**
  * Where in-flight writes live until they are renamed into place.
@@ -98,7 +108,7 @@ export const UPLOAD_ROOT = path.resolve(process.cwd(), env.UPLOAD_DIR)
  * names are random and short-lived, and nothing lists this directory to serve
  * it — the database is the manifest.
  */
-export const UPLOAD_TMP_DIR = path.join(UPLOAD_ROOT, '.tmp')
+export const UPLOAD_TMP_DIR = joinRuntimePath(UPLOAD_ROOT, '.tmp')
 
 /** Public URL prefix without its trailing slash. */
 const URL_PREFIX = env.UPLOAD_URL_PREFIX.replace(/\/+$/, '')
