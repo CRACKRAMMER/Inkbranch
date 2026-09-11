@@ -189,7 +189,13 @@ export function describeActionError(error: unknown): ActionFailure {
   if (isNextRedirect(error)) throw error
 
   // Genuinely unexpected. The action still returns a usable failure rather than
-  // an opaque digest, and the name is enough to find the throw in the logs.
+  // an opaque digest, and the throw is written to the server log in full — the
+  // browser is told the error's name and nothing more, because a stack can
+  // carry a filesystem path.
+  console.error(
+    '[admin] unexpected action error:',
+    error instanceof Error ? (error.stack ?? error.message) : error,
+  )
   return actionFailure('The server hit an unexpected error. Nothing was changed.', {
     detail: error instanceof Error ? error.name : undefined,
     retryable: true,

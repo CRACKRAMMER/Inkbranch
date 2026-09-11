@@ -175,6 +175,34 @@ describe('writeDocument', () => {
     expect(leftovers).toEqual([])
   })
 
+  it('writes after the working directories are cleared underneath it', async () => {
+    // A content root can be emptied while a server is running: an operator
+    // clearing it, a deploy mounting an empty volume, a harness rebuilding it
+    // between runs. The directories a write needs are created by that write,
+    // not remembered as created once per process — otherwise the first save
+    // after the clear fails with ENOENT on a temp file whose directory is gone,
+    // and the admin is told the server hit an unexpected error.
+    const slug = uniqueSlug()
+    const created = await createDocument({
+      type: 'post',
+      slug,
+      data: { title: 'Survivor' },
+      body: 'First version.\n',
+    })
+    documents.push(created.absolutePath)
+
+    await fs.rm(TMP_DIR, { recursive: true, force: true })
+
+    const rewritten = await writeDocument({
+      relativePath: created.relativePath,
+      data: { title: 'Survivor' },
+      body: 'Second version.\n',
+    })
+
+    expect(rewritten.previousContent).toContain('First version.')
+    expect(await fs.readFile(created.absolutePath, 'utf8')).toContain('Second version.')
+  })
+
   it('does not damage the file when the new content cannot be serialised', async () => {
     const slug = uniqueSlug()
     const created = await createDocument({

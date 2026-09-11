@@ -609,6 +609,12 @@ export async function deleteContentAction(
     if (!parsed.ok) return parsed
 
     const row = await contentRowByPath(parsed.value.path)
+    // The file goes first and the index row second, deliberately. The index is
+    // derived from the files, so it may lag them for the length of one action —
+    // a reader can see the document in a feed a moment after its file is gone —
+    // but it must never run ahead of them: a failed unlink with the row already
+    // deleted would leave a document the site cannot see and the next sync
+    // would put straight back.
     const removed = await deleteDocument(parsed.value.path)
     if (!removed) {
       return actionFailure('That file is no longer on disk.')

@@ -216,7 +216,17 @@ function isProcessAlive(pid: number): boolean {
 
 async function atomicWrite(absolutePath: string, content: string): Promise<void> {
   const tmp = tempPath(toPosix(path.relative(CONTENT_ROOT, absolutePath)))
+
+  // Both directories this write depends on are created here rather than assumed.
+  // `ensureContentDirectories` remembers its work for the life of the process,
+  // which is right for a boot step and wrong for a dependency: if the content
+  // root is cleared under a running server — an operator emptying it, a deploy
+  // mounting an empty volume, a test harness rebuilding it between runs — a
+  // memoised "ready" would leave every later save failing on a temp file whose
+  // directory no longer exists. `mkdir` on an existing directory costs one
+  // syscall and says what this function actually requires.
   await fs.mkdir(path.dirname(absolutePath), { recursive: true })
+  await fs.mkdir(TMP_DIR, { recursive: true })
 
   let handle: Awaited<ReturnType<typeof fs.open>> | undefined
   try {
