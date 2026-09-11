@@ -26,6 +26,8 @@ import {
   selectGraphNodes,
   sortTagsByRarity,
   tagAffinity,
+  tagLayerOf,
+  tagNodeId,
   tagWeight,
   termOverlap,
   type EdgePair,
@@ -486,6 +488,125 @@ describe('edge indexing', () => {
   })
 })
 
+/* -------------------------------------------------------------------------- */
+/*  The tag layer                                                              */
+/* -------------------------------------------------------------------------- */
+
+describe('tag layer', () => {
+  /** Names as the tag table holds them: a display name, not the slug. */
+  const NAMES: Record<string, string> = { alpha: 'Alpha', beta: 'Beta' }
+  const nameOf = (slug: string) => NAMES[slug] ?? ''
+
+  /** Three documents, all carrying `alpha`, one of them also `beta`. */
+  const CORPUS = [
+    node({ id: 'a', tags: ['alpha', 'beta'] }),
+    node({ id: 'b', tags: ['alpha'] }),
+    node({ id: 'c', tags: ['alpha'] }),
+  ]
+
+  function layer(
+    documents: readonly RelationNode[],
+    options: { minDegree?: number; limit?: number } = {},
+  ) {
+    return tagLayerOf(documents, {
+      nameOf,
+      minDegree: options.minDegree ?? 0,
+      limit: options.limit ?? 10,
+    })
+  }
+
+  it('sizes a tag by how many of the documents carry it, biggest first', () => {
+    const result = layer(CORPUS)
+
+    expect(result.nodes.map((entry) => [entry.slug, entry.degree])).toEqual([
+      ['alpha', 3],
+      ['beta', 1],
+    ])
+    expect(result.total).toBe(2)
+    expect(result.nodes.every((entry) => entry.type === 'tag')).toBe(true)
+  })
+
+  it('leaves out a tag below the minimum it was given', () => {
+    const result = layer(CORPUS, { minDegree: 2 })
+
+    expect(result.nodes.map((entry) => entry.slug)).toEqual(['alpha'])
+    // The total is what the cap left, not what the threshold did: a tag dropped
+    // for being on one document is not a tag the caller is failing to show.
+    expect(result.total).toBe(1)
+  })
+
+  it('caps the list, and says how many there were', () => {
+    const result = layer(CORPUS, { limit: 1 })
+
+    expect(result.nodes.map((entry) => entry.slug)).toEqual(['alpha'])
+    // So a caller can say "1 of 2 tags" rather than showing the largest one
+    // under a label that implies it is the only one.
+    expect(result.total).toBe(2)
+  })
+
+  it('draws an edge from every document carrying a tag that was kept', () => {
+    const result = layer(CORPUS)
+
+    expect(result.edges).toEqual([
+      { source: 'a', target: tagNodeId('alpha') },
+      { source: 'a', target: tagNodeId('beta') },
+      { source: 'b', target: tagNodeId('alpha') },
+      { source: 'c', target: tagNodeId('alpha') },
+    ])
+  })
+
+  it('drops the edges to a tag the cap removed', () => {
+    // An edge to a node that is not in the payload is an index into the wrong
+    // node once the client walks the array.
+    const result = layer(CORPUS, { limit: 1 })
+
+    expect(result.edges.map((edge) => edge.target)).not.toContain(tagNodeId('beta'))
+    expect(result.edges).toEqual([
+      { source: 'a', target: tagNodeId('alpha') },
+      { source: 'b', target: tagNodeId('alpha') },
+      { source: 'c', target: tagNodeId('alpha') },
+    ])
+  })
+
+  it('does not draw one document to one tag twice', () => {
+    // `content_tags` is unique on (content, tag), so this arrives from a caller
+    // that built its own nodes. Two identical edges are invisible in the payload
+    // and visible in the drawing as a doubled spring.
+    const result = layer([node({ id: 'a', tags: ['alpha', 'alpha'] })])
+
+    expect(result.edges).toHaveLength(1)
+    expect(result.nodes[0]?.degree).toBe(1)
+  })
+
+  it('gives a tag node an id that cannot belong to a document', () => {
+    const [first] = layer(CORPUS).nodes
+    expect(first?.id).toBe('tag:alpha')
+    expect(CORPUS.map((entry) => entry.id)).not.toContain(first?.id)
+  })
+
+  it('labels a tag with its name, and links to its page', () => {
+    const [first] = layer(CORPUS).nodes
+
+    expect(first?.title).toBe('Alpha')
+    expect(first?.url).toBe('/tags/alpha')
+    // The slug travels beside the name, because it is what the URL and the
+    // client's own filters are keyed by.
+    expect(first?.slug).toBe('alpha')
+    expect(first?.tags).toEqual(['alpha'])
+  })
+
+  it('falls back to the slug for a tag with no name, and encodes the URL', () => {
+    const [first] = layer([node({ id: 'a', tags: ['release notes'] })]).nodes
+
+    expect(first?.title).toBe('release notes')
+    expect(first?.url).toBe('/tags/release%20notes')
+  })
+
+  it('is empty for an empty selection rather than throwing', () => {
+    expect(layer([])).toEqual({ nodes: [], edges: [], total: 0 })
+  })
+})
+
 describe('orphans', () => {
   it('finds documents with no links in or out', () => {
     const orphans = findOrphans(CHAIN, CHAIN_ADJACENCY)
@@ -797,6 +918,130 @@ describe.skipIf(!hasTestDatabase)('graph against a database', () => {
 
     const everything = await getKnowledgeGraph({ limit: 5_000, types: ['post'], minDegree: 0 })
     expect(everything.nodes.find((entry) => entry.id === post)?.degree).toBe(0)
+  })
+
+  it('draws a tag node for the tags its documents carry', async () => {
+    const one = await insertDoc({ slug: `${RUN}-tag-one`, tags: ['Scope'] })
+    const two = await insertDoc({ slug: `${RUN}-tag-two`, tags: ['Scope'] })
+    await insertLink({ sourceId: one, targetId: two, href: '/posts/tag-two' })
+
+    invalidateRelatedIndex()
+    const graph = await getKnowledgeGraph({ limit: 5_000, minDegree: 1 })
+
+    const index = graph.nodes.findIndex(
+      (entry) => entry.type === 'tag' && entry.slug === `${RUN}-Scope`,
+    )
+    expect(index).toBeGreaterThanOrEqual(0)
+
+    const tag = graph.nodes[index]
+    // The name, not the slug the node is keyed by: the graph is a reading
+    // surface, and the tag page it links to is headed with the name.
+    expect(tag?.title).toBe('Scope')
+    expect(tag?.url).toBe(`/tags/${encodeURIComponent(`${RUN}-Scope`)}`)
+    expect(tag?.degree).toBe(2)
+
+    // Two documents, two lines, and both lines reach one of them. The count on a
+    // node is the figure a reader can check by counting.
+    const touching = graph.edges.filter(
+      (edge) => edge.source === index || edge.target === index,
+    )
+    expect(touching).toHaveLength(2)
+    expect(
+      touching
+        .map((edge) => graph.nodes[edge.source === index ? edge.target : edge.source]?.id)
+        .sort(),
+    ).toEqual([one, two].sort())
+
+    // The reported total is the tags these documents carry, no more and no
+    // fewer: it is what a client reads to say how many tags it is not showing.
+    const carried = new Set(
+      graph.nodes.filter((entry) => entry.type !== 'tag').flatMap((entry) => entry.tags),
+    )
+    expect(graph.tagTotal).toBe(carried.size)
+  })
+
+  it('counts a tag against the documents on screen, not the whole corpus', async () => {
+    const post = await insertDoc({ slug: `${RUN}-scope-post`, tags: ['Scoped'] })
+    const note = await insertDoc({
+      slug: `${RUN}-scope-note`,
+      type: 'note',
+      tags: ['Scoped'],
+    })
+    await insertLink({ sourceId: post, targetId: note, href: '/posts/scope-note' })
+
+    invalidateRelatedIndex()
+    const slug = `${RUN}-Scoped`
+
+    const both = await getKnowledgeGraph({
+      limit: 5_000,
+      minDegree: 0,
+      types: ['post', 'note'],
+    })
+    expect(both.nodes.find((entry) => entry.slug === slug)?.degree).toBe(2)
+
+    /*
+     * The note is not in this view. A tag node sized by its size in the corpus
+     * would still say 2 here — a hub of two with one line drawn to it, which is
+     * the kind of figure a reader has no way to check.
+     */
+    const postsOnly = await getKnowledgeGraph({
+      limit: 5_000,
+      minDegree: 0,
+      types: ['post'],
+    })
+    expect(postsOnly.nodes.find((entry) => entry.slug === slug)?.degree).toBe(1)
+  })
+
+  it('counts a tag against the documents that survived the limit', async () => {
+    /*
+     * Three notes in a triangle, so each has two neighbours and nothing else in
+     * the corpus comes near: `minDegree` and `types` together select exactly
+     * these three, which is what makes the limit below the only thing deciding
+     * how many of them are drawn.
+     */
+    const a = await insertDoc({ slug: `${RUN}-limit-a`, type: 'note', tags: ['Limited'] })
+    const b = await insertDoc({ slug: `${RUN}-limit-b`, type: 'note', tags: ['Limited'] })
+    const c = await insertDoc({ slug: `${RUN}-limit-c`, type: 'note', tags: ['Limited'] })
+    await insertLink({ sourceId: a, targetId: b, href: '/notes/limit-b' })
+    await insertLink({ sourceId: b, targetId: c, href: '/notes/limit-c' })
+    await insertLink({ sourceId: c, targetId: a, href: '/notes/limit-a' })
+
+    invalidateRelatedIndex()
+    const slug = `${RUN}-Limited`
+
+    const whole = await getKnowledgeGraph({
+      limit: 5_000,
+      minDegree: 2,
+      types: ['note'],
+    })
+    expect(whole.nodes.find((entry) => entry.slug === slug)?.degree).toBe(3)
+
+    // One note short of the corpus, and the tag says so. A tag layer built from
+    // the documents the filters admitted rather than the ones the limit left
+    // would still say 3 here, beside a picture holding two of them.
+    const capped = await getKnowledgeGraph({ limit: 2, minDegree: 2, types: ['note'] })
+    expect(capped.nodes.filter((entry) => entry.type !== 'tag')).toHaveLength(2)
+    expect(capped.nodes.find((entry) => entry.slug === slug)?.degree).toBe(2)
+    expect(capped.tagTotal).toBe(1)
+  })
+
+  it('leaves the tag layer out when asked for the document graph alone', async () => {
+    const source = await insertDoc({ slug: `${RUN}-notags-source`, tags: ['Notags'] })
+    const target = await insertDoc({ slug: `${RUN}-notags-target` })
+    await insertLink({ sourceId: source, targetId: target, href: '/posts/notags-target' })
+
+    invalidateRelatedIndex()
+    const graph = await getKnowledgeGraph({ limit: 5_000, minDegree: 1, includeTags: false })
+
+    expect(graph.nodes.some((entry) => entry.type === 'tag')).toBe(false)
+    expect(graph.tagTotal).toBe(0)
+
+    // And no edge is left pointing at one: the document edges are the ones the
+    // graph was built from, resolved against the array that shipped.
+    for (const edge of graph.edges) {
+      expect(graph.nodes[edge.source]?.type).not.toBe('tag')
+      expect(graph.nodes[edge.target]?.type).not.toBe('tag')
+    }
   })
 
   it('reports an orphan, and an empty graph when nothing qualifies', async () => {

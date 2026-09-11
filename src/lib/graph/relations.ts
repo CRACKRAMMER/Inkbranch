@@ -47,8 +47,18 @@ export interface RelationsIndex {
   byId: Map<string, RelationNode>
   /** Documents in the index. Denominator of every rarity weight. */
   documentCount: number
-  /** Tag slug → number of documents carrying it. */
+  /** Tag slug → number of documents carrying it. The rarity input. */
   tagDocumentCount: Map<string, number>
+  /**
+   * Tag slug → the name to show for it.
+   *
+   * A second map over the same slugs rather than a map of records, because the
+   * count is a scoring input with its own type — it flows into `RelatedContext`
+   * as `ReadonlyMap<string, number>` — and reshaping a scoring input to carry a
+   * display string would put a presentation concern inside the ranking code. The
+   * two are built in one loop over one query, so they cannot drift.
+   */
+  tagNames: Map<string, string>
   /** True when a query bound was hit and this is only part of the corpus. */
   truncated: boolean
   builtAt: number
@@ -198,7 +208,15 @@ async function buildRelationsIndex(): Promise<RelationsIndex> {
       .limit(MAX_LINK_ROWS),
 
     db
-      .select({ contentId: contentTags.contentId, slug: tagsTable.slug })
+      .select({
+        contentId: contentTags.contentId,
+        slug: tagsTable.slug,
+        // Only for labelling a tag node in the graph. A tag is written in
+        // frontmatter as "Postgres Internals" and stored under a slug derived
+        // from it, and the graph is a reading surface like the tag page — which
+        // shows the name — so it has to show the name too.
+        name: tagsTable.name,
+      })
       .from(contentTags)
       .innerJoin(tagsTable, eq(tagsTable.id, contentTags.tagId))
       .orderBy(contentTags.contentId, tagsTable.slug)
@@ -250,6 +268,7 @@ async function buildRelationsIndex(): Promise<RelationsIndex> {
   }
 
   const tagDocumentCount = new Map<string, number>()
+  const tagNames = new Map<string, string>()
   for (const tagging of taggings) {
     // Tag rows for documents the bound dropped would skew every rarity weight
     // towards rarity, which is the direction that quietly changes rankings.
@@ -261,6 +280,7 @@ async function buildRelationsIndex(): Promise<RelationsIndex> {
       tagging.slug,
       (tagDocumentCount.get(tagging.slug) ?? 0) + 1,
     )
+    tagNames.set(tagging.slug, tagging.name)
   }
 
   return {
@@ -268,6 +288,7 @@ async function buildRelationsIndex(): Promise<RelationsIndex> {
     byId,
     documentCount: nodes.length,
     tagDocumentCount,
+    tagNames,
     truncated:
       documents.length >= env.CONTENT_MAX_FILES ||
       links.length >= MAX_LINK_ROWS ||

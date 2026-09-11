@@ -23,20 +23,30 @@ import { listParam } from '../_params'
  * design constraint is that it stays small enough to fetch on a page load, and a
  * convenience field added here is a convenience field sent to every reader.
  *
+ * `type` is one of three content types or `'tag'`: the response is the documents
+ * the filters admitted and the tags those documents carry. `total` counts the
+ * first and `tagTotal` the second, because they are capped separately and one
+ * figure for both would be wrong about whichever it did not count.
+ *
  * ## The parameters
  *
- * `types`, `minDegree` and `limit` are the widening controls the module already
- * exposes, and they are validated rather than clamped: the only caller is this
- * site's own page, so a `limit` outside the range is a bug in that page rather
- * than a reader's typo, and a 400 is what surfaces it. An unusable `type` is
- * answered the same way, because silently returning all three types would make
- * a misspelled filter look like a filter that matched everything.
+ * `types`, `minDegree`, `limit` and `tags` are the widening controls the module
+ * already exposes, and they are validated rather than clamped: the only caller
+ * is this site's own page, so a `limit` outside the range is a bug in that page
+ * rather than a reader's typo, and a 400 is what surfaces it. An unusable `type`
+ * is answered the same way, because silently returning all three types would
+ * make a misspelled filter look like a filter that matched everything.
  *
  * `minDegree` defaults to **0** here, deliberately overriding the module's own
  * default of 1. The page fetches once and narrows the view in the browser, so a
  * server-side degree filter would remove nodes that no client-side control
  * could bring back. `limit` still bounds the response, so the default view is
  * the whole corpus up to 250 nodes rather than an unbounded one.
+ *
+ * `tags` is a boolean spelled `0`/`1`, and the only parameter that is not a
+ * narrowing of the same kind: it decides whether the tag half of the graph is
+ * drawn at all. It defaults to on, so `?tags=0` is the way to ask for the
+ * document graph as it was before tags were nodes in it.
  */
 
 /**
@@ -52,6 +62,9 @@ const querySchema = z.object({
   types: z.array(z.enum(CONTENT_TYPES)).max(CONTENT_TYPES.length),
   limit: z.coerce.number().int().min(1).max(MAX_GRAPH_LIMIT).optional(),
   minDegree: z.coerce.number().int().min(0).max(MAX_MIN_DEGREE).optional(),
+  // Not `z.coerce.boolean()`, which is `Boolean()`: it reads `?tags=0` as true
+  // and would make the one value a caller would write to mean "off" mean "on".
+  tags: z.enum(['0', '1', 'false', 'true']).optional(),
 })
 
 /**
@@ -70,6 +83,7 @@ export async function GET(request: Request): Promise<Response> {
     types: listParam(params.getAll('types')),
     limit: params.get('limit') ?? undefined,
     minDegree: params.get('minDegree') ?? undefined,
+    tags: params.get('tags') ?? undefined,
   })
 
   if (!parsed.success) {
@@ -84,6 +98,14 @@ export async function GET(request: Request): Promise<Response> {
     )
   }
 
+  // Absent means "whatever the module defaults to", which is on: the node project
+  // asks the picture for includes tags, and a caller who does not mention the
+  // parameter is asking for the picture.
+  const includeTags =
+    parsed.data.tags === undefined
+      ? undefined
+      : parsed.data.tags === '1' || parsed.data.tags === 'true'
+
   try {
     const graph = await getKnowledgeGraph({
       // An empty filter is not a filter: `?types=` means "all three", which is
@@ -91,6 +113,7 @@ export async function GET(request: Request): Promise<Response> {
       types: parsed.data.types.length > 0 ? parsed.data.types : undefined,
       minDegree: parsed.data.minDegree ?? 0,
       limit: parsed.data.limit ?? DEFAULT_GRAPH_LIMIT,
+      includeTags,
     })
 
     return Response.json(graph, { headers: { 'cache-control': CACHE_CONTROL } })

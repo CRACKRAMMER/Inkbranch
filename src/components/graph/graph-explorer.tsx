@@ -5,7 +5,7 @@ import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { useEffect, useMemo, useState } from 'react'
 
-import type { GraphNode, KnowledgeGraph } from '@/lib/graph/graph'
+import type { GraphNode, GraphNodeKind, KnowledgeGraph } from '@/lib/graph/graph'
 import { cn } from '@/lib/utils/cn'
 
 /**
@@ -49,7 +49,8 @@ const TYPE_FILTERS = [
   { value: 'post', label: 'Articles' },
   { value: 'note', label: 'Notes' },
   { value: 'project', label: 'Projects' },
-] as const
+  { value: 'tag', label: 'Tags' },
+] as const satisfies readonly { value: GraphNodeKind; label: string }[]
 
 type TypeFilter = (typeof TYPE_FILTERS)[number]['value']
 
@@ -169,6 +170,51 @@ export function GraphExplorer() {
 
   const filtered = types.size > 0 || minDegree > 0
 
+  /** How many of each kind are on screen. */
+  const counts = useMemo(() => {
+    let documents = 0
+    let tags = 0
+    for (const node of visible.nodes) {
+      if (node.type === 'tag') tags += 1
+      else documents += 1
+    }
+    return { documents, tags }
+  }, [visible.nodes])
+
+  /**
+   * What the toolbar says about the view.
+   *
+   * The "of N" clauses are a disclosure of the server's caps, so they appear
+   * only while nothing is filtered: a reader who has just narrowed the view by
+   * hand knows why the number is small, and "3 of 1840 documents" would be
+   * counting the selection against a corpus of a different kind. The figures
+   * themselves are counted off the nodes in the payload rather than read from
+   * the response's totals, which is what makes the tag cap visible — `tagTotal`
+   * reports it, and a client that only ever printed what it received would show
+   * the largest tags under a label implying they were all of them.
+   */
+  const summary = (() => {
+    const parts = [
+      `${counts.documents}${
+        graph && !filtered && graph.total > counts.documents ? ` of ${graph.total}` : ''
+      } ${counts.documents === 1 ? 'document' : 'documents'}`,
+    ]
+
+    // Shown when there are tags to count. Both cases that hide it are figures a
+    // reader can do nothing with: a site whose documents carry no tags at all,
+    // and a reader who has filtered to one kind of document and would be told
+    // "0 tags" about a corpus whose tags are still on screen as a filter.
+    if (counts.tags > 0) {
+      parts.push(
+        `${counts.tags}${
+          graph && !filtered && graph.tagTotal > counts.tags ? ` of ${graph.tagTotal}` : ''
+        } ${counts.tags === 1 ? 'tag' : 'tags'}`,
+      )
+    }
+
+    return parts.join(' · ')
+  })()
+
   return (
     <div className="flex flex-col">
       {/* -------------------------------------------------------------- */}
@@ -210,13 +256,7 @@ export function GraphExplorer() {
         </div>
 
         <p className="ml-auto font-mono text-ink-subtle tabular-nums">
-          {state.status === 'ready'
-            ? `${visible.nodes.length} shown${
-                graph && graph.total > graph.nodes.length
-                  ? ` of ${graph.total} in the index`
-                  : ''
-              }`
-            : null}
+          {state.status === 'ready' ? summary : null}
         </p>
 
         {filtered ? (
@@ -262,7 +302,7 @@ export function GraphExplorer() {
           <p className="text-sm text-ink-subtle">
             {graph && graph.nodes.length === 0
               ? 'No documents are linked to each other yet, so there is no graph to draw.'
-              : 'No documents match those filters.'}
+              : 'No nodes match those filters.'}
           </p>
         </div>
       ) : null}
@@ -295,11 +335,16 @@ export function GraphExplorer() {
           {/* -------------------------------------------------------- */}
 
           <section aria-labelledby="graph-index" className="mt-12">
+            {/*
+              The count, spelled out and pluralised, because this heading is the
+              list's name for a screen reader and "All 1 nodes" is what the
+              filters produce the moment a reader narrows to one node.
+            */}
             <h2
               id="graph-index"
               className="border-b border-line pb-2 text-xs font-medium uppercase tracking-wider text-ink-subtle"
             >
-              All {listed.length} documents in this view
+              {listed.length} {listed.length === 1 ? 'node' : 'nodes'} in this view
             </h2>
 
             <ul className="mt-4 grid gap-x-10 gap-y-1 sm:grid-cols-2">
@@ -311,6 +356,17 @@ export function GraphExplorer() {
                   >
                     {node.title}
                   </Link>
+                  {/*
+                    A tag is a link to a topic, and "Postgres Internals" at the
+                    head of a list of documents reads as a document. The drawn
+                    graph tells the two apart by shape; this is the same
+                    information, in the medium the list has.
+                  */}
+                  {node.type === 'tag' ? (
+                    <span className="shrink-0 text-[10px] uppercase tracking-wider text-ink-subtle/70">
+                      Tag
+                    </span>
+                  ) : null}
                   <span
                     className={cn(
                       'shrink-0 font-mono text-xs tabular-nums',

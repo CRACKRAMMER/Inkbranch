@@ -422,16 +422,54 @@ export function sortTagsByRarity(
 /*  Graph selection                                                            */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * What a node in the graph stands for.
+ *
+ * Three kinds of document, and tags. A tag is not a content type — nothing is
+ * written to `content/tags/`, there is no file behind it, and `content_index`
+ * has no column that could hold one. But it *is* a node in the picture: it is
+ * what makes two documents that never link to each other sit in the same part of
+ * it. Giving it a member of this union rather than modelling the graph as
+ * documents plus a special case is what lets the filters, the accessible list
+ * and the drawing code handle four kinds of node as four cases of one thing.
+ */
+export type GraphNodeKind = ContentType | 'tag'
+
+/** A tag, as a node. Narrowing `type` is the whole difference from `GraphNode`. */
+export type TagGraphNode = GraphNode & { type: 'tag' }
+
 /** A node in the serialised graph. Small on purpose: it is sent to the browser. */
 export interface GraphNode {
   id: string
-  type: ContentType
+  type: GraphNodeKind
   slug: string
   title: string
   url: string
-  /** Distinct neighbours, in either direction. */
+  /**
+   * Distinct neighbours, in either direction.
+   *
+   * For a document that means other documents — tags are deliberately not
+   * counted here, which is the same rule `findOrphans` applies and the reason
+   * the drawn radius keeps meaning what the page says it means. For a tag node
+   * it means the documents carrying it, which is the only thing it has.
+   */
   degree: number
   tags: string[]
+}
+
+/** The prefix that keeps a tag node's id from ever colliding with a document's. */
+const TAG_NODE_PREFIX = 'tag:'
+
+/**
+ * A tag node's id.
+ *
+ * `content_index.id` is a uuid, so no document can collide with a prefixed slug
+ * — and the two halves of the graph are not merely unlikely to collide, they
+ * cannot. Ids are what the edges and the client's neighbour map are keyed by, so
+ * a collision would not be a cosmetic bug.
+ */
+export function tagNodeId(slug: string): string {
+  return `${TAG_NODE_PREFIX}${slug}`
 }
 
 /**
@@ -459,6 +497,16 @@ export interface KnowledgeGraph {
    * caller say "showing 250 of 1840" rather than implying the corpus is small.
    */
   total: number
+  /**
+   * Tags the filters admitted, before their own cap cut the list down.
+   *
+   * A second figure rather than one count of nodes, because the two are capped
+   * separately and a client that reported one number for both would be wrong
+   * about whichever it did not count. A tag is admitted here only if it is
+   * carried by a document that is itself admitted — the tag layer describes the
+   * documents on screen, it is not a second index of the corpus.
+   */
+  tagTotal: number
   /** True when a query bound was hit, so this is not the whole corpus. */
   truncated: boolean
 }
@@ -598,6 +646,122 @@ export function indexEdges(
   }
 
   return result
+}
+
+/** The tag half of the graph: the tags the drawn documents carry, and the lines to them. */
+export interface TagLayer {
+  nodes: TagGraphNode[]
+  /** Document id ↔ tag node id, one per tag a drawn document carries. */
+  edges: EdgePair[]
+  /** Tags admitted before the cap, so a caller can report what it is not drawing. */
+  total: number
+}
+
+export interface TagLayerOptions {
+  /**
+   * Display name for a tag slug. Presentation only, so it is a callback rather
+   * than a map: this function has no opinion about where names come from, and
+   * the graph module is the layer that knows.
+   */
+  nameOf: (slug: string) => string
+  /**
+   * How many drawn documents must carry a tag for it to be drawn. The same
+   * threshold the document selection was given, because it answers the same
+   * question — is this node connected to anything on this screen — and a tag
+   * filter with a different rule would be a second thing to explain.
+   */
+  minDegree: number
+  /** Ceiling on tag nodes, highest-degree first. */
+  limit: number
+}
+
+/**
+ * The tags of a set of drawn documents, as nodes.
+ *
+ * ## Why this is derived from the selection, not from the corpus
+ *
+ * A tag node's degree is the number of documents carrying it *among the ones
+ * being drawn*, and that is a deliberate choice of two possible truths. The
+ * other one — the tag's size in the whole corpus — would let a tag carried by
+ * forty documents arrive in a graph holding three of them, drawn as a hub with
+ * three lines coming out of it. A picture whose numbers describe something other
+ * than the picture is the failure this site is least willing to ship, so the
+ * figure the reader can check by counting lines is the figure they get.
+ *
+ * ## Why it is capped
+ *
+ * Because the layout is O(n²) and its cost is therefore a function of a number
+ * the caller chose, not of how many tags the author has invented. The cap is the
+ * same `limit` the documents were selected with, and `total` says how many tags
+ * there were, so a caller that hit it can say so rather than showing the largest
+ * ones under a label that implies they are all of them.
+ *
+ * Tags with no documents are not in the map at all: a tag node exists because
+ * something on screen carries it. Tags are, in that sense, the only part of this
+ * graph that cannot be an orphan.
+ */
+export function tagLayerOf(
+  documents: readonly Pick<GraphNode, 'id' | 'tags'>[],
+  options: TagLayerOptions,
+): TagLayer {
+  /*
+   * Document/tag pairs, deduplicated before anything is counted.
+   *
+   * The count and the lines have to agree: a document listing a tag twice would
+   * otherwise be sized as though two documents carried it while one line was
+   * drawn to it, and the number beside a node is the one thing in this picture a
+   * reader can check by counting. `content_tags` is unique on (content, tag), so
+   * this only ever fires on a caller that built its own nodes.
+   */
+  const pairs: { document: string; slug: string }[] = []
+  const seen = new Set<string>()
+
+  for (const document of documents) {
+    for (const slug of document.tags) {
+      const key = `${document.id} ${slug}`
+      if (seen.has(key)) continue
+      seen.add(key)
+      pairs.push({ document: document.id, slug })
+    }
+  }
+
+  const documentCount = new Map<string, number>()
+  for (const pair of pairs) {
+    documentCount.set(pair.slug, (documentCount.get(pair.slug) ?? 0) + 1)
+  }
+
+  const admitted = [...documentCount]
+    .filter(([, count]) => count >= options.minDegree)
+    // Biggest first, because a tag on forty documents is the structure of the
+    // graph and a tag on one is a leaf at the end of it — and the slug breaks
+    // ties, so the same selection draws the same picture twice.
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+
+  const nodes = admitted.slice(0, options.limit).map(([slug, count]): TagGraphNode => {
+    const name = options.nameOf(slug)
+    return {
+      id: tagNodeId(slug),
+      type: 'tag',
+      slug,
+      title: name === '' ? slug : name,
+      url: `/tags/${encodeURIComponent(slug)}`,
+      degree: count,
+      // Its own slug as a one-element tag list. The canvas colours a node by its
+      // most distinctive tag, so a tag node is drawn in the same hue as the
+      // documents carrying it — the picture saying what the data says.
+      tags: [slug],
+    }
+  })
+
+  // Edges only to the tags that survived the cap: an edge pointing at a tag node
+  // that is not in `nodes` would be an index into the wrong node once the client
+  // walks the array, which is the same reason `indexEdges` exists.
+  const drawn = new Set(nodes.map((node) => node.id))
+  const edges: EdgePair[] = pairs
+    .filter((pair) => drawn.has(tagNodeId(pair.slug)))
+    .map((pair) => ({ source: pair.document, target: tagNodeId(pair.slug) }))
+
+  return { nodes, edges, total: admitted.length }
 }
 
 /** A document with no connections at all. */

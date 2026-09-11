@@ -40,7 +40,7 @@ export default async function GraphPage() {
     <Container size="wide">
       <PageHeader
         title="Graph"
-        description="How the documents here reference each other. Every line is a link written into a document — an internal link, or a wiki link — from one published page to another."
+        description="How the documents here reference each other. A line is a link written into a document — an internal link, or a wiki link — or a tag two documents have in common."
       />
 
       {!settings.graphEnabled ? (
@@ -66,12 +66,15 @@ export default async function GraphPage() {
           About this graph
         </h2>
         <p className="max-w-[70ch]">
-          Nodes are sized by how many other documents they connect to, and
-          coloured by the rarest tag they carry. Documents with no links in or
-          out are drawn at the edge — they are part of the picture, and hiding
-          them would make a site with few links look better connected than it
-          is. The layout is computed once and does not animate, so it is the
-          same picture every time you come back.
+          Documents are circles, sized by how many other documents they
+          reference or are referenced by, and coloured by the rarest tag they
+          carry. Tags are squares, and a tag is sized by how many of the
+          documents on screen carry it — which is why two documents that never
+          mention each other can end up in the same part of the picture.
+          Documents with no links in or out are still drawn: they are part of
+          the picture, and hiding them would make a site with few links look
+          better connected than it is. The layout is computed once and does not
+          animate, so it is the same picture every time you come back.
         </p>
       </section>
     </Container>

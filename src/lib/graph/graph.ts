@@ -9,7 +9,7 @@ import {
   isVisible,
   selectGraphNodes,
   sortTagsByRarity,
-  type GraphEdge,
+  tagLayerOf,
   type GraphNode,
   type KnowledgeGraph,
   type OrphanNode,
@@ -28,6 +28,14 @@ import { getRelationsIndex, scoringContext } from './relations'
  * nothing else — no body, no description, no headings, no dates — and edges are
  * index pairs rather than ids. Everything that could be looked up later has been
  * left out on purpose.
+ *
+ * ## Two kinds of node
+ *
+ * Documents, and tags. The tag nodes are the fourth kind of node project.md asks
+ * this page for, and they are derived rather than stored: a tag is drawn because
+ * a document on screen carries it, and its degree is the number of those
+ * documents. That makes the tag layer a description of the picture instead of a
+ * second index of the corpus, and `tagLayerOf` carries the argument in full.
  *
  * ## Why the default view is not everything
  *
@@ -51,6 +59,17 @@ export interface GraphOptions {
   minDegree?: number
   /** Statuses a node may have. Defaults to published. */
   statuses?: readonly ContentStatus[]
+  /**
+   * Whether tags are drawn as nodes. Defaults to true.
+   *
+   * A separate option rather than a fourth member of `types`, because the two
+   * are not the same kind of thing: `types` selects documents, and a tag is not
+   * a content type. Folding it in would make `types: ['post']` mean "posts, and
+   * no tags", which is a rule about tags hidden inside a parameter named after
+   * something else — and `types: ['tag']` would be a request for tags with no
+   * documents to derive them from, which is no tags at all.
+   */
+  includeTags?: boolean
 }
 
 /**
@@ -89,6 +108,8 @@ export async function getKnowledgeGraph(
   const index = await getRelationsIndex()
   const statuses = new Set(options.statuses ?? DEFAULT_STATUSES)
   const types = options.types ? new Set(options.types) : null
+  const limit = clampLimit(options.limit, DEFAULT_GRAPH_LIMIT, MAX_GRAPH_LIMIT)
+  const minDegree = options.minDegree ?? DEFAULT_MIN_DEGREE
 
   const visible = index.nodes.filter(
     (node) => isVisible(node, statuses) && (!types || types.has(node.type)),
@@ -97,25 +118,50 @@ export async function getKnowledgeGraph(
   const edges = edgePairsOf(visible)
   const adjacency = buildAdjacency(edges)
 
-  const selected = selectGraphNodes(visible, adjacency, {
-    limit: clampLimit(options.limit, DEFAULT_GRAPH_LIMIT, MAX_GRAPH_LIMIT),
-    minDegree: options.minDegree ?? DEFAULT_MIN_DEGREE,
-  })
+  const selected = selectGraphNodes(visible, adjacency, { limit, minDegree })
 
   const context = scoringContext(index)
 
-  return {
+  /*
+   * The tag layer is built from `selected`, not from `visible`: a tag's degree
+   * is how many documents *on screen* carry it. Building it from `visible` would
+   * let a tag carried by forty documents arrive as a hub beside the three that
+   * survived the limit, which is a drawn figure the reader cannot check against
+   * anything they can see. `tagTotal` is what keeps that cap honest.
+   */
+  const tags =
+    options.includeTags === false
+      ? { nodes: [], edges: [], total: 0 }
+      : tagLayerOf(selected, {
+          // A tag with no row in the index cannot be reached from a document —
+          // the same rows produce both — so the fallback is for a tag row
+          // deleted between two reads, and it is the slug rather than nothing.
+          nameOf: (slug) => index.tagNames.get(slug) ?? slug,
+          minDegree,
+          limit,
+        })
+
+  const nodes: GraphNode[] = [
     // The round trip through `sortTagsByRarity` is what a client colouring by
     // `tags[0]` colours by: the most distinctive tag the document carries, not
     // whichever one its frontmatter listed first.
-    nodes: selected.map(
+    ...selected.map(
       (node): GraphNode => ({
         ...node,
         tags: sortTagsByRarity(node.tags, context),
       }),
     ),
-    edges: indexEdges(selected, edges),
+    ...tags.nodes,
+  ]
+
+  return {
+    nodes,
+    // One call, over the combined array: the document edges keep their indices
+    // because the documents are still first and in the same order, and the tag
+    // edges are resolved against the array they are actually shipped in.
+    edges: indexEdges(nodes, [...edges, ...tags.edges]),
     total: visible.length,
+    tagTotal: tags.total,
     truncated: index.truncated,
   }
 }
@@ -146,4 +192,11 @@ export async function getOrphans(
   return findOrphans(visible, buildAdjacency(edgePairsOf(visible)))
 }
 
-export type { GraphEdge, GraphNode, KnowledgeGraph, OrphanNode }
+export type {
+  GraphEdge,
+  GraphNode,
+  GraphNodeKind,
+  KnowledgeGraph,
+  OrphanNode,
+  TagGraphNode,
+} from './model'

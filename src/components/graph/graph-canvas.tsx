@@ -103,6 +103,10 @@ function readColors(): ThemeColors {
  * list first. Hashed from the name rather than looked up, because the graph
  * payload carries names and not slug/colour pairs — and the hue only ever
  * distinguishes neighbouring dots, so a hash is enough.
+ *
+ * A tag node carries its own slug as its only tag, so it lands on the same hue
+ * as the documents carrying it: the square and the circles around it are the
+ * same colour because they are the same subject.
  */
 function nodeHue(node: GraphNode): number {
   const key = node.tags[0] ?? node.type
@@ -292,12 +296,27 @@ export function GraphCanvas({ nodes, edges, onOpen, className }: GraphCanvasProp
         ? colors.brand
         : `oklch(${node.type === 'note' ? '62%' : '48%'} 0.09 ${nodeHue(node)})`
 
+      const radius = radiusFor(node.degree)
+
       context.beginPath()
-      context.arc(position.x, position.y, radiusFor(node.degree), 0, Math.PI * 2)
+      if (node.type === 'tag') {
+        /*
+         * A square, because a tag is a different kind of thing from a document
+         * and the picture has to say so somewhere. Shape rather than a second
+         * colour: hue is already spoken for — it is how a node shows which tag
+         * it belongs to — and a reader who cannot separate two hues would have
+         * no way at all to tell the two kinds apart. A square against a circle
+         * survives at any radius, at any contrast, in any palette.
+         */
+        context.rect(position.x - radius, position.y - radius, radius * 2, radius * 2)
+      } else {
+        context.arc(position.x, position.y, radius, 0, Math.PI * 2)
+      }
       context.fill()
 
       // A ring on the hovered node, so the target of a click is unambiguous
-      // even when it overlaps its neighbours.
+      // even when it overlaps its neighbours. `stroke` re-traces the path just
+      // filled, so it follows whichever shape was drawn without a second branch.
       if (isFocus) {
         context.strokeStyle = colors.canvas
         context.lineWidth = 1.5
@@ -327,9 +346,13 @@ export function GraphCanvas({ nodes, edges, onOpen, className }: GraphCanvasProp
       if (!node) continue
       const radius = radiusFor(node.degree)
 
+      // A tag is labelled the way the tag page labels it, so the word on the
+      // canvas and the heading it links to are the same word.
+      const label = node.type === 'tag' ? `#${node.title}` : node.title
+
       context.globalAlpha = focus !== null && !isFocus && !isNeighbour ? 0.2 : 1
       context.fillStyle = isFocus ? colors.ink : colors.inkMuted
-      context.fillText(truncate(node.title, 28), position.x + radius + 4, position.y)
+      context.fillText(truncate(label, 28), position.x + radius + 4, position.y)
     }
 
     context.globalAlpha = 1
