@@ -191,7 +191,16 @@ export type ListSort = 'published' | 'updated'
 
 export interface ListOptions {
   type?: ContentType
+  /** Tag slug or name; either identifies the tag. */
   tag?: string
+  /**
+   * Exact category, as written on the document.
+   *
+   * A category is a string rather than a row with a slug, so this is compared
+   * as stored: `Linux` and `linux` would be two categories, which is what the
+   * author sees in the admin's filter and in the feeds.
+   */
+  category?: string
   limit?: number
   offset?: number
   sort?: ListSort
@@ -199,10 +208,11 @@ export interface ListOptions {
 
 /** Published content, newest first by publication date unless told otherwise. */
 export async function listContent(options: ListOptions = {}): Promise<ContentSummary[]> {
-  const { type, tag, limit = 20, offset = 0, sort = 'published' } = options
+  const { type, tag, category, limit = 20, offset = 0, sort = 'published' } = options
 
   const conditions = [visibleFilter()]
   if (type) conditions.push(eq(contentIndex.type, type))
+  if (category) conditions.push(eq(contentIndex.category, category))
 
   if (tag) {
     // A correlated subquery rather than a join: a join against a many-to-many
@@ -243,12 +253,13 @@ export async function listContent(options: ListOptions = {}): Promise<ContentSum
 
 /** How many published items match, for pagination. */
 export async function countContent(
-  options: Pick<ListOptions, 'type' | 'tag'> = {},
+  options: Pick<ListOptions, 'type' | 'tag' | 'category'> = {},
 ): Promise<number> {
-  const { type, tag } = options
+  const { type, tag, category } = options
 
   const conditions = [visibleFilter()]
   if (type) conditions.push(eq(contentIndex.type, type))
+  if (category) conditions.push(eq(contentIndex.category, category))
   if (tag) {
     conditions.push(
       sql`EXISTS (

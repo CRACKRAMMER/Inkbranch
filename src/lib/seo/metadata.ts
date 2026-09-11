@@ -252,6 +252,17 @@ export function documentCanonicalUrl(doc: SeoDocument): string {
   return absoluteUrl(documentUrl(doc.type, doc.slug))
 }
 
+/**
+ * The site's own feeds.
+ *
+ * Named here because two places have to agree on them: `buildPageMetadata`
+ * advertises them on every page that is not about a topic, and the root layout
+ * advertises them for the home page — the one route that renders no metadata of
+ * its own and so inherits whatever the layout says.
+ */
+export const SITE_RSS_PATH = '/rss.xml'
+export const SITE_ATOM_PATH = '/atom.xml'
+
 /* -------------------------------------------------------------------------- */
 /*  Titles                                                                     */
 /* -------------------------------------------------------------------------- */
@@ -473,6 +484,15 @@ export interface PageMetadataInput {
   modifiedTime?: Date | null
   tags?: readonly TagInput[]
   authors?: readonly string[]
+  /**
+   * A feed about this page's own topic, e.g. `/rss/linux.xml`.
+   *
+   * A topic feed *replaces* the site's two rather than joining them. A reader
+   * on a tag page is asking to follow that tag, and two `application/rss+xml`
+   * alternates on one page is a choice it would have to guess at — while a
+   * subscriber that wanted the whole site was never on this page for it.
+   */
+  feed?: string | null
 }
 
 export function buildPageMetadata(input: PageMetadataInput): Metadata {
@@ -532,7 +552,23 @@ export function buildPageMetadata(input: PageMetadataInput): Metadata {
     // end of a title this function already suffixed.
     title: { absolute: title },
     description,
-    alternates: { canonical },
+    /*
+     * The feeds are re-stated on every page rather than left to the layout, and
+     * that is not belt and braces: Next replaces `alternates` wholesale when a
+     * page sets it, so the layout's own feed links reach the pages that set no
+     * metadata at all and are dropped everywhere else — which is every page but
+     * the home page. Stating them here, where the canonical is already decided,
+     * is what puts them on the pages a reader actually lands on.
+     */
+    alternates: input.feed
+      ? { canonical, types: { 'application/rss+xml': input.feed } }
+      : {
+          canonical,
+          types: {
+            'application/rss+xml': SITE_RSS_PATH,
+            'application/atom+xml': SITE_ATOM_PATH,
+          },
+        },
     openGraph,
     twitter: {
       card: 'summary_large_image',

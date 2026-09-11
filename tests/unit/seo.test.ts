@@ -12,6 +12,8 @@ import {
   MAX_DESCRIPTION_WIDTH,
   resolveSeoFields,
   resolveTitle,
+  SITE_ATOM_PATH,
+  SITE_RSS_PATH,
   siteIdentityFromSettings,
   truncateDescription,
   type SeoDocument,
@@ -622,6 +624,40 @@ describe('buildPageMetadata', () => {
     // `follow: false` as well: a noindex page that is still followed leaks the
     // whole admin section into the index through its links.
     expect(buildPageMetadata({ site, title: 'Home', path: '/' }).robots).toBeUndefined()
+  })
+
+  it('advertises the site feeds on a page that is not about a topic', () => {
+    const metadata = buildPageMetadata({ site, title: 'Archive', path: '/archive' })
+
+    // Stated per page rather than left to the root layout, and this is the
+    // assertion that says why: Next replaces `alternates` wholesale when a page
+    // sets it, so a layout that advertises the feeds reaches only the pages that
+    // set no metadata of their own — the home page and nothing else. Every
+    // other page carried a canonical and no feed link at all.
+    expect(metadata.alternates).toEqual({
+      canonical: `${siteOrigin}/archive`,
+      types: {
+        'application/rss+xml': SITE_RSS_PATH,
+        'application/atom+xml': SITE_ATOM_PATH,
+      },
+    })
+  })
+
+  it('advertises a topic feed instead of the site feeds', () => {
+    const metadata = buildPageMetadata({
+      site,
+      title: '#linux',
+      path: '/tags/linux',
+      feed: '/rss/linux.xml',
+    })
+
+    // One `application/rss+xml` alternate, not two. A reader on a tag page is
+    // asking to follow that tag, and an aggregator handed a choice of two feeds
+    // of the same type picks whichever it comes to first.
+    expect(metadata.alternates?.types).toEqual({
+      'application/rss+xml': '/rss/linux.xml',
+    })
+    expect(metadata.alternates?.canonical).toBe(`${siteOrigin}/tags/linux`)
   })
 
   it('uses the article type only for an article', () => {

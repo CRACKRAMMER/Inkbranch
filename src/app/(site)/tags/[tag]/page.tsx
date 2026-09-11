@@ -58,6 +58,10 @@ export async function generateMetadata({
       found.description ||
       `${found.count} ${found.count === 1 ? 'entry' : 'entries'} tagged “${found.name}”.`,
     path: `/tags/${encodeURIComponent(found.slug)}`,
+    // The page and the feed are two views of one topic, so they are addressed
+    // by one slug and advertised together: a reader who has arrived at the
+    // topic should not have to guess that a feed for it exists.
+    feed: `/rss/${encodeURIComponent(found.slug)}.xml`,
   })
 }
 

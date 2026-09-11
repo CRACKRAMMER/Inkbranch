@@ -305,11 +305,32 @@ Secrets (`SESSION_SECRET`, `DATABASE_URL`) are validated at boot by `src/env.ts`
 | Route class | Strategy | Revalidation |
 |-------------|----------|--------------|
 | `/`, `/posts`, `/notes`, `/projects`, `/archive`, `/tags` | Dynamic RSC, data from the content cache | `revalidatePath` on save + tag-based `revalidateTag('content')` |
-| `/posts/[slug]`, `/notes/[slug]`, `/projects/[slug]` | `generateStaticParams` + ISR, `revalidate = 3600` | On-demand revalidation from the write path |
+| `/posts/[slug]`, `/notes/[slug]`, `/projects/[slug]` | Dynamic RSC — no `generateStaticParams`, and the body is read from the file on every request | On-demand revalidation from the write path |
 | `/graph`, `/admin/*` | Client-heavy, never prerendered | — |
-| `/rss.xml`, `/sitemap.xml`, `/robots.txt` | Route handlers, cached 1h | On publish |
+| `/rss.xml`, `/atom.xml`, `/rss/[tag]`, `/rss/category/[category]`, `/sitemap.xml` | Route handlers, `force-dynamic` — the build has no database to read | Nothing to invalidate: rendered per request, then cached by shared caches |
+| `/robots.txt` | `MetadataRoute`, prerendered — it reads `SITE_URL` and nothing else | A rebuild |
 
-All article routes share a `Cache-Control` policy of `s-maxage=3600, stale-while-revalidate=86400`.
+Public pages are served with `s-maxage=3600, stale-while-revalidate=86400`. The feeds set their own — `public, max-age=600, s-maxage=3600, stale-while-revalidate=86400` — because a feed is cheap to render and the reader being served is an aggregator that polls on its own schedule; a subscriber may be a few minutes behind a publish without anything being wrong.
+
+### Feeds
+
+Four addresses, one implementation. `/rss.xml` and `/atom.xml` are the site feed in two serialisations; `/rss/<tag>.xml` and `/rss/category/<category>.xml` are one topic each. `src/app/rss/_feeds.ts` holds the shared half — settings, the document list, the item limit, the response headers — and each route file holds only its address, so the four cannot come to disagree about what a feed is.
+
+Two details of the addresses are not obvious:
+
+- **The `.xml` suffix is part of the URL, not an extension.** A Next dynamic segment cannot carry a literal suffix, so `/rss/linux.xml` is served by `[tag]` with `params.tag === 'linux.xml'`, and `feedSlug` is what turns a segment into a topic or refuses it. A segment without the suffix is not a feed address, and `/rss/linux` therefore answers with this site's "no feed is served at this address" rather than an empty feed — a reader handed an empty feed unsubscribes from a topic that never existed.
+- **`/rss/category/…` is a static segment beside `[tag]`,** which Next prefers, so a two-segment path under `/rss/` is always a category and a one-segment path is always a tag.
+
+What a topic has to be to have a feed:
+
+| Topic | Lookup | Why |
+|-------|--------|-----|
+| Tag | `getTag(slug)` — only tags with published content behind them | The same lookup `/tags/<slug>` uses, so a tag page that 404s and a tag feed that served an empty document cannot both happen |
+| Category | `countContent({ category }) > 0` — visible documents only | A category exists only as a string on documents, so a draft-only category must not have a feed that says it does |
+
+Documents are matched by the stored string (`doc.category === name`, tag name membership), so one category has exactly one feed URL — case-sensitively: `atom:link rel="self"` can only name one address, and a forgiving comparison would put two in circulation.
+
+**Every page states its own feed links.** Next replaces `alternates` wholesale when a page sets it, so the root layout's `<link rel="alternate">` reaches the home page and nothing else. `buildPageMetadata` therefore emits the site feeds on every page that is not about a topic, and a tag page publishes its own tag feed *instead* — which is why the layout's copy is documented as the answer for the one route that renders no metadata of its own.
 
 ## 11. Observability
 

@@ -4,6 +4,7 @@ import { Inter, JetBrains_Mono, Source_Serif_4 } from 'next/font/google'
 import { ThemeProvider } from '@/components/theme-provider'
 import { Toaster } from '@/components/ui/toaster'
 import { siteOrigin } from '@/env'
+import { SITE_ATOM_PATH, SITE_RSS_PATH } from '@/lib/seo/metadata'
 
 import './globals.css'
 
@@ -42,15 +43,20 @@ export const metadata: Metadata = {
   },
   description: 'Notes, articles and projects on software and systems.',
   /*
-   * The default. Individual pages override with an absolute canonical, and the
-   * feed and sitemap advertise themselves here so a crawler finds them from any
-   * entry point rather than only the home page.
+   * The home page's own canonical, and the site's feeds.
+   *
+   * Every other page builds its metadata with `buildPageMetadata`, which
+   * replaces `alternates` with its own canonical and re-states the feeds —
+   * a page cannot inherit half of this object. So this is not the site-wide
+   * default it looks like; it is the answer for the one route that renders no
+   * metadata of its own. The paths come from the SEO module so that these two
+   * and the ones every other page carries are the same strings.
    */
   alternates: {
     canonical: '/',
     types: {
-      'application/rss+xml': '/rss.xml',
-      'application/atom+xml': '/atom.xml',
+      'application/rss+xml': SITE_RSS_PATH,
+      'application/atom+xml': SITE_ATOM_PATH,
     },
   },
   openGraph: {
