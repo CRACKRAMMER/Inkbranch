@@ -1,0 +1,122 @@
+# A single-host deployment: the app, its database, and the volumes that hold
+# everything the app is not.
+#
+# ## The shape
+#
+# One `app` service and one `postgres`, plus a `migrate` service that runs once
+# and exits. There is no cache, no queue and no reverse proxy here, because the
+# application needs none of them: search is local, sessions are in Postgres, and
+# scheduled work is a worker loop inside the app. A compose file that provisioned
+# Redis and Meilisearch for a personal blog would be provisioning for an
+# architecture this site does not have.
+#
+# ## Why the content is a bind mount
+#
+# `./content` is a bind mount rather than a named volume, and it is read-write.
+# Markdown is the source of truth and the author edits it — in an editor, in
+# git, on the host — so it has to be a directory you can open, not a blob Docker
+# manages. `./public/uploads` is the same: the files are meant to be reachable
+# and copyable.
+#
+# ## Why the migration is its own service
+#
+# `migrate` builds the same source at the `build` stage, which has `tsx` and the
+# dev dependencies the migrator needs. `app` waits for it to exit successfully
+# before starting, so a deploy can never serve a schema it does not match.
+
+name: myblog
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-myblog}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_DB: ${POSTGRES_DB:-myblog}
+      # Deterministic collation, so an index built on one machine sorts the same
+      # way on another. The default depends on the locale the cluster was
+      # initialised in, which is the classic way two "identical" databases
+      # disagree.
+      POSTGRES_INITDB_ARGS: '--encoding=UTF8 --locale=C'
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      # `-U` and `-d` are not optional here: without them `pg_isready` checks
+      # for a database named after the OS user, reports ready, and the app
+      # starts against a database that is still initialising.
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-myblog} -d ${POSTGRES_DB:-myblog}']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    # Not published to the host by default. Uncomment to reach it with `psql`
+    # from the host; leaving it closed means the database is reachable only from
+    # the compose network.
+    # ports:
+    #   - '127.0.0.1:5432:5432'
+
+  migrate:
+    build:
+      context: .
+      # The build stage: it has pnpm, tsx and the full dependency set.
+      target: build
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-myblog}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-myblog}
+      SESSION_SECRET: ${SESSION_SECRET:?SESSION_SECRET is required}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # Runs to completion and exits. `--` so the flag reaches pnpm rather than
+    # being eaten by the shell.
+    command: ['pnpm', 'db:migrate']
+    restart: 'no'
+
+  app:
+    build:
+      context: .
+      target: runner
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-myblog}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-myblog}
+      SESSION_SECRET: ${SESSION_SECRET:?SESSION_SECRET is required}
+
+      # The public origin. Used for canonical URLs, the sitemap, feeds and
+      # generated OG cards, so it has to be the address a reader types — an
+      # internal service name here produces a sitemap full of hostnames nobody
+      # can resolve.
+      SITE_URL: ${SITE_URL:-http://localhost:3000}
+
+      # Cookies are only marked `Secure` when the site is actually served over
+      # TLS. Set this to 1 behind HTTPS; leaving it at 0 over plain HTTP is what
+      # makes login work at all on a local deployment.
+      COOKIE_SECURE: ${COOKIE_SECURE:-0}
+
+      CONTENT_DIR: /app/content
+      UPLOAD_DIR: /app/public/uploads
+      UPLOAD_URL_PREFIX: /uploads
+
+      # Reconcile the content tree against the index on boot. This is what makes
+      # dropping a `.md` file into `./content` and restarting a publish.
+      CONTENT_SYNC_ON_BOOT: ${CONTENT_SYNC_ON_BOOT:-1}
+
+      # Analytics is on by default and stores no IP addresses. Set to 0 to turn
+      # it off entirely — no collection, no aggregation, no page.
+      ANALYTICS_ENABLED: ${ANALYTICS_ENABLED:-1}
+
+      # The worker loop inside the app: scheduled publishing, analytics
+      # rollups, orphan pruning.
+      WORKER_INTERVAL_MS: ${WORKER_INTERVAL_MS:-60000}
+    volumes:
+      - ./content:/app/content
+      - ./public/uploads:/app/public/uploads
+    ports:
+      - '${PORT:-3000}:3000'
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+volumes:
+  postgres-data:
