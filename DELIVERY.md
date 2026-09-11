@@ -399,12 +399,12 @@ backups/2026-09-11T10-30-00Z/
 ## 10. Future Improvements（后续改进）
 
 以下是实际阅读代码后确认的**未完成项与缺口**，一条一条列出，不含推测。这一节随实现移动：
-上一版列在这里、现已补齐的有九项——重定向未生效、Analytics 两端未接、按 tag / 分类的 RSS
+上一版列在这里、现已补齐的有十项——重定向未生效、Analytics 两端未接、按 tag / 分类的 RSS
 缺失、Git 自动提交只有开关、Worker 循环无人启动、About 页缺两个区块、TOC 无平滑滚动、
-终端样式是空规则、sitemap 缺 tag 与 series 页（依次对应设定稿第二十五、二十八、二十六、
-四十二、三十九、四十三、八、七、二十三节），因此不再出现在下面。
+终端样式是空规则、sitemap 缺 tag 与 series 页、加载时没有骨架屏（依次对应设定稿第二十五、
+二十八、二十六、四十二、三十九、四十三、八、七、二十三、四十九节），因此不再出现在下面。
 
-补上来的三项顺带记下三个决定：第八节的平滑滚动没有写成 `html { scroll-behavior: smooth }`，
+补上来的几项顺带记下四个决定：第八节的平滑滚动没有写成 `html { scroll-behavior: smooth }`，
 因为那个属性作用于视口的**每一次**滚动——Next 在路由切换时用 `scrollIntoView()` 定位，全局
 声明会把"从长文中点开另一篇文章"也变成动画。改为在点击目录链接时把该属性临时设在根元素上、
 滚动结束（`scrollend`，或 1s 上限）后收回，浏览器的原生行为——URL 片段、历史记录、焦点顺序、
@@ -414,7 +414,18 @@ backups/2026-09-11T10-30-00Z/
 series 页由文档本身派生（`buildSitemapEntries` 里新增的 `topicEntries`）：只有当某个 tag 底下
 真的有一篇可被索引的文章时，它才会出现在 sitemap 里——与 tag 页本身"没有内容就 404"是同一条
 规则；tag 名到 slug 的映射由路由从 `listTags()` 传入，因为只有 `tags` 表知道 `C++` 的页面
-地址是 `/tags/c-plus-plus`。
+地址是 `/tags/c-plus-plus`。第四十九节的加载态只落在 `/search` 一个路由上
+（`src/app/(site)/search/loading.tsx`），因为 `loading.tsx` 不是免费的：它在导航开始的一瞬
+就会替换掉上一页，而本站其余路由都是一次索引查询、读者多半正从一篇文章走向另一篇，用骨架屏
+盖住还没读完的页面比等待更糟；搜索是唯一同时满足"全站最重的一次读"和"内容正是读者刚刚要求
+换掉的"的页面。骨架的高度按真实元素的行高排布（`h-8`/`sm:h-9` 对应标题、`h-7` 对应搜索框），
+替换时下面不会跳动；整块 `aria-hidden`，只有一行 `role="status"` 的 "Searching…" 会被读出——
+没有它，屏幕阅读器什么都听不到。这里要记一条实测结论：fallback 是否**渲染**取决于服务端那次
+渲染是否真的挂起（React 在渲染 suspend 时才冲刷 shell），查询够快时整页一次到达、从不产生
+fallback，这是正确行为而不是缺陷；用 `page.route` 延迟响应也复现不出来，因为客户端路由会一直
+持有旧页面直到 payload 落地——骨架只在**服务端渲染慢**时出现，不在网络慢时出现。所以 E2E
+断言的是"该路由带着一个加载态，且它是骨架不是 spinner"（`tests/e2e/states.spec.ts`），
+而不是"读者一定会看到它"。
 
 **功能缺口**
 
@@ -423,27 +434,25 @@ series 页由文档本身派生（`buildSitemapEntries` 里新增的 `topicEntri
 2. **编辑器的两个快捷键没有绑定**：`Ctrl/Cmd+K` 插入链接与 `Ctrl/Cmd+Shift+I` 上传图片
    （`Cmd+S` 保存、`Cmd+P` 预览、粘贴图片、拖拽图片上传都已实现）。设定稿第十七节列出
    了这四个快捷键。
-3. **没有 `loading.tsx`**。`src/components/ui/skeleton.tsx` 存在但没有任何引用点，设定稿
-   第四十九节要求加载时用 Skeleton。
-4. **JSON-LD 只输出 Article 与 Breadcrumb**。`buildWebsiteJsonLd` 与
+3. **JSON-LD 只输出 Article 与 Breadcrumb**。`buildWebsiteJsonLd` 与
    `buildPersonJsonLd` 已实现并有测试，但没有生产调用方。
 
 **架构性限制**（属于已知取舍，不是遗漏）
 
-5. 搜索索引与关系索引都在进程内，多副本部署会成为陈旧窗口的来源（副本自己构建一份索引
+4. 搜索索引与关系索引都在进程内，多副本部署会成为陈旧窗口的来源（副本自己构建一份索引
    是正确的，但写时的失效只到达处理本次保存的那个副本）。
-6. CJK 采用 bigram 分词，对罕见词会过度切分、无法做单字前缀匹配；`SearchProvider`
+5. CJK 采用 bigram 分词，对罕见词会过度切分、无法做单字前缀匹配；`SearchProvider`
    接口就是为换 Meilisearch 留的缝。
-7. 修订以完整快照存在 `bytea` 中会增长数据库。约束是**内联**的而非后台任务：每次具名保存
+6. 修订以完整快照存在 `bytea` 中会增长数据库。约束是**内联**的而非后台任务：每次具名保存
     之后 `pruneRevisions` 按 `revisionsMaxPerContent`（默认 50）裁剪该文档的具名修订，
     自动保存由存储层在自己的事务里按 `AUTOSAVE_REVISIONS_KEPT` 单独裁剪
     （`src/lib/revision/store.ts`）。裁剪按文档进行，且总在写入之后——删掉文档，修订随之
     级联删除；没有任何 worker 任务参与这一步（`JOB_KINDS` 里没有 revision 相关类型）。
-8. 没有多作者工作流：schema 里有 `owner` / `editor` 角色，但没有评审队列或编辑审批。
+7. 没有多作者工作流：schema 里有 `owner` / `editor` 角色，但没有评审队列或编辑审批。
 
 **有意保留的"没有读取方"**
 
-9. `site_settings.googleVerification` 与 `commentsEnabled` 没有任何生产读取点。这是披露
+8. `site_settings.googleVerification` 与 `commentsEnabled` 没有任何生产读取点。这是披露
     而不是遗漏：后台在各自的输入框下面直接写明"加入它不会验证站点"/"打开它不会改变任何
     页面"。另有 `SETTINGS_CACHE_TAG`，后台的"清除缓存"动作会 `updateTag` 它，但当前没有
     `'use cache'` 消费者（`getSettings` 是每请求 memo）——这同样写在
