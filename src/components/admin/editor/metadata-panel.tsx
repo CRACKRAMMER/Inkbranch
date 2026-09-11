@@ -374,7 +374,7 @@ export function MetadataPanel({
           <Toggle
             id="fm-seo-noindex"
             label="Keep out of search engines"
-            hint="Writes seo.noindex; the page still renders and stays in the sitemap's exclusion list."
+            hint="Writes seo.noindex; the page still renders and is still listed here, but it leaves the sitemap and the feeds."
             checked={values.seoNoindex}
             disabled={disabled}
             onChange={(checked) => set('seoNoindex', checked)}

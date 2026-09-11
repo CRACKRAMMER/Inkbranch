@@ -16,10 +16,13 @@ import { charWidth, displayWidth, stripMarkdown, truncate } from '@/lib/utils/te
  * the three cannot drift apart: a flag honoured in four places by four
  * different pieces of code is a flag that will eventually be honoured in three.
  *
- * `isPublic` is the same rule `visibleFilter()` applies in
- * `src/lib/content/queries.ts`, so what a crawler is offered and what a reader
- * is shown are one decision with two readers rather than two decisions that
- * happen to agree today.
+ * `isPublic` and `visibleFilter()` in `src/lib/content/queries.ts` agree on every
+ * clause but one, and that clause is the whole point of the flag: `noindex`
+ * removes a document from what a crawler is offered — sitemap, feeds, robots
+ * meta — while leaving it on the site and in the site's own search, which is what
+ * an author who ticks "keep out of search engines" is asking for. Without that
+ * clause the two are one rule with two readers rather than two rules that happen
+ * to agree today: published, or scheduled and due.
  */
 
 /* -------------------------------------------------------------------------- */
