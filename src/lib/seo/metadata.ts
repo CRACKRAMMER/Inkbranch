@@ -141,6 +141,12 @@ export interface SeoDocument {
   tags?: readonly TagInput[]
   category?: string | null
   series?: string | null
+  /**
+   * Frontmatter language of the document itself. Optional because some callers
+   * build this shape out of `content_index` rows that did not select it, and an
+   * absent value falls back to the site's locale rather than being invented.
+   */
+  lang?: string | null
   /** Frontmatter cover, used as the feed enclosure. */
   cover?: string | null
   seo?: SeoFields | null

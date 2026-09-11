@@ -33,6 +33,11 @@ export default function GlobalError({
   }, [error])
 
   return (
+    /*
+     * The one page that cannot read the site's locale: it renders when the root
+     * layout — which is what reads it — has already failed. English prose, so
+     * English it says.
+     */
     <html lang="en">
       <body
         style={{

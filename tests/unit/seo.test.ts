@@ -270,6 +270,37 @@ describe('buildAtomFeed', () => {
   it('omits the feed updated time when no document can date it', () => {
     expect(buildAtomFeed({ ...base, documents: [] })).not.toContain('<updated>')
   })
+
+  it('declares the feed language once and marks only the entries that differ', () => {
+    // The feed is `zh-CN`. A note written in English is the exception and says
+    // so on the entry, which is the element Atom resolves the language from.
+    const feed = buildAtomFeed({
+      ...base,
+      documents: [doc({ slug: 'zh', lang: 'zh-CN' }), doc({ slug: 'en', lang: 'en' })],
+    })
+
+    expect(feed).toContain('<feed xmlns="http://www.w3.org/2005/Atom" xml:lang="zh-CN">')
+    expect(feed).toContain('<entry xml:lang="en">')
+    // Not repeated on the entry that agrees: the attribute is information only
+    // where it disagrees, and a copy on every entry would hide the one that
+    // carries it.
+    expect(feed.match(/<entry xml:lang=/g)).toHaveLength(1)
+    expect(feed.match(/<entry>/g)).toHaveLength(1)
+  })
+
+  it('claims no feed language when the site has none', () => {
+    const feed = buildAtomFeed({
+      ...base,
+      site: { name: 'My Blog' },
+      documents: [doc({ lang: 'zh-CN' })],
+    })
+
+    // Nothing above the entry declares a language, so the feed states none —
+    // but the entry still knows its own, and an entry that knows is not
+    // redundant. The only thing withheld is a claim the site cannot make.
+    expect(feed).toContain('<feed xmlns="http://www.w3.org/2005/Atom">')
+    expect(feed).toContain('<entry xml:lang="zh-CN">')
+  })
 })
 
 /* -------------------------------------------------------------------------- */
@@ -351,6 +382,26 @@ describe('buildArticleJsonLd', () => {
     const url = `${siteOrigin}/notes/${encodeURIComponent('cjk-笔记')}`
     expect(data.url).toBe(url)
     expect(data.mainEntityOfPage).toEqual({ '@type': 'WebPage', '@id': url })
+  })
+
+  it('states the language the document is written in, not the site’s', () => {
+    // The site is `zh-CN`. A note written in English is in English, and saying
+    // otherwise contradicts the page's own `<article lang>` — a machine-reader
+    // would be told the opposite of what a screen reader is told.
+    expect(buildArticleJsonLd({ site, doc: doc({ lang: 'en' }) }).inLanguage).toBe('en')
+    expect(buildArticleJsonLd({ site, doc: doc({ lang: 'zh-CN' }) }).inLanguage).toBe('zh-CN')
+  })
+
+  it('falls back to the site locale when the document has no language', () => {
+    // The row a caller built from `content_index` may not have selected one.
+    expect(buildArticleJsonLd({ site, doc: doc({ lang: null }) }).inLanguage).toBe('zh-CN')
+    expect(buildArticleJsonLd({ site, doc: doc() }).inLanguage).toBe('zh-CN')
+
+    // Neither: the field is dropped, because an empty string is a claim that
+    // the document has no language and `null` is a claim that a field exists.
+    expect(buildArticleJsonLd({ site: { name: 'My Blog' }, doc: doc() })).not.toHaveProperty(
+      'inLanguage',
+    )
   })
 })
 

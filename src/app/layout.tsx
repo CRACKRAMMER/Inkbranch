@@ -5,6 +5,7 @@ import { ThemeProvider } from '@/components/theme-provider'
 import { Toaster } from '@/components/ui/toaster'
 import { siteOrigin } from '@/env'
 import { SITE_ATOM_PATH, SITE_RSS_PATH } from '@/lib/seo/metadata'
+import { getSettings } from '@/lib/settings'
 
 import './globals.css'
 
@@ -80,14 +81,33 @@ export const viewport: Viewport = {
   ],
 }
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+/**
+ * The document shell.
+ *
+ * This is the only component that renders `<html>`, so it is the only place the
+ * page's language can be declared, and a screen reader that is told the wrong
+ * one reads the whole page in the wrong voice — including the parts it would
+ * otherwise get right. The value comes from settings rather than from a
+ * constant, because the site is bilingual by design and the setting is where
+ * the author says which language the chrome is in. Each document can then
+ * override it for itself, which `DocumentView` does from its own frontmatter.
+ *
+ * The read is memoised per request by `getSettings`, so the layouts and pages
+ * that also need settings still cost one query between them. If it throws — no
+ * database — this layout throws with it, and `global-error.tsx` renders its own
+ * `<html>` outside this tree, which is why that file still has to spell a
+ * language out by hand.
+ */
+export default async function RootLayout({ children }: { children: React.ReactNode }) {
+  const settings = await getSettings()
+
   return (
     /*
      * `suppressHydrationWarning` is required by next-themes: the theme class is
      * set by an inline script before React hydrates, so the server HTML and the
      * first client render legitimately differ on this one attribute.
      */
-    <html lang="en" suppressHydrationWarning>
+    <html lang={settings.locale} suppressHydrationWarning>
       <body className={`${sans.variable} ${serif.variable} ${mono.variable}`}>
         <ThemeProvider>
           {/*

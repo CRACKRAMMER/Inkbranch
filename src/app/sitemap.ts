@@ -56,6 +56,9 @@ export async function loadSeoDocuments(): Promise<SeoDocument[]> {
         title: contentIndex.title,
         description: contentIndex.description,
         status: contentIndex.status,
+        // The document's own language, not the site's: an Atom entry written
+        // in another language says so on the entry itself.
+        lang: contentIndex.lang,
         publishedAt: contentIndex.publishedAt,
         scheduledAt: contentIndex.scheduledAt,
         updatedAt: contentIndex.updatedAt,
@@ -92,6 +95,7 @@ export async function loadSeoDocuments(): Promise<SeoDocument[]> {
     title: row.title,
     description: row.description,
     status: row.status,
+    lang: row.lang,
     publishedAt: row.publishedAt,
     scheduledAt: row.scheduledAt,
     updatedAt: row.updatedAt,

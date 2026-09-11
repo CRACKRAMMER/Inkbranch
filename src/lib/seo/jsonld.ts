@@ -200,7 +200,18 @@ export function buildArticleJsonLd(
       url: `${siteOrigin}/`,
     }),
     image: input.imageUrl ? absoluteUrl(input.imageUrl) : undefined,
-    inLanguage: site.locale ?? undefined,
+    /*
+     * The document's own language first.
+     *
+     * This used to be the site's locale unconditionally, which is right only on
+     * a monolingual site. On a bilingual one it publishes a claim that
+     * contradicts the page: `<article lang>` says the note is in Chinese and
+     * this says it is in the site's default language, and a consumer that reads
+     * both — or that reads only this one — gets the wrong answer about a
+     * document it cannot see. The site's locale stays as the fallback for
+     * callers whose row did not carry a language.
+     */
+    inLanguage: doc.lang ?? site.locale ?? undefined,
     keywords: tagNames(doc.tags).join(', ') || undefined,
     articleSection: doc.category ?? undefined,
     isPartOf: doc.series

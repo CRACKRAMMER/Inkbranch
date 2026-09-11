@@ -208,7 +208,19 @@ function atomEntry(
   const description = resolveDescription(doc, site)
 
   const lines = [
-    '  <entry>',
+    /*
+     * `xml:lang` only when the entry disagrees with the feed. Atom resolves the
+     * language from the nearest ancestor that declares one, so the feed's own
+     * declaration covers every entry written in the site's language, and this
+     * attribute is exactly the exception. Repeating it on every entry would be
+     * noise that hides the one entry where it carries information.
+     *
+     * RSS 2.0, below, gets nothing: `<language>` is defined at channel level
+     * only, and there is no conformant per-item equivalent to reach for.
+     */
+    doc.lang && doc.lang !== site.locale
+      ? `  <entry xml:lang="${escapeXml(doc.lang)}">`
+      : '  <entry>',
     `    <title>${escapeXml(doc.title)}</title>`,
     `    <link href="${escapeXml(url)}" rel="alternate" type="text/html"/>`,
     // Atom requires an IRI id and requires it to be permanent. The canonical
@@ -252,7 +264,11 @@ export function buildAtomFeed(options: FeedOptions): string {
 
   const head = [
     '<?xml version="1.0" encoding="utf-8"?>',
-    '<feed xmlns="http://www.w3.org/2005/Atom">',
+    // The feed's language, stated once, so an entry written in another one has
+    // something to be an exception to.
+    site.locale
+      ? `<feed xmlns="http://www.w3.org/2005/Atom" xml:lang="${escapeXml(site.locale)}">`
+      : '<feed xmlns="http://www.w3.org/2005/Atom">',
     `  <title>${escapeXml(title)}</title>`,
     description ? `  <subtitle>${escapeXml(description)}</subtitle>` : '',
     `  <id>${escapeXml(home)}</id>`,

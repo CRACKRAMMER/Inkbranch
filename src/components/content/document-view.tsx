@@ -92,7 +92,14 @@ export function DocumentView({
         </div>
       }
     >
-      <article>
+      {/*
+        `lang` on the article, not only on `<html>`: a document declares the
+        language it is written in, and on a bilingual site that is regularly not
+        the language of the chrome around it. Only the tag that *contains* the
+        prose can say so, and a screen reader switches voice at exactly this
+        boundary.
+      */}
+      <article lang={doc.lang}>
         <header className="mb-10 border-b border-line pb-6">
           <div className="flex items-start justify-between gap-4">
             <h1 className="min-w-0 text-[1.75rem] font-semibold leading-tight tracking-[-0.02em] text-ink sm:text-[2rem]">

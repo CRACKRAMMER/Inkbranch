@@ -80,9 +80,11 @@ function shell(input: {
   source: string
   meta: string
   body: string
+  /** The document's own language, from its frontmatter. */
+  lang: string
 }): string {
   return `<!doctype html>
-<html lang="en">
+<html lang="${escapeXml(input.lang)}">
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -170,7 +172,15 @@ export async function GET(request: Request): Promise<Response> {
       .filter((part): part is string => part !== null)
       .join('  ·  ')
 
-    return new Response(shell({ title: doc.title || slug, source: relativePath, meta, body: html }), {
+    const page = shell({
+      title: doc.title || slug,
+      source: relativePath,
+      meta,
+      body: html,
+      lang: doc.lang,
+    })
+
+    return new Response(page, {
       headers: {
         'content-type': 'text/html; charset=utf-8',
         'cache-control': 'private, no-store',
