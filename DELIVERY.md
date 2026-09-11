@@ -492,10 +492,19 @@ URL 算进引用键（有人把缩略图 URL 贴进文档时，"未使用"视图
     （`src/lib/revision/store.ts`）。裁剪按文档进行，且总在写入之后——删掉文档，修订随之
     级联删除；没有任何 worker 任务参与这一步（`JOB_KINDS` 里没有 revision 相关类型）。
 4. 没有多作者工作流：schema 里有 `owner` / `editor` 角色，但没有评审队列或编辑审批。
+5. 内部链接在保存时**只解析被保存的那个文档**，用的是那一刻的索引。代价是前向引用：先写下
+   的 `[[某篇还没写的文档]]` 在目标出现后不会自己变成一条边，要等下一次全量同步——一次启动
+   （`CONTENT_SYNC_ON_BOOT=1`）或一次导入——才解析。按文档解析让一次保存的代价与这篇文档成
+   正比，全量重解析则会让"改一个错别字"变成"重扫全库"，所以这是取舍而不是疏漏；行本身是正
+   确的：`content_links` 里存下了 `target_key`、`target_id` 为 `null`，只是没有解析。
+   `tests/e2e/graph.spec.ts` 的注释里记了这个方向上的实测（顺序反过来——先发被引用者、再发
+   引用者——边就在，因为保存时解析得到目标）。补起来不必改接口：保存后按该文档的候选键走
+   `content_links_target_key_idx` 反查，把命中的 `null` 补上即可；没有做，是因为它需要自己
+   的用例，以及"导入时是否也补做"这条口径。
 
 **有意保留的"没有读取方"**
 
-5. `site_settings.googleVerification` 与 `commentsEnabled` 没有任何生产读取点。这是披露
+6. `site_settings.googleVerification` 与 `commentsEnabled` 没有任何生产读取点。这是披露
     而不是遗漏：后台在各自的输入框下面直接写明"加入它不会验证站点"/"打开它不会改变任何
     页面"。另有 `SETTINGS_CACHE_TAG`，后台的"清除缓存"动作会 `updateTag` 它，但当前没有
     `'use cache'` 消费者（`getSettings` 是每请求 memo）——这同样写在
@@ -524,3 +533,15 @@ URL 算进引用键（有人把缩略图 URL 贴进文档时，"未使用"视图
    `remark-alerts.ts`（callout 与 GitHub Alert）、`remark-deflist`（定义列表）。
 5. **§4** 写 "Postgres 16+"，而 `docker-compose.yml` 固定 `postgres:17-alpine`。二者不冲突
    （schema 不需要 16 以上的特性），只是版本口径不一致。
+6. **§7 搜索**：文中给 `SearchProvider` 定的接口含 `upsert` / `remove` / `rebuild`，当前只有
+   `search(query)` 一个方法（`src/lib/search/provider.ts` 的注释写明了为什么不放：那些方法
+   是本地存储的形状，不该强加给一个远端实现）。文中写索引持久化在 `.cache/search-index.json`、
+   按文档 checksum 增量重建——没有这个文件：本地 provider 在进程内从内容树构建，用内容树指纹
+   （`FINGERPRINT_TTL_MS`，5 秒）判断要不要重建，写完文档时由
+   `src/lib/admin/revalidate.ts` 显式作废。字段权重写的是 `title 5 / tags+category 3 /
+   description 2 / body 1` 且没有 `headings`，实际是
+   `title 8 / tags 6 / category 5 / description 4 / headings 3 / body 1`（`FIELD_WEIGHTS`）。
+   分词写成 "ASCII words (lowercased, stem-free, length ≥ 2)"，实际会做保守词干归并
+   （`render` / `renders` / `rendering` 是同一个词），也没有长度下限。查询语法只实现了
+   `type:` / `tag:` / `category:`（复数形式同义），`before:` / `after:` 会被当作不支持的
+   过滤器回报给读者（`ParsedQuery.unsupported` 变成页面与 palette 上的一句提示）。

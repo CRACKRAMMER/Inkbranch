@@ -42,6 +42,15 @@ export interface SearchQuery {
   types?: readonly ContentType[]
   /** Restrict to documents carrying at least one of these tags. */
   tags?: readonly string[]
+  /**
+   * Restrict to these categories, compared case-insensitively.
+   *
+   * A category is a string on the document rather than a row with a slug, so
+   * there is nothing to normalise it against — but a *filter* is not a URL and
+   * two spellings of one category do not have to be two different things to a
+   * query the way they would to two feed addresses.
+   */
+  categories?: readonly string[]
   /** Statuses to include. Defaults to published content only. */
   statuses?: readonly ContentStatus[]
   limit?: number
@@ -49,7 +58,13 @@ export interface SearchQuery {
 }
 
 /** Which field a match was found in. Used to explain a result's relevance. */
-export type MatchField = 'title' | 'description' | 'tags' | 'headings' | 'body'
+export type MatchField =
+  | 'title'
+  | 'tags'
+  | 'category'
+  | 'description'
+  | 'headings'
+  | 'body'
 
 export interface SearchHit {
   type: ContentType
@@ -64,6 +79,8 @@ export interface SearchHit {
   titleHtml: string
   description: string
   tags: string[]
+  /** The section the document was filed under, as written. Null when unfiled. */
+  category: string | null
   publishedAt: Date | null
   score: number
   /**
@@ -133,14 +150,15 @@ export const SEARCH_INDEX_VERSION = 1
  * says `render`, and ORing them would make `rendering pipeline` return
  * everything mentioning a pipeline.
  *
- * `phrases` are also required, matched as a consecutive run. `tags` and `types`
- * are filters rather than ranking signals, so a filter matching nothing yields
- * nothing rather than being quietly dropped.
+ * `phrases` are also required, matched as a consecutive run. `tags`,
+ * `categories` and `types` are filters rather than ranking signals, so a filter
+ * matching nothing yields nothing rather than being quietly dropped.
  */
 export interface ParsedQuery {
   terms: string[][]
   phrases: string[]
   tags: string[]
+  categories: string[]
   types: ContentType[]
   /** True when the query carried no searchable content and no filters. */
   isEmpty: boolean
@@ -166,11 +184,16 @@ const OPERATOR_NAME = /^[a-z][a-z-]*$/
 /**
  * Parse a query string.
  *
- * Supported: `"exact phrase"`, `tag:react`, `type:post`, and bare terms. An
- * unrecognised `operator:value` is reported in `unsupported` rather than
- * silently searched for as literal text — someone who typed `author:me` wants a
- * filter, and returning articles that happen to contain the word "author" would
- * be worse than saying the filter does not exist.
+ * Supported: `"exact phrase"`, `tag:react`, `category:linux`, `type:post`, and
+ * bare terms. An unrecognised `operator:value` is reported in `unsupported`
+ * rather than silently searched for as literal text — someone who typed
+ * `author:me` wants a filter, and returning articles that happen to contain the
+ * word "author" would be worse than saying the filter does not exist.
+ *
+ * Filters are collected lowercased, and the fields they are compared against
+ * are lowercased at the comparison. A filter is a value a reader types from
+ * memory; the tag and category names it has to match were chosen by an author
+ * who may well have capitalised them.
  */
 export function parseQuery(
   input: string,
@@ -179,6 +202,7 @@ export function parseQuery(
   const bareTerms: string[] = []
   const phrases: string[] = []
   const tags: string[] = []
+  const categories: string[] = []
   const types: ContentType[] = []
   const unsupported: string[] = []
 
@@ -215,6 +239,11 @@ export function parseQuery(
         continue
       }
 
+      if (operator === 'category' || operator === 'categories') {
+        if (value) categories.push(value.toLowerCase())
+        continue
+      }
+
       if (known) {
         unsupported.push(raw)
         continue
@@ -228,12 +257,13 @@ export function parseQuery(
   // tokenises to nothing, and answering it with a full archive listing would be
   // as wrong as answering an empty box that way.
   const groups = mergeGroups(bareTerms.flatMap((term) => toGroups(term)))
-  const hasFilters = tags.length > 0 || types.length > 0
+  const hasFilters = tags.length > 0 || categories.length > 0 || types.length > 0
 
   return {
     terms: groups,
     phrases,
     tags,
+    categories,
     types,
     hasFilters,
     isEmpty: groups.length === 0 && phrases.length === 0 && !hasFilters,

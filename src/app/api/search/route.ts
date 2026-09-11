@@ -46,6 +46,10 @@ const querySchema = z.object({
     .transform((value) => value.slice(0, MAX_QUERY_LENGTH)),
   types: z.array(z.enum(['post', 'note', 'project'])).max(3),
   tags: z.array(z.string().min(1).max(80)).max(10),
+  // A category is a string rather than a row, so there is no slug to validate
+  // against and no length it could not legitimately exceed. The cap is on how
+  // many filters one request may carry, not on what a category may be called.
+  categories: z.array(z.string().min(1).max(80)).max(10),
   // A limit that is absent or not a number carries no instruction, so it is
   // answered with the provider's own default. The ceiling below is a property
   // of the index, and a caller cannot raise it by asking.
@@ -66,6 +70,7 @@ export async function GET(request: Request): Promise<Response> {
     q: params.get('q') ?? '',
     types: listParam(params.getAll('type')),
     tags: listParam(params.getAll('tag')),
+    categories: listParam(params.getAll('category')),
     limit: params.get('limit') ?? undefined,
     offset: params.get('offset') ?? undefined,
   })
@@ -90,6 +95,7 @@ export async function GET(request: Request): Promise<Response> {
       q: parsed.data.q,
       types: parsed.data.types as ContentType[],
       tags: parsed.data.tags,
+      categories: parsed.data.categories,
       limit: pageSize(parsed.data.limit),
       offset: parsed.data.offset,
     })

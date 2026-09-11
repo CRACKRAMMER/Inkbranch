@@ -20,3 +20,18 @@ export const TYPE_LABELS: Record<ContentType, string> = {
   note: 'Note',
   project: 'Project',
 }
+
+/**
+ * The same three types, naming *several* of them.
+ *
+ * A search that groups its results by type puts one of these above each group,
+ * and a group heading that read "Article" over three articles would be a
+ * mislabel rather than a style. Written out rather than derived by appending an
+ * `s`, because the next type to be added is exactly the one where that rule
+ * produces a word nobody wrote.
+ */
+export const TYPE_GROUP_LABELS: Record<ContentType, string> = {
+  post: 'Articles',
+  note: 'Notes',
+  project: 'Projects',
+}

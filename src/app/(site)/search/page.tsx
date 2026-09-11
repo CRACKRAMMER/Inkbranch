@@ -68,7 +68,7 @@ export default async function SearchPage({
     <Container>
       <PageHeader
         title="Search"
-        description="Search titles, tags, headings and body text across every published document."
+        description="Search titles, tags, categories, headings and body text across every published document."
         meta={
           result
             ? `${result.total} ${result.total === 1 ? 'result' : 'results'} · ranked by ${result.provider} in ${result.took}ms`
@@ -189,6 +189,9 @@ function Result({
         <span className="font-mono uppercase tracking-wider text-ink-subtle">
           {TYPE_LABELS[hit.type]}
         </span>
+        {hit.category ? (
+          <span className="text-ink-subtle">{hit.category}</span>
+        ) : null}
         {hit.publishedAt ? (
           <time dateTime={hit.publishedAt.toISOString()} className="text-ink-subtle">
             {formatDate(hit.publishedAt, context, 'medium')}

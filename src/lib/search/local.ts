@@ -49,10 +49,18 @@ import { indexTerms, queryGroups, stem, tokenize } from './tokenize'
  * one author rather than a relevance team.
  */
 
-/** Field weights. Tuned by reading results, not by fitting to a corpus. */
+/**
+ * Field weights. Tuned by reading results, not by fitting to a corpus.
+ *
+ * `category` sits between `tags` and `description`: it is an editorial label
+ * like a tag — the author wrote it to say what the document is about — but a
+ * document has one of them rather than a handful, so it says less about a
+ * specific question and more about the shelf the document is on.
+ */
 const FIELD_WEIGHTS = {
   title: 8,
   tags: 6,
+  category: 5,
   description: 4,
   headings: 3,
   body: 1,
@@ -91,6 +99,7 @@ interface IndexedDocument {
   title: string
   description: string
   tags: string[]
+  category: string | null
   headings: string[]
   body: string
   status: ContentStatus
@@ -239,6 +248,7 @@ async function buildIndex(): Promise<Index> {
 
 function toIndexedDocument(document: ContentDocument): IndexedDocument {
   const tags = document.tags
+  const category = document.category
   const headings = document.headings.map((heading) => heading.text)
   const description = document.description || summarize(document.plainText, 200)
 
@@ -249,6 +259,14 @@ function toIndexedDocument(document: ContentDocument): IndexedDocument {
     ['headings', headings.join(' ')],
     ['body', document.plainText],
   ]
+
+  // Added only when there is one, because an empty field is not free: the loop
+  // below charges every field its weight for the length normalisation, so a
+  // document with no category would be sized as though it carried a label of
+  // weight 5 and no words — and every unfiled document would be charged it
+  // equally, which is the sort of uniform distortion that quietly flattens
+  // differences between documents rather than showing up as a wrong result.
+  if (category) fields.push(['category', category])
 
   const terms = new Map<string, MatchField[]>()
   let length = 0
@@ -276,6 +294,7 @@ function toIndexedDocument(document: ContentDocument): IndexedDocument {
     title: document.title,
     description,
     tags,
+    category,
     headings,
     body: document.plainText,
     status: document.status,
@@ -316,13 +335,24 @@ export async function runSearch(query: SearchQuery): Promise<SearchResult> {
   const tagFilter = new Set(
     [...(query.tags ?? []), ...parsed.tags].map((tag) => tag.toLowerCase()),
   )
+  const categoryFilter = new Set(
+    [...(query.categories ?? []), ...parsed.categories].map((category) =>
+      category.toLowerCase(),
+    ),
+  )
 
   const types = typeFilter.size > 0 ? typeFilter : null
   const tags = tagFilter.size > 0 ? tagFilter : null
+  const categories = categoryFilter.size > 0 ? categoryFilter : null
 
   const matchesFilters = (doc: IndexedDocument): boolean => {
     if (types && !types.has(doc.type)) return false
     if (tags && !doc.tags.some((tag) => tags.has(tag.toLowerCase()))) return false
+    // Case-insensitive, and against the name as written rather than a slug,
+    // because a category has no slug to normalise to — see `SearchQuery`.
+    if (categories && !(doc.category && categories.has(doc.category.toLowerCase()))) {
+      return false
+    }
     return isVisible(doc, statuses)
   }
 
@@ -501,6 +531,7 @@ const FIELD_VALUE: Record<MatchField, (doc: IndexedDocument) => string> = {
   title: (doc) => doc.title,
   description: (doc) => doc.description,
   tags: (doc) => doc.tags.join(' '),
+  category: (doc) => doc.category ?? '',
   headings: (doc) => doc.headings.join(' '),
   body: (doc) => doc.body,
 }
@@ -622,6 +653,7 @@ function toHit(
     titleHtml: highlight(doc.title, parsed),
     description: doc.description,
     tags: doc.tags,
+    category: doc.category,
     publishedAt: doc.publishedAt,
     score,
     excerptHtml: buildExcerpt(doc.body, parsed),

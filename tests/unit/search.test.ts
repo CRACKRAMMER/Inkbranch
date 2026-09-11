@@ -22,6 +22,7 @@ interface SeedDoc {
   title: string
   body: string
   tags?: string[]
+  category?: string
   type?: 'post' | 'note' | 'project'
   draft?: boolean
 }
@@ -68,6 +69,37 @@ const DOCS: SeedDoc[] = [
     body: 'A draft about rendering that must not appear in public search results.',
     draft: true,
   },
+  /*
+   * The category fixtures. Each carries a word that appears nowhere else in the
+   * corpus — `Observability`, `Networking`, `Backpressure` — so a query for one
+   * of them can only have been answered from the category field, and a test that
+   * passed because the word was also in a body would be a test of nothing.
+   */
+  {
+    slug: 'ebpf-tracing',
+    title: 'Tracing syscalls with eBPF',
+    body: 'Attaching a probe to a syscall and reading the ring buffer back without stopping the process.',
+    category: 'Observability',
+    tags: ['ebpf'],
+  },
+  {
+    slug: 'cilium-policy',
+    title: 'Cilium policy basics',
+    body: 'How an identity based rule differs from an address based one, and why that matters once pods move.',
+    category: 'Networking',
+    type: 'note',
+  },
+  {
+    slug: 'queue-depths',
+    title: 'Measuring queue depths',
+    body: 'What a rising queue depth means for a worker pool, and when adding consumers stops helping.',
+    category: 'Backpressure',
+  },
+  {
+    slug: 'flow-control',
+    title: 'Notes on flow control',
+    body: 'Backpressure as a design question rather than a library feature — the choice belongs to the producer.',
+  },
 ]
 
 beforeAll(async () => {
@@ -80,6 +112,7 @@ beforeAll(async () => {
         slug: doc.slug,
         description: `About ${doc.title}`,
         tags: doc.tags ?? [],
+        ...(doc.category ? { category: doc.category } : {}),
         ...(doc.draft ? { status: 'draft' } : { date: '2024-06-01' }),
       },
       body: doc.body,
@@ -215,6 +248,19 @@ describe('parseQuery', () => {
     expect(parsed.isEmpty).toBe(false)
     expect(parsed.hasFilters).toBe(true)
   })
+
+  it('extracts a category filter, and files it lowercased', () => {
+    const parsed = parseQuery('category:Networking policy', queryGroups)
+    // Filed lowercased because the *filter* is compared case-insensitively —
+    // the category as written on the document is not touched.
+    expect(parsed.categories).toEqual(['networking'])
+    expect(parsed.hasFilters).toBe(true)
+    expect(parsed.isEmpty).toBe(false)
+  })
+
+  it('accepts the plural spelling, as it does for tags', () => {
+    expect(parseQuery('categories:linux', queryGroups).categories).toEqual(['linux'])
+  })
 })
 
 describe('runSearch', () => {
@@ -296,6 +342,44 @@ describe('runSearch', () => {
 
     // The `type:` operator in the query string is the same filter.
     expect(slugsOf((await runSearch({ q: 'react type:note' })).hits)).toEqual(['react-notes'])
+  })
+
+  it('finds a document by its category', async () => {
+    const result = await runSearch({ q: 'observability' })
+    expect(slugsOf(result.hits)).toEqual(['ebpf-tracing'])
+    // The word is in none of the other fields, so this is also the assertion
+    // that the category was indexed rather than looked up after the fact.
+    expect(result.hits[0]?.matched).toContain('category')
+  })
+
+  it('ranks a category match above the same word in a body', async () => {
+    // Both documents are about it; only one is filed under it. `queue-depths`
+    // carries the word in its category and `flow-control` in its body, and the
+    // label the author chose is the stronger signal.
+    const result = await runSearch({ q: 'backpressure' })
+    expect(slugsOf(result.hits)).toEqual(['queue-depths', 'flow-control'])
+  })
+
+  it('filters by category, whatever case either side is written in', async () => {
+    // As the author wrote it, as a reader would type it, and through the
+    // structured filter the API takes.
+    for (const query of ['category:networking', 'category:NETWORKING', 'category:Networking']) {
+      expect(slugsOf((await runSearch({ q: query })).hits), query).toEqual(['cilium-policy'])
+    }
+
+    const structured = await runSearch({ q: 'policy', categories: ['Networking'] })
+    expect(slugsOf(structured.hits)).toEqual(['cilium-policy'])
+  })
+
+  it('answers a category that nothing is filed under with nothing', async () => {
+    const result = await runSearch({ q: 'category:Infrastructure' })
+    expect(result.total).toBe(0)
+    expect(result.notice).toMatch(/No content matches/)
+  })
+
+  it('reports the category a result is filed under, and null when it has none', async () => {
+    expect((await runSearch({ q: 'probe' })).hits[0]?.category).toBe('Observability')
+    expect((await runSearch({ q: 'sequential' })).hits[0]?.category).toBeNull()
   })
 
   it('hides drafts unless they are asked for', async () => {

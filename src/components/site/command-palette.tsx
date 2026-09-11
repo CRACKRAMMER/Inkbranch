@@ -9,6 +9,7 @@ import { toast } from 'sonner'
 
 import { Kbd } from '@/components/ui/kbd'
 import type { ContentType } from '@/lib/db/schema'
+import { groupHits } from '@/lib/search/group'
 import { cn } from '@/lib/utils/cn'
 
 /**
@@ -24,6 +25,16 @@ import { cn } from '@/lib/utils/cn'
  * round trip against the same ranked index the search page uses. Keeping the
  * ranking in one place matters more than saving the listbox wiring, which is
  * about eighty lines.
+ *
+ * ## Results are grouped by kind
+ *
+ * Articles, then Notes, then Projects — the site's own order rather than the
+ * ranking's. The ranking still decides the order *within* a group; what it no
+ * longer decides is which kind of thing a reader meets first, because someone
+ * who types `linux` into a launcher is as likely to be looking for a kind of
+ * document as for a particular one. `groupHits` is where the rule lives, and
+ * the row that no longer repeats "Article" beside every article says the
+ * document's category instead.
  *
  * Accessibility follows the ARIA combobox pattern: focus stays in the input the
  * whole time and the active option is named by `aria-activedescendant`. Moving
@@ -43,12 +54,6 @@ const RESULT_LIMIT = 8
  */
 const NO_HITS: Hit[] = []
 
-const TYPE_LABEL: Record<ContentType, string> = {
-  post: 'Article',
-  note: 'Note',
-  project: 'Project',
-}
-
 interface Hit {
   type: ContentType
   slug: string
@@ -57,6 +62,8 @@ interface Hit {
   /** Title with `<mark>` around matches. Escaped by the server. */
   titleHtml: string
   description: string
+  /** The section the document is filed under, when it has one. */
+  category: string | null
 }
 
 interface Command {
@@ -66,6 +73,26 @@ interface Command {
   /** Extra strings the query is matched against, so `>theme` finds all three. */
   keywords: string[]
   run: (context: { setTheme: (theme: string) => void; router: ReturnType<typeof useRouter> }) => void
+}
+
+type PaletteItem =
+  | { kind: 'command'; command: Command }
+  | { kind: 'hit'; hit: Hit }
+
+/** Rows under one heading, with where they start in the flat list. */
+interface PaletteSection {
+  key: string
+  label: string
+  /**
+   * The index of this section's first row in the flat list.
+   *
+   * Carried rather than re-counted while rendering, because the two have to
+   * agree: the highlight is an index into the flat list and `aria-activedescendant`
+   * is built from it, so a section that counted its own rows incorrectly would
+   * highlight one row and announce another.
+   */
+  start: number
+  items: PaletteItem[]
 }
 
 /**
@@ -182,13 +209,45 @@ export function CommandPalette() {
     [isCommandMode, commandTerms],
   )
 
-  const items = useMemo(
-    () =>
-      isCommandMode
-        ? visibleCommands.map((command) => ({ kind: 'command' as const, command }))
-        : hits.map((hit) => ({ kind: 'hit' as const, hit })),
-    [isCommandMode, visibleCommands, hits],
-  )
+  /**
+   * The rows, under their headings.
+   *
+   * Sections rather than one list, because the grouping is what tells a reader
+   * that the third result is a note and not a shorter article. The flat list
+   * below is derived from this one and not built beside it, so the keyboard, the
+   * highlight and the rendered order cannot disagree about which row is which.
+   */
+  const sections = useMemo((): PaletteSection[] => {
+    const built: PaletteSection[] = []
+    let start = 0
+
+    if (isCommandMode) {
+      if (visibleCommands.length > 0) {
+        built.push({
+          key: 'commands',
+          label: 'Commands',
+          start,
+          items: visibleCommands.map((command) => ({ kind: 'command' as const, command })),
+        })
+      }
+      return built
+    }
+
+    for (const group of groupHits(hits)) {
+      built.push({
+        key: group.type,
+        label: group.label,
+        start,
+        items: group.hits.map((hit) => ({ kind: 'hit' as const, hit })),
+      })
+      start += group.hits.length
+    }
+
+    return built
+  }, [isCommandMode, visibleCommands, hits])
+
+  /** The display order, flattened. What the arrow keys move through. */
+  const items = useMemo(() => sections.flatMap((section) => section.items), [sections])
 
   /* ---------------------------------------------------------------- global key */
 
@@ -389,21 +448,47 @@ export function CommandPalette() {
               aria-label={isCommandMode ? 'Commands' : 'Results'}
               className="max-h-[min(24rem,50vh)] overflow-y-auto overscroll-contain p-1.5"
             >
-              {items.map((item, index) => (
-                <Option
-                  key={item.kind === 'command' ? item.command.id : `${item.hit.type}:${item.hit.slug}`}
-                  id={`${listboxId}-option-${index}`}
-                  index={index}
-                  selected={index === active}
-                  onHover={() => setActive(index)}
-                  onChoose={() => choose(index)}
-                >
-                  {item.kind === 'command' ? (
-                    <CommandRow command={item.command} />
-                  ) : (
-                    <HitRow hit={item.hit} />
-                  )}
-                </Option>
+              {sections.map((section) => (
+                /*
+                  A group inside the listbox, named by the heading beside it.
+                  The heading itself is `aria-hidden`, and that is not a way of
+                  hiding it from anyone: the group already carries the same word
+                  as its name, so a screen reader announces "Articles, group"
+                  once rather than reading the word twice. It stays in the DOM,
+                  and on screen, for the reader who is scanning with their eyes.
+                */
+                <div key={section.key} role="group" aria-label={section.label}>
+                  <div
+                    aria-hidden="true"
+                    className="px-2.5 pb-1 pt-2 text-[10px] font-medium uppercase tracking-wider text-ink-subtle"
+                  >
+                    {section.label}
+                  </div>
+
+                  {section.items.map((item, offset) => {
+                    const index = section.start + offset
+                    return (
+                      <Option
+                        key={
+                          item.kind === 'command'
+                            ? item.command.id
+                            : `${item.hit.type}:${item.hit.slug}`
+                        }
+                        id={`${listboxId}-option-${index}`}
+                        index={index}
+                        selected={index === active}
+                        onHover={() => setActive(index)}
+                        onChoose={() => choose(index)}
+                      >
+                        {item.kind === 'command' ? (
+                          <CommandRow command={item.command} />
+                        ) : (
+                          <HitRow hit={item.hit} />
+                        )}
+                      </Option>
+                    )
+                  })}
+                </div>
               ))}
 
               {items.length === 0 ? <EmptyState query={query} commandMode={isCommandMode} /> : null}
@@ -471,6 +556,14 @@ function CommandRow({ command }: { command: Command }) {
   )
 }
 
+/**
+ * One result.
+ *
+ * The row no longer says what kind of thing it is — the heading above it does,
+ * and a label that repeats the heading in every row is a label nobody reads.
+ * What is said instead is the document's category, when it has one: the heading
+ * tells the reader the shape of the result, and this tells them the shelf.
+ */
 function HitRow({ hit }: { hit: Hit }) {
   return (
     <>
@@ -493,7 +586,9 @@ function HitRow({ hit }: { hit: Hit }) {
           <span className="block truncate text-xs text-ink-subtle">{hit.description}</span>
         ) : null}
       </span>
-      <span className="shrink-0 text-xs text-ink-subtle">{TYPE_LABEL[hit.type]}</span>
+      {hit.category ? (
+        <span className="shrink-0 text-xs text-ink-subtle">{hit.category}</span>
+      ) : null}
     </>
   )
 }
