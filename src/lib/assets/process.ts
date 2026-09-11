@@ -2,6 +2,7 @@ import 'server-only'
 
 import sharp, { type OutputInfo, type Sharp } from 'sharp'
 import type { SniffResult } from '@/lib/security/mime'
+import { formatBytes } from '@/lib/utils/format'
 
 /**
  * Image processing.
@@ -481,12 +482,6 @@ async function averageColorOf(bytes: Buffer): Promise<string> {
 
   const [r, g, b] = [pixel[0] ?? 0, pixel[1] ?? 0, pixel[2] ?? 0]
   return `#${[r, g, b].map((channel) => channel.toString(16).padStart(2, '0')).join('')}`
-}
-
-/** Byte counts as a person reads them, for reasons and error messages. */
-export function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`
-  return `${(bytes / 1024).toFixed(1)} KB`
 }
 
 function messageOf(error: unknown): string {

@@ -18,8 +18,9 @@ import {
   sanitizeFilename,
 } from '@/lib/security/paths'
 
+import { formatBytes } from '@/lib/utils/format'
+
 import {
-  formatBytes,
   processImage,
   type ProcessedImage,
   type SkippedDerivative,

@@ -11,6 +11,7 @@ import {
 } from '@/lib/revision/store'
 import { getSettings } from '@/lib/settings'
 import { formatDate, formatRelative } from '@/lib/utils/date'
+import { formatBytes } from '@/lib/utils/format'
 import { loadEditorDocument } from '@/lib/admin/documents'
 import { revisionAuthors } from '@/lib/admin/revisions'
 import { typeFromSegment } from '@/lib/admin/routes'
@@ -242,8 +243,3 @@ function RevisionPicker({
   )
 }
 
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} kB`
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
-}

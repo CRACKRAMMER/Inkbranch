@@ -5,6 +5,7 @@ import { notFound } from 'next/navigation'
 import { requireUser } from '@/lib/auth/session'
 import { findAssetReferences, getAsset } from '@/lib/assets/manage'
 import { formatDate } from '@/lib/utils/date'
+import { formatBytes } from '@/lib/utils/format'
 import { getSettings } from '@/lib/settings'
 import { segmentForType } from '@/lib/admin/routes'
 import { InlineNote, Page, Section } from '@/components/admin/page'
@@ -260,8 +261,3 @@ function Row({ label, value, mono }: { label: string; value: string; mono?: bool
   )
 }
 
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} kB`
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
-}

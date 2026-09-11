@@ -11,12 +11,12 @@ import { segmentForType } from '@/lib/admin/routes'
 import { documentUrl } from '@/lib/content/paths'
 import { CONTENT_TYPES, type ContentStatus, type ContentType } from '@/lib/content/schema'
 import { syncOneDocument } from '@/lib/content/sync'
+import { formatBytes } from '@/lib/utils/format'
 import {
   IMPORT_LIMITS,
   applyImport,
   collectExistingContent,
   collectUploadKeys,
-  formatBytes,
   importReportLines,
   scanImportArchive,
   scanImportDirectory,

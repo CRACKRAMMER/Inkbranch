@@ -14,6 +14,7 @@ import type { ActionFailure } from '@/lib/admin/result'
 import { describeGitOutcome, type GitCommitNote } from '@/lib/git/message'
 import { textStats, type TextStats } from '@/lib/utils/text'
 import { cn } from '@/lib/utils/cn'
+import { formatBytes } from '@/lib/utils/format'
 import { autosaveContentAction, saveContentAction } from '@/app/admin/actions/content'
 import { previewMarkdownAction } from '@/app/admin/actions/preview'
 import { uploadAssetAction } from '@/app/admin/actions/assets'
@@ -723,8 +724,3 @@ function Preview({ state }: { state: PreviewState }) {
   )
 }
 
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} kB`
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
-}

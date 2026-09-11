@@ -12,6 +12,7 @@ import {
   type ArchiveLimits,
 } from '@/lib/security/paths'
 import { slugFromFilename, uniqueSlug } from '@/lib/utils/slug'
+import { formatBytes } from '@/lib/utils/format'
 import { deriveContent } from './derive'
 import { FrontmatterError, parseFrontmatter, serializeFrontmatter } from './frontmatter'
 import { extractLinks, wikiTargetCandidates } from './links'
@@ -1981,12 +1982,6 @@ export function importReportLines(plan: ImportPlan): string[] {
   }
 
   return lines
-}
-
-export function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`
 }
 
 /* -------------------------------------------------------------------------- */

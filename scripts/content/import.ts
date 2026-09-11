@@ -113,8 +113,9 @@ if (loaded.length > 0) {
 }
 
 void run('content:import', async () => {
-  const { IMPORT_LIMITS, applyImport, collectExistingContent, collectUploadKeys, formatBytes, importReportLines, scanImportArchive, scanImportDirectory, scanImportFiles } =
+  const { IMPORT_LIMITS, applyImport, collectExistingContent, collectUploadKeys, importReportLines, scanImportArchive, scanImportDirectory, scanImportFiles } =
     await import('@/lib/content/import')
+  const { formatBytes } = await import('@/lib/utils/format')
 
   heading('Scanning')
 

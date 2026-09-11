@@ -9,6 +9,7 @@ import { listJobs, type JobStatus } from '@/lib/jobs'
 import { searchProviderName } from '@/lib/search'
 import { getSettings } from '@/lib/settings'
 import { formatDate, formatRelative } from '@/lib/utils/date'
+import { formatBytes } from '@/lib/utils/format'
 import { InlineNote, Page, Section, Stat, StatCell, StatRow } from '@/components/admin/page'
 import { Pagination } from '@/components/admin/pagination'
 import { SystemActions } from '@/components/admin/system-controls'
@@ -468,18 +469,6 @@ function databaseLabel(): string {
 
 function shorten(id: string): string {
   return id.length > 12 ? `${id.slice(0, 8)}…` : id
-}
-
-function formatBytes(bytes: number): string {
-  const units = ['B', 'kB', 'MB', 'GB']
-  let value = bytes
-  let unit = 0
-  while (value >= 1024 && unit < units.length - 1) {
-    value /= 1024
-    unit += 1
-  }
-  const rounded = Number.isInteger(value) ? value : Number(value.toFixed(1))
-  return `${rounded} ${units[unit]}`
 }
 
 function clampPage(value: string | undefined): number {

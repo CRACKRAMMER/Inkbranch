@@ -6,6 +6,7 @@ import { requireUser } from '@/lib/auth/session'
 import { AUTOSAVE_SUMMARY, DEFAULT_REVISION_LIMIT, listRevisions } from '@/lib/revision/store'
 import { getSettings } from '@/lib/settings'
 import { formatDate, formatRelative } from '@/lib/utils/date'
+import { formatBytes } from '@/lib/utils/format'
 import { loadEditorDocument } from '@/lib/admin/documents'
 import { countRevisions, revisionAuthors, revisionStats } from '@/lib/admin/revisions'
 import { TYPE_COPY, typeFromSegment } from '@/lib/admin/routes'
@@ -228,8 +229,3 @@ function clampLimit(value: string | undefined): number {
   return Math.min(Math.max(Math.trunc(parsed), 1), 200)
 }
 
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} kB`
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
-}

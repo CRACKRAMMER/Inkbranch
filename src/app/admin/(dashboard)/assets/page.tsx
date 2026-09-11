@@ -4,6 +4,7 @@ import Link from 'next/link'
 import { requireUser } from '@/lib/auth/session'
 import { ASSET_TYPES, findUnusedAssets, listAssets, type AssetTypeFilter } from '@/lib/assets/manage'
 import { formatDate } from '@/lib/utils/date'
+import { formatBytes } from '@/lib/utils/format'
 import { getSettings } from '@/lib/settings'
 import { InlineNote, Page, Section, Stat, StatCell, StatRow } from '@/components/admin/page'
 import { CopyUrlButton, DeleteAssetButton } from '@/components/admin/asset-controls'
@@ -359,8 +360,3 @@ function clampPage(value: string | undefined): number {
   return Math.max(1, Math.trunc(parsed))
 }
 
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} kB`
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
-}
