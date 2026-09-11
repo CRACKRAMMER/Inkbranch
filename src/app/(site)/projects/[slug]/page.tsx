@@ -21,7 +21,6 @@ import { formatDate } from '@/lib/utils/date'
  * published", which is why `projectStatus` and `stack` exist in the frontmatter
  * at all rather than being written into the body.
  */
-export const revalidate = 300
 
 /** Human labels for the stored status values. */
 const STATUS_LABELS: Record<string, string> = {

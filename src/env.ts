@@ -92,28 +92,53 @@ function load() {
     throw new Error(`Invalid environment configuration:\n${details}`)
   }
 
-  const env = parsed.data
-
-  if (env.NODE_ENV === 'production') {
-    if (env.SESSION_SECRET === DEV_SESSION_SECRET) {
-      throw new Error(
-        'SESSION_SECRET is still the development default. Generate one with: openssl rand -base64 48',
-      )
-    }
-    if (!env.COOKIE_SECURE) {
-      throw new Error(
-        'COOKIE_SECURE must be 1 in production, otherwise session cookies are sent over plain HTTP.',
-      )
-    }
-    if (env.SITE_URL.startsWith('http://')) {
-      throw new Error('SITE_URL must use https:// in production.')
-    }
-  }
-
-  return env
+  return parsed.data
 }
 
 export const env = load()
+
+/**
+ * Refuse to serve with an insecure production configuration.
+ *
+ * ## Why this is not called from `load()`
+ *
+ * These are *runtime* properties, and a build is not a run. `next build` sets
+ * `NODE_ENV=production` and then imports every route to collect its page data,
+ * so validating here meant a build could only succeed if the machine doing the
+ * building already looked like a finished deployment — a developer's
+ * `.env.local` failed the secret check, and the Docker build failed on
+ * `COOKIE_SECURE` and `SITE_URL`, because the variables a container is *built*
+ * with are deliberately not the ones it is *deployed* with. That is backwards:
+ * the values that matter are the ones the running server was given.
+ *
+ * So the shape of the configuration is still checked at import — a missing
+ * `DATABASE_URL` or a too-short secret is a bug wherever it happens — while the
+ * posture is checked from `instrumentation.ts`, which runs once when a server
+ * process starts and not at all during a build.
+ *
+ * The failure is deliberately loud and fatal. Every check below is a control
+ * that is silently void rather than visibly broken when it is misconfigured:
+ * a known session secret forges any session, a cookie without `Secure` travels
+ * in clear text, and an `http://` site URL produces canonical links and a
+ * sitemap pointing at a scheme the site does not serve.
+ */
+export function assertProductionPosture(): void {
+  if (env.NODE_ENV !== 'production') return
+
+  if (env.SESSION_SECRET === DEV_SESSION_SECRET) {
+    throw new Error(
+      'SESSION_SECRET is still the development default. Generate one with: openssl rand -base64 48',
+    )
+  }
+  if (!env.COOKIE_SECURE) {
+    throw new Error(
+      'COOKIE_SECURE must be 1 in production, otherwise session cookies are sent over plain HTTP.',
+    )
+  }
+  if (env.SITE_URL.startsWith('http://')) {
+    throw new Error('SITE_URL must use https:// in production.')
+  }
+}
 
 export const isProd = env.NODE_ENV === 'production'
 export const isDev = env.NODE_ENV === 'development'

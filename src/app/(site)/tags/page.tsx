@@ -20,7 +20,6 @@ import { getSettings } from '@/lib/settings'
  * The count is set in the same monospace as every other number on the site, so
  * the column of counts lines up and can be scanned without reading.
  */
-export const revalidate = 600
 
 export async function generateMetadata(): Promise<Metadata> {
   const settings = await getSettings()

@@ -34,7 +34,6 @@ import { formatDate, toIsoDate } from '@/lib/utils/date'
  * somewhere to go that is genuinely adjacent — which the global tag list,
  * ordered by size, does not.
  */
-export const revalidate = 300
 
 /** The type label shown before a title when a tag spans more than one type. */
 const TYPE_LABELS: Record<string, string> = {

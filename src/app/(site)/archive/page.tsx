@@ -25,7 +25,6 @@ import { formatDate, toIsoDate } from '@/lib/utils/date'
  * A note can legitimately have no date, and leaving them out would make this
  * page quietly incomplete — which is the one thing an archive must not be.
  */
-export const revalidate = 600
 
 export async function generateMetadata(): Promise<Metadata> {
   const settings = await getSettings()

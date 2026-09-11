@@ -20,7 +20,6 @@ import { getSettings } from '@/lib/settings'
  * letting a reader conclude the site is broken. The threshold is low on
  * purpose — three documents that link to each other is already a graph.
  */
-export const revalidate = 3600
 
 export async function generateMetadata(): Promise<Metadata> {
   const settings = await getSettings()

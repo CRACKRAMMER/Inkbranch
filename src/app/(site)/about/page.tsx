@@ -21,7 +21,6 @@ import { getSettings } from '@/lib/settings'
  * The page is allowed to be short. An about page padded to fill a screen reads
  * as an obligation; one that says four true things reads as an answer.
  */
-export const revalidate = 3600
 
 export async function generateMetadata(): Promise<Metadata> {
   const settings = await getSettings()

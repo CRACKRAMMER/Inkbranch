@@ -26,7 +26,6 @@ import { formatDate } from '@/lib/utils/date'
  * links are labelled facts, and a bordered box around each project would be
  * four boxes of chrome to hold twelve words.
  */
-export const revalidate = 600
 
 /**
  * Sort order for the status groups.

@@ -28,7 +28,6 @@ import { formatDate, formatRelative } from '@/lib/utils/date'
  * that was planted two years ago belongs at the top of this page, and sorting
  * by publication date would bury it.
  */
-export const revalidate = 300
 
 export async function generateMetadata(): Promise<Metadata> {
   const settings = await getSettings()

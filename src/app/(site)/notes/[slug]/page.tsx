@@ -22,7 +22,6 @@ import { formatDate, formatRelative } from '@/lib/utils/date'
  * noting; on a note, it is the normal state and the more useful of the two
  * dates.
  */
-export const revalidate = 300
 
 export async function generateMetadata({
   params,

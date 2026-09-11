@@ -21,7 +21,15 @@ import { listContent, type ContentSummary } from '@/lib/content/queries'
  * This file sits at the root rather than in the `(site)` group, so it is the
  * boundary for `/admin` and every API path too — a mistyped admin URL lands here
  * with a link home rather than on a framework error page.
+ *
+ * `force-dynamic` for the same reason the site layout gives at length, and it
+ * has to be repeated because this file sits outside that layout and inherits
+ * nothing from it. Without it the recent list would be rendered once during
+ * `next build` — from whatever database happened to be reachable, or from none
+ * at all, which is the likely case and would bake an empty list into every 404
+ * on the deployed site.
  */
+export const dynamic = 'force-dynamic'
 
 /** Enough to recognise the shape of the archive; not another index page. */
 const RECENT_LIMIT = 5

@@ -22,7 +22,6 @@ import { formatDate, toIsoDate } from '@/lib/utils/date'
  * Reading order is chronological order, and a reader arriving here is at the
  * beginning, not looking for the newest thing.
  */
-export const revalidate = 300
 
 export async function generateMetadata({
   params,

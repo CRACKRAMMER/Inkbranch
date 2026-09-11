@@ -23,7 +23,6 @@ import { getSettings } from '@/lib/settings'
  * and the derived statistics; it has never held the prose, and that is the
  * property the whole design rests on.
  */
-export const revalidate = 300
 
 export async function generateMetadata({
   params,
