@@ -1,4 +1,4 @@
-import { and, eq, inArray, or, sql } from 'drizzle-orm'
+import { and, count, eq, inArray, or, sql } from 'drizzle-orm'
 import { env } from '@/env'
 import { db } from '@/lib/db'
 import {
@@ -235,6 +235,23 @@ export async function findStaleSearchRows(): Promise<StaleSearchRow[]> {
     .where(sql`${contentIndex.searchIndexVersion} < ${SEARCH_INDEX_VERSION}`)
 
   return rows
+}
+
+/**
+ * How many rows are behind, without reading them.
+ *
+ * `findStaleSearchRows` is the work list and loads every row it names; the
+ * dashboard only needs the number, and after a version bump the number is every
+ * document in the corpus. Asking for a count and receiving the whole corpus is
+ * the shape of query that is fine until the one day it is not.
+ */
+export async function countStaleSearchRows(): Promise<number> {
+  const [row] = await db
+    .select({ value: count() })
+    .from(contentIndex)
+    .where(sql`${contentIndex.searchIndexVersion} < ${SEARCH_INDEX_VERSION}`)
+
+  return Number(row?.value ?? 0)
 }
 
 /** Stamp the current search document version onto the given rows. */

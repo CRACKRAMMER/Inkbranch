@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, lt, sql } from 'drizzle-orm'
+import { and, asc, count, desc, eq, inArray, lt, sql } from 'drizzle-orm'
 import { env } from '@/env'
 import { db } from '@/lib/db'
 import { scheduledJobs, type ScheduledJobRow } from '@/lib/db/schema'
@@ -370,6 +370,32 @@ export async function listJobs(
     )
     .orderBy(desc(scheduledJobs.createdAt))
     .limit(limit)
+}
+
+/**
+ * How many jobs sit in each state, across the whole queue.
+ *
+ * Not a count of `listJobs`' answer. That returns a window — the most recently
+ * created `limit` rows — and a count taken from a window is a count of recent
+ * jobs wearing the label of a count of jobs. For the number the dashboard leads
+ * with the difference is not academic: a job stuck in `pending` since yesterday
+ * is older than the fifty that finished since it, so it is exactly the row a
+ * windowed count drops and exactly the row an operator needs to see.
+ *
+ * One grouped query, which `scheduled_jobs_status_run_at_idx` answers from its
+ * leading column.
+ */
+export async function jobStatusCounts(): Promise<Record<JobStatus, number>> {
+  const rows = await db
+    .select({ status: scheduledJobs.status, value: count() })
+    .from(scheduledJobs)
+    .groupBy(scheduledJobs.status)
+
+  // Every state present as a key, so a caller reads a number rather than
+  // `undefined` for the state nobody is in.
+  const counts: Record<JobStatus, number> = { pending: 0, running: 0, done: 0, failed: 0 }
+  for (const row of rows) counts[row.status] = Number(row.value)
+  return counts
 }
 
 /* -------------------------------------------------------------------------- */

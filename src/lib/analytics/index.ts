@@ -40,15 +40,18 @@ export {
   AnalyticsRangeError,
   getAnalyticsSummary,
   getTopContent,
+  getTrafficWindows,
   MAX_RANGE_DAYS,
   MAX_TOP_CONTENT_LIMIT,
   rangeSchema,
+  TRAFFIC_WINDOW_DAYS,
 } from './query'
 export type {
   AnalyticsSummary,
   DateRange,
   TopContentEntry,
   TopContentViews,
+  TrafficWindows,
   ViewCounts,
 } from './query'
 

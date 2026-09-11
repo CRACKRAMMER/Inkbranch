@@ -212,6 +212,30 @@ export function ensureUploadDirectories(): Promise<void> {
 }
 
 /**
+ * Whether the upload root is somewhere a file can be written.
+ *
+ * The failure this exists to catch has no other symptom: a container whose
+ * volume was never mounted. `ensureUploadDirectories` creates the directory
+ * inside the container's own writable layer without complaint, every upload
+ * succeeds, and every one of them is gone at the next deploy because the path
+ * they went to is not the path anything persists. An `access` call is one
+ * syscall and it fails on exactly that — a read-only mount, and a root owned by
+ * a user the process is not.
+ *
+ * It is not a write test, deliberately: proving writability by writing means
+ * leaving a file behind on every page load, and the two ways this fails are
+ * both settled by the check that leaves nothing.
+ */
+export async function isUploadStorageWritable(): Promise<boolean> {
+  try {
+    await fs.access(UPLOAD_ROOT, fs.constants.W_OK)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
  * Write bytes under a content-addressed name.
  *
  * Same contract as `@/lib/content/writer`: the target is never opened for

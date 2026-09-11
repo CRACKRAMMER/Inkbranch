@@ -43,9 +43,13 @@ import { analyticsEnabled, recordPageView } from '@/lib/analytics'
 import {
   AnalyticsRangeError,
   MAX_RANGE_DAYS,
+  TRAFFIC_WINDOW_DAYS,
   getAnalyticsSummary,
   getTopContent,
+  getTrafficWindows,
   rangeSchema,
+  type TrafficWindows,
+  type ViewCounts,
 } from '@/lib/analytics/query'
 import { partitionPrunableDays, pruneRawEvents } from '@/lib/analytics/retention'
 import { documentUrl } from '@/lib/content/paths'
@@ -1595,6 +1599,75 @@ describe.skipIf(!hasTestDatabase)('analytics against a database', () => {
       expect(summary.topPaths).toEqual([])
       expect(summary.topReferrers).toEqual([])
       expect(summary.devices).toEqual([])
+    })
+  })
+
+  describe('getTrafficWindows', () => {
+    /** This test's rows and no one else's, so cleanup never has to be a guess. */
+    const TRAFFIC_PATH = `/__analytics_test__/${RUN}/windows`
+
+    const clearTrafficRows = (): Promise<unknown> =>
+      db.delete(analyticsDaily).where(eq(analyticsDaily.path, TRAFFIC_PATH))
+
+    afterAll(clearTrafficRows)
+
+    /*
+     * Days relative to today, because the windows are: "the last thirty days"
+     * is measured from the moment of the call, so a fixture pinned to a date in
+     * 2023 would sit outside every window and the test would pass against a
+     * function that answered zeroes.
+     */
+    it('counts today, the last seven days and the last thirty — and stops where each says', async () => {
+      await clearTrafficRows()
+
+      /*
+       * Read before the fixture is written, so the assertions below are deltas.
+       * That keeps them exact about the days they name without depending on
+       * what else is in the table — including rows a previous run left behind,
+       * which is the difference between a test that reruns and one that does
+       * not.
+       */
+      const before = await getTrafficWindows()
+
+      const today = utcDay()
+      /** The oldest day each window holds, and the first day past it. */
+      const weekEdge = addDays(today, -6)
+      const monthEdge = addDays(today, -(TRAFFIC_WINDOW_DAYS - 1))
+
+      /*
+       * Powers of two, one day per boundary. Any subset of them sums to a
+       * different number, so a window that took in one day too many or too few
+       * cannot land on the right total by accident — which is the only failure
+       * this test is built to catch.
+       */
+      await db.insert(analyticsDaily).values([
+        { day: today, path: TRAFFIC_PATH, views: 1, visitors: 3 },
+        { day: addDays(today, -1), path: TRAFFIC_PATH, views: 2, visitors: 4 },
+        { day: weekEdge, path: TRAFFIC_PATH, views: 4, visitors: 6 },
+        { day: addDays(weekEdge, -1), path: TRAFFIC_PATH, views: 8, visitors: 16 },
+        { day: monthEdge, path: TRAFFIC_PATH, views: 32, visitors: 64 },
+        { day: addDays(monthEdge, -1), path: TRAFFIC_PATH, views: 128, visitors: 256 },
+      ])
+
+      const after = await getTrafficWindows()
+
+      /** What the fixture added to a window, which is all this test claims. */
+      const added = (window: keyof TrafficWindows): ViewCounts => ({
+        views: after[window].views - before[window].views,
+        visitors: after[window].visitors - before[window].visitors,
+      })
+
+      // Today is today: yesterday is not in it, and the two figures are the
+      // fixture's own rather than a sum that happens to fit.
+      expect(added('today')).toEqual({ views: 1, visitors: 3 })
+
+      // Today, yesterday and the sixth day back — and not the seventh, which is
+      // where the eight views are.
+      expect(added('last7')).toEqual({ views: 7, visitors: 13 })
+
+      // The same three plus days seven and twenty-nine back: 47 rather than the
+      // 175 a window that reached one day further would report.
+      expect(added('last30')).toEqual({ views: 47, visitors: 93 })
     })
   })
 

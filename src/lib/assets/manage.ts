@@ -160,6 +160,42 @@ export async function listAssets(input: ListAssetsInput = {}): Promise<AssetPage
   return { items, total: counted?.total ?? 0 }
 }
 
+export interface AssetStorage {
+  files: number
+  /** Summed `assets.size` — the originals, not the derivatives beside them. */
+  bytes: number
+}
+
+/**
+ * What the library costs, across every asset rather than one page of them.
+ *
+ * The assets screen reports "On this page", which is the right number for that
+ * screen and the wrong one for a storage figure: a status line that said 4 MiB
+ * because the page size is 24 would be a lie that looks like a measurement.
+ *
+ * The derivatives — thumbnails, variants — are files on disk that this does not
+ * count. They are a function of the originals and are not stored as byte sizes
+ * in a column that can be summed, so the figure is stated as what it is: the
+ * originals. Anything else would be a guess dressed as a total.
+ */
+export async function assetStorage(): Promise<AssetStorage> {
+  const [row] = await db
+    .select({
+      files: sql<number>`count(*)::int`,
+      /*
+       * `bigint`, and typed as the string it really is. A library past 2 GiB
+       * overflows the `integer` a `sum` of `integer` would be cast back to, and
+       * node-postgres hands a `bigint` over as text rather than losing precision
+       * to a double. `Number` after that is exact to 8 PiB, which is the point
+       * at which this site has a different problem.
+       */
+      bytes: sql<string>`coalesce(sum(${assets.size}), 0)::bigint`,
+    })
+    .from(assets)
+
+  return { files: row?.files ?? 0, bytes: Number(row?.bytes ?? 0) }
+}
+
 export async function getAsset(id: string): Promise<AssetRow | null> {
   const assetId = parseAssetId(id)
   const [row] = await db.select().from(assets).where(eq(assets.id, assetId)).limit(1)

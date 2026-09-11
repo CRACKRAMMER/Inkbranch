@@ -22,6 +22,7 @@ export {
   enqueue,
   failJob,
   isClaimStale,
+  jobStatusCounts,
   listJobs,
   pruneFinishedJobs,
   retryDecision,

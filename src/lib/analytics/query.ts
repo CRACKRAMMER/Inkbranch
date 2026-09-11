@@ -10,7 +10,7 @@ import {
   type ContentType,
   type DeviceType,
 } from '@/lib/db/schema'
-import { eachDay, isDay } from './day'
+import { addDays, eachDay, isDay, utcDay } from './day'
 
 /**
  * Reads for the admin dashboard.
@@ -196,13 +196,7 @@ export async function getAnalyticsSummary(
 
   // The header totals come from the same rows the chart is drawn from, so the
   // two cannot disagree.
-  const totals = series.reduce<ViewCounts>(
-    (sums, entry) => ({
-      views: sums.views + entry.views,
-      visitors: sums.visitors + entry.visitors,
-    }),
-    { views: 0, visitors: 0 },
-  )
+  const totals = sumOf(series)
 
   return {
     from: range.from,
@@ -225,6 +219,58 @@ export async function getAnalyticsSummary(
       visitors: row.visitors,
     })),
   }
+}
+
+/* -------------------------------------------------------------------------- */
+/*  The dashboard's three numbers                                              */
+/* -------------------------------------------------------------------------- */
+
+/** Today, the week, and the month. The longest window decides the range read. */
+export const TRAFFIC_WINDOW_DAYS = 30
+
+export interface TrafficWindows {
+  today: ViewCounts
+  last7: ViewCounts
+  last30: ViewCounts
+}
+
+/**
+ * Traffic for today, the last seven days and the last thirty, in one read.
+ *
+ * One query for three windows rather than three queries, because they are three
+ * slices of the same series and fetching it three times is how the three numbers
+ * end up disagreeing — the month is not the sum of its weeks if one of them was
+ * read a moment later, and the dashboard is the one place a reader compares them.
+ *
+ * The windows are rolling and they include today, which `series` does too: it
+ * ends on `to`, and `to` is today in UTC. `TRAFFIC_WINDOW_DAYS` is therefore the
+ * length of the longest window, not one more than it — the off-by-one here would
+ * show a reader a "30 day" figure covering 29.
+ */
+export async function getTrafficWindows(
+  now: Date = new Date(),
+): Promise<TrafficWindows> {
+  const to = utcDay(now)
+  const summary = await getAnalyticsSummary({
+    from: addDays(to, -(TRAFFIC_WINDOW_DAYS - 1)),
+    to,
+  })
+
+  return {
+    today: sumOf(summary.series.slice(-1)),
+    last7: sumOf(summary.series.slice(-7)),
+    last30: sumOf(summary.series),
+  }
+}
+
+function sumOf(entries: readonly ViewCounts[]): ViewCounts {
+  return entries.reduce<ViewCounts>(
+    (sums, entry) => ({
+      views: sums.views + entry.views,
+      visitors: sums.visitors + entry.visitors,
+    }),
+    { views: 0, visitors: 0 },
+  )
 }
 
 /* -------------------------------------------------------------------------- */

@@ -1,6 +1,6 @@
 import 'server-only'
 
-import { and, asc, count, desc, eq, ilike, inArray, or, sql, type SQL } from 'drizzle-orm'
+import { and, asc, count, desc, eq, gte, ilike, inArray, or, sql, type SQL } from 'drizzle-orm'
 
 import { db } from '@/lib/db'
 import {
@@ -234,6 +234,42 @@ export async function contentCounts(): Promise<TypeStatusCounts> {
   }
 
   return { byType, byStatus, total }
+}
+
+/**
+ * How many documents of each type became public in the last `days` days.
+ *
+ * It takes a number of days rather than a date because the caller should not be
+ * doing date arithmetic, and because two decisions belong here rather than at
+ * the call site — both are easy to get subtly wrong and the result is read as a
+ * fact.
+ *
+ * **A rolling window, not a calendar week.** The site has a timezone setting and
+ * a calendar week would have to be computed in it, which means either a date
+ * library or a hand-rolled weekday offset — and a "this week" that is a day out
+ * is worse than a "last 7 days" that is exactly what it says. The column header
+ * names the window, so nothing is implied that the arithmetic does not do.
+ *
+ * **Status is not a filter.** A document published on Monday and archived on
+ * Tuesday was published this week; the delta records what happened rather than
+ * counting again what is currently published, which is what the Total column
+ * beside it already does. A row with no `published_at` is a draft and is counted
+ * nowhere.
+ */
+export async function publishedInLastDays(
+  days: number,
+): Promise<Record<ContentType, number>> {
+  const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000)
+
+  const rows = await db
+    .select({ type: contentIndex.type, value: count() })
+    .from(contentIndex)
+    .where(gte(contentIndex.publishedAt, since))
+    .groupBy(contentIndex.type)
+
+  const byType: Record<ContentType, number> = { post: 0, note: 0, project: 0 }
+  for (const row of rows) byType[row.type] = Number(row.value)
+  return byType
 }
 
 export interface RecentContentItem {

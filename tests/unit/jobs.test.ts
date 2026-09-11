@@ -17,6 +17,7 @@ import {
   enqueue,
   failJob,
   isClaimStale,
+  jobStatusCounts,
   listJobs,
   pruneFinishedJobs,
   retryDecision,
@@ -279,6 +280,44 @@ describe.runIf(hasTestDatabase)('queue against Postgres', () => {
       dedupeKey,
     })
   }
+
+  /**
+   * The difference between counting the queue and counting its window.
+   *
+   * `listJobs` returns the most recently created rows, and the dashboard's
+   * figures come from `jobStatusCounts` for exactly the case this test builds:
+   * a job old enough to have fallen out of the window is the job a person needs
+   * to see, and a count of the window reports it as gone.
+   */
+  it('counts the queue itself, where the list returns a window of it', async () => {
+    const before = await jobStatusCounts()
+
+    // Two, so the window cannot hold both however it is ordered: the assertion
+    // below is about a job the window drops, not about which job it keeps.
+    const first = await enqueueTestJob(`${marker}-window-a`)
+    const second = await enqueueTestJob(`${marker}-window-b`)
+    expect(first).not.toBeNull()
+    expect(second).not.toBeNull()
+
+    const window = await listJobs({ limit: 1 })
+    const openInWindow = window.filter((job) => job.status === 'pending').length
+    const after = await jobStatusCounts()
+
+    expect(after.pending - before.pending).toBe(2)
+    expect(openInWindow).toBeLessThan(after.pending - before.pending)
+
+    /*
+     * Removed before the test ends, and this is not tidiness. Two pending rows
+     * with an earlier `run_at` than anything the next test queues are two rows
+     * `claimNextJob` hands to it — the claim is the oldest due job in the table,
+     * not the one the caller just wrote — and the test after this one asserts on
+     * the job it enqueued. Leaving them behind fails a test that has nothing to
+     * do with this one, which is what happened when this test was written.
+     */
+    await db
+      .delete(scheduledJobs)
+      .where(inArray(scheduledJobs.id, [first!.id, second!.id]))
+  })
 
   it('claims a job once and records what the handler reported', async () => {
     const queued = await enqueueTestJob(`${marker}-once`)
