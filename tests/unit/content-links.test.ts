@@ -752,6 +752,21 @@ describe('parseCodeFenceMeta — language flags', () => {
     expect(parseCodeFenceMeta('', 'bash').isTerminal).toBe(false)
   })
 
+  it('marks a block as a session when the meta string says terminal', () => {
+    // The spelling the module's own documentation promises: a transcript is
+    // written in the language it was typed in, so the fence says both.
+    expect(parseCodeFenceMeta('terminal', 'bash').isTerminal).toBe(true)
+    expect(parseCodeFenceMeta('terminal showLineNumbers', 'sh').isTerminal).toBe(true)
+    expect(parseCodeFenceMeta('title="deploy.sh" terminal', 'bash').isTerminal).toBe(true)
+  })
+
+  it('does not read the word terminal out of a title', () => {
+    // `title` is a filename, and a file called `terminal` is not a session.
+    expect(parseCodeFenceMeta('title="terminal"', 'bash').isTerminal).toBe(false)
+    expect(parseCodeFenceMeta('title=terminal', 'bash').isTerminal).toBe(false)
+    expect(parseCodeFenceMeta('badge="terminals"', 'ts').isTerminal).toBe(false)
+  })
+
   it('marks a mermaid block whatever the case of the label', () => {
     expect(parseCodeFenceMeta('', 'mermaid').isMermaid).toBe(true)
     expect(parseCodeFenceMeta('', 'MERMAID').isMermaid).toBe(true)

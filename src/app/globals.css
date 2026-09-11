@@ -712,10 +712,20 @@
   box-shadow: 0 0 0 1px var(--code-word-highlight);
 }
 
-/* A terminal block gets a prompt marker, which is the one place a decoration
-   carries meaning: it says "this is output, not source". */
-.code-block__pre.is-terminal .code-line::after {
-  content: '';
+/*
+ * A terminal block gets a rail down its side, which is the one decoration on
+ * this site that carries meaning: it says "this is a session, not source".
+ *
+ * It is a rule on the block rather than a prompt in front of each line, because
+ * a session is a mixture of the commands the author typed and the output they
+ * got back, and a `$` in front of an output line would be a lie about which one
+ * the reader is looking at. The block can say what it is; the lines cannot.
+ *
+ * The badge is suppressed in the markup for the same reason, so the rail and
+ * the missing badge are one decision rather than two.
+ */
+.code-block__pre.is-terminal {
+  box-shadow: inset 2px 0 0 var(--color-line-strong);
 }
 
 /* Dual-theme token colours. Light is the default; the class flips it. */

@@ -7,6 +7,11 @@
  *   ```diff
  *   ```bash terminal
  *
+ * The third spelling is the one that is not a language. A session typed at a
+ * shell prompt is written as `bash` because that is what it is, and the word
+ * `terminal` after it says it is a session rather than a script — which is a
+ * distinction only the author knows, and the two look identical in a fence.
+ *
  * Kept separate from the rehype plugin so it can be unit-tested without
  * building a syntax tree.
  */
@@ -43,6 +48,24 @@ const DEFAULTS: CodeFenceMeta = {
   isMermaid: false,
 }
 
+/**
+ * Language labels that mean "a session", rather than "a language".
+ *
+ * `bash` is deliberately not among them: a fence labelled `bash` is a shell
+ * script far more often than it is a transcript, and it keeps its badge until
+ * the author says otherwise with the `terminal` word below.
+ */
+const TERMINAL_LANGUAGES = new Set(['terminal', 'console', 'shellsession'])
+
+/**
+ * A bare `terminal` token in the meta string.
+ *
+ * The leading boundary is what keeps a quoted value out of it: in
+ * `title="terminal"` the word is preceded by a quote, not by whitespace, so a
+ * file called `terminal` does not become a session.
+ */
+const TERMINAL_PATTERN = /(?:^|\s)terminal(?:\s|$)/
+
 /** `title="..."`, `title='...'`, or `title=foo` (terminated by whitespace). */
 const TITLE_PATTERN = /(?:title|filename|file)=("([^"]*)"|'([^']*)'|(\S+))/
 const BADGE_PATTERN = /(?:badge|label)=("([^"]*)"|'([^']*)'|(\S+))/
@@ -72,7 +95,7 @@ export function parseCodeFenceMeta(
   const lang = (language ?? '').toLowerCase()
 
   result.isDiff = lang === 'diff' || lang === 'patch'
-  result.isTerminal = lang === 'terminal' || lang === 'console' || lang === 'shellsession'
+  result.isTerminal = TERMINAL_LANGUAGES.has(lang)
   result.isMermaid = lang === 'mermaid'
 
   const badge = BADGE_PATTERN.exec(meta ?? '')
@@ -87,6 +110,10 @@ export function parseCodeFenceMeta(
 
   const title = TITLE_PATTERN.exec(meta)
   result.title = title?.[2] ?? title?.[3] ?? title?.[4] ?? null
+
+  // A session is a session whatever it is written in, so this opts in on top of
+  // the language rather than instead of it.
+  if (TERMINAL_PATTERN.test(meta)) result.isTerminal = true
 
   const start = START_PATTERN.exec(meta)
   if (start?.[1]) {

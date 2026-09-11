@@ -9,7 +9,7 @@ category: Linux
 `df -h` says the disk is full. It does not say *what* filled it, and the mental
 model of "one big directory" is usually wrong — it is forty medium ones.
 
-```sh
+```sh terminal
 du -xh --max-depth=1 / | sort -h | tail -20
 ```
 
@@ -28,7 +28,7 @@ A file that a process still holds open does not free its space when unlinked.
 `du` cannot see it — there is no directory entry — but `df` counts it, so the
 numbers disagree:
 
-```sh
+```sh terminal
 lsof +L1          # unlinked files still open
 ```
 

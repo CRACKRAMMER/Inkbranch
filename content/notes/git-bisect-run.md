@@ -10,7 +10,7 @@ category: Engineering
 the middle by hand. `git bisect run` takes a command and does the checking
 itself, which turns a twenty-step binary search into one command.
 
-```sh
+```sh terminal
 git bisect start
 git bisect bad
 git bisect good v2.3.0

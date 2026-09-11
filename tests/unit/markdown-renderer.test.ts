@@ -54,6 +54,18 @@ describe('renderMarkdown — features', () => {
     expect(html).not.toContain('katex')
   })
 
+  it('renders a session as a terminal block, and a script as a script', async () => {
+    const session = await renderMarkdown('```bash terminal\ndf -h\n```\n')
+    const script = await renderMarkdown('```bash\ndeploy() { echo hi; }\n```\n')
+
+    expect(session.html).toContain('is-terminal')
+    // The badge would say "Bash" in a block that is already saying "session".
+    expect(session.html).not.toContain('code-block__badge')
+    // A script keeps its badge: only the author knows which one they wrote.
+    expect(script.html).not.toContain('is-terminal')
+    expect(script.html).toContain('code-block__badge')
+  })
+
   it('marks Mermaid blocks without highlighting them', async () => {
     const { html, features } = await renderMarkdown(
       '```mermaid\ngraph TD\n  A --> B\n```\n',
