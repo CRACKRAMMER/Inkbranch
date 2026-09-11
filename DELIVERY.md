@@ -119,7 +119,7 @@ Postgres + Drizzle ORM，SQL 迁移签入仓库（`src/lib/db/migrations/`，由
 | `content_revisions` | gzip 压缩的全文快照 + 增删行数 | `content_id`、`revision_no`、`snapshot`（bytea）、`additions`、`deletions`、`author_id`、`kind` |
 | `tags` / `content_tags` | 标签与其多对多关系 | `slug`（唯一）、`name`、`description`、`color` |
 | `content_links` | 已解析的内链、锚点与图片引用，驱动反链与"未被引用" | `source_id`、`kind`、`href`、`target_key`、`target_id`、`asset_id`、`label`、`resolved` |
-| `assets` | 上传媒体元数据 | `url`、`mime`、`size`、`width`、`height`、`blur_data_url`、`sha256`、`storage` |
+| `assets` | 上传媒体元数据 | `url`、`mime`、`size`、`width`、`height`、`blur_data_url`、`average_color`、`variants`（webp/avif 派生物）、`thumbnail`（网格用的缩小副本）、`sha256`、`storage` |
 | `redirects` | 旧 URL → 新 URL（Ghost 迁移用） | `from_path`（唯一）、`to_path`、`status_code`、`enabled`、`hits` |
 | `site_settings` | 单行类型化设置（用 check 约束保证单行） | 站点标识、SEO、analytics/search/graph/rss/comments 开关、git、修订策略、About 内容 |
 | `navigation` | 头部/底部/社交菜单 | `location`、`label`、`href`、`position`、`parent_id` |
@@ -138,7 +138,8 @@ Postgres + Drizzle ORM，SQL 迁移签入仓库（`src/lib/db/migrations/`，由
 `bytea` 中存 gzip 压缩的**完整快照**。理由：恢复是一次单行读取，不存在"链式 diff 断一环
 就全废"的失败模式；`+23 −5` 这类统计由任意两份快照按需 diff 得出，不存冗余派生数据；
 `content/posts/*.md` 保持"就是内容本身"，文件树干净；修订是历史而非内容源，放在数据库
-并不违反第一原则。保留条数由 `revisions.max_per_content`（默认 50）限制，由定时任务裁剪。
+并不违反第一原则。保留条数由 `revisions.max_per_content`（默认 50）限制，在每次具名保存之后
+**内联**裁剪而不是交给后台任务（第 10 节"架构性限制"第 3 条记了为什么）。
 
 ---
 
@@ -399,14 +400,14 @@ backups/2026-09-11T10-30-00Z/
 ## 10. Future Improvements（后续改进）
 
 以下是实际阅读代码后确认的**未完成项与缺口**，一条一条列出，不含推测。这一节随实现移动：
-上一版列在这里、现已补齐的有十二项——重定向未生效、Analytics 两端未接、按 tag / 分类的 RSS
+上一版列在这里、现已补齐的有十三项——重定向未生效、Analytics 两端未接、按 tag / 分类的 RSS
 缺失、Git 自动提交只有开关、Worker 循环无人启动、About 页缺两个区块、TOC 无平滑滚动、
 终端样式是空规则、sitemap 缺 tag 与 series 页、加载时没有骨架屏、JSON-LD 只有 Article 与
-Breadcrumb、编辑器的两个快捷键（依次对应设定稿第二十五、二十八、二十六、四十二、三十九、
-四十三、八、七、二十三、四十九、二十三、十七节，其中 sitemap 与 JSON-LD 同属第二十三节），
-因此不再出现在下面。
+Breadcrumb、编辑器的两个快捷键、资源缩略图（依次对应设定稿第二十五、二十八、二十六、四十二、
+三十九、四十三、八、七、二十三、四十九、二十三、十七、二十节，其中 sitemap 与 JSON-LD 同属
+第二十三节），因此不再出现在下面。
 
-补上来的几项顺带记下六个决定：第八节的平滑滚动没有写成 `html { scroll-behavior: smooth }`，
+补上来的几项顺带记下七个决定：第八节的平滑滚动没有写成 `html { scroll-behavior: smooth }`，
 因为那个属性作用于视口的**每一次**滚动——Next 在路由切换时用 `scrollIntoView()` 定位，全局
 声明会把"从长文中点开另一篇文章"也变成动画。改为在点击目录链接时把该属性临时设在根元素上、
 滚动结束（`scrollend`，或 1s 上限）后收回，浏览器的原生行为——URL 片段、历史记录、焦点顺序、
@@ -456,27 +457,45 @@ fallback，这是正确行为而不是缺陷；用 `page.route` 延迟响应也�
 （`keypress` + `beforeinput insertParagraph`）而不是 CodeMirror 的 keymap——所以这条用例里
 没有一处按 `Enter`，插入的落点由正文最后一段给出。
 
+第二十节的缩略图现在是一个真正的派生物，但它没有写进 `assets.variants`，而是自己一列
+（`assets.thumbnail`，jsonb）。理由是 `variants` 的语义是"同一张图、另一种格式"，它会被当作
+`<picture>` 的候选源——把一个 480px 的小图放进去，等于让消费方有机会把缩略图当成原图发出去。
+长边 480（`THUMBNAIL_LONG_EDGE`）：后台网格最宽是四列，一格略大于 200px，2 倍屏要略多于
+400 个设备像素。编码复用派生物那支 WebP 编码器（质量 82），缩略图与同尺寸派生物的区别在尺寸
+而不在编码器有多讲究，所以质量只写在一处。已经装得进这个盒子的图不生成缩略图——同样的像素
+换个名字再存一份没有意义——判定用的是**输出**的宽高而不是源文件的元数据，因为走到这一步
+sharp 已经应用过 EXIF 旋转，元数据里的宽高可能还是转之前的；编码器报错则记一条 note，不让
+上传失败。文件照旧按内容寻址（`storedRelativePath(sha256(bytes), '.webp')`），因此天然去重；
+`assetFilePaths` 把它算进这个资源的文件清单（删行之后一起删），`referenceMatchKeys` 把它的
+URL 算进引用键（有人把缩略图 URL 贴进文档时，"未使用"视图和删除前的拦截都会认这笔引用）。
+**没有做回填**：这一列是可加的，旧行是 `NULL`，网格回落到原图——正确，只是更大。后台的
+网格、列表徽标与资源详情页各显示一处（详情页把 URL 以文本印出，没有复制按钮）。
+`tests/unit/assets.test.ts` 验的是磁盘上的那个文件（480×320、webp、按哈希命名），集成测试
+验的是行与"删一个资源清掉四个文件"，`tests/e2e/assets.spec.ts` 验的是浏览器真的拿到了小图
+（`naturalWidth` 为 480，且缩略图响应字节数小于原图）。这条 E2E 顺带撞上一个真实现象并记在
+用例注释里：上传按内容寻址，两次运行若产出**逐字节相同**的图，第二次会被去重到第一次那一行，
+行上的文件名还是第一次的——所以 fixture 的颜色由用例名派生，保证每次都不同。
+
 **功能缺口**
 
-1. **资源缩略图变体没有实现**。`src/lib/assets/` 生成 webp/avif 变体并保存宽高与 blur
-   占位，但没有 thumbnail 变体；后台列表用 CSS 缩放原图。设定稿第二十节列出了 thumbnail。
+无。上面补齐的十三项之外，没有别的未完成项；下面剩下的是两类被明确接受的东西。
 
 **架构性限制**（属于已知取舍，不是遗漏）
 
-2. 搜索索引与关系索引都在进程内，多副本部署会成为陈旧窗口的来源（副本自己构建一份索引
+1. 搜索索引与关系索引都在进程内，多副本部署会成为陈旧窗口的来源（副本自己构建一份索引
    是正确的，但写时的失效只到达处理本次保存的那个副本）。
-3. CJK 采用 bigram 分词，对罕见词会过度切分、无法做单字前缀匹配；`SearchProvider`
+2. CJK 采用 bigram 分词，对罕见词会过度切分、无法做单字前缀匹配；`SearchProvider`
    接口就是为换 Meilisearch 留的缝。
-4. 修订以完整快照存在 `bytea` 中会增长数据库。约束是**内联**的而非后台任务：每次具名保存
+3. 修订以完整快照存在 `bytea` 中会增长数据库。约束是**内联**的而非后台任务：每次具名保存
     之后 `pruneRevisions` 按 `revisionsMaxPerContent`（默认 50）裁剪该文档的具名修订，
     自动保存由存储层在自己的事务里按 `AUTOSAVE_REVISIONS_KEPT` 单独裁剪
     （`src/lib/revision/store.ts`）。裁剪按文档进行，且总在写入之后——删掉文档，修订随之
     级联删除；没有任何 worker 任务参与这一步（`JOB_KINDS` 里没有 revision 相关类型）。
-5. 没有多作者工作流：schema 里有 `owner` / `editor` 角色，但没有评审队列或编辑审批。
+4. 没有多作者工作流：schema 里有 `owner` / `editor` 角色，但没有评审队列或编辑审批。
 
 **有意保留的"没有读取方"**
 
-6. `site_settings.googleVerification` 与 `commentsEnabled` 没有任何生产读取点。这是披露
+5. `site_settings.googleVerification` 与 `commentsEnabled` 没有任何生产读取点。这是披露
     而不是遗漏：后台在各自的输入框下面直接写明"加入它不会验证站点"/"打开它不会改变任何
     页面"。另有 `SETTINGS_CACHE_TAG`，后台的"清除缓存"动作会 `updateTag` 它，但当前没有
     `'use cache'` 消费者（`getSettings` 是每请求 memo）——这同样写在

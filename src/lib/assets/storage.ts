@@ -10,7 +10,7 @@ import { env } from '@/env'
 import { recordAudit } from '@/lib/audit'
 import { normalizeImageKey } from '@/lib/content/links'
 import { db } from '@/lib/db'
-import { assets, type AssetRow } from '@/lib/db/schema'
+import { assets, type AssetRow, type AssetThumbnail } from '@/lib/db/schema'
 import { sniffMime } from '@/lib/security/mime'
 import {
   joinRuntimePath,
@@ -143,11 +143,15 @@ export function relativePathFromUrl(url: string): string | null {
 
 /** Every file an asset occupies: the original plus each derivative. */
 export function assetFilePaths(
-  asset: Pick<AssetRow, 'path' | 'variants'>,
+  asset: Pick<AssetRow, 'path' | 'variants' | 'thumbnail'>,
 ): string[] {
   const paths = new Set<string>([asset.path])
-  for (const variant of asset.variants) {
-    const relative = relativePathFromUrl(variant.url)
+  const urls = [
+    ...asset.variants.map((variant) => variant.url),
+    ...(asset.thumbnail ? [asset.thumbnail.url] : []),
+  ]
+  for (const url of urls) {
+    const relative = relativePathFromUrl(url)
     if (relative) paths.add(relative)
   }
   return [...paths]
@@ -318,6 +322,8 @@ export interface PersistedAsset {
   blurDataUrl: string | null
   sha256: string
   variants: AssetVariant[]
+  /** The scaled copy written for the admin's grid, or null when none was needed. */
+  thumbnail: AssetThumbnail | null
   /** The original filename, sanitised. Metadata only — never a path. */
   filename: string
   /** False when these exact bytes were already on disk; nothing was rewritten. */
@@ -378,6 +384,7 @@ export async function persistAsset(
   const relativePath = storedRelativePath(sha256, sniff.ext)
 
   const variants: AssetVariant[] = []
+  let thumbnail: AssetThumbnail | null = null
   const written: string[] = []
 
   try {
@@ -407,6 +414,22 @@ export async function persistAsset(
         size: derivative.bytes.length,
       })
     }
+
+    if (prepared.thumbnail) {
+      const thumbnailPath = storedRelativePath(
+        sha256Of(prepared.thumbnail.bytes),
+        '.webp',
+      )
+      const write = await writeAssetFile(thumbnailPath, prepared.thumbnail.bytes)
+      if (write.created) written.push(thumbnailPath)
+
+      thumbnail = {
+        url: assetUrl(thumbnailPath),
+        width: prepared.thumbnail.width,
+        height: prepared.thumbnail.height,
+        size: prepared.thumbnail.bytes.length,
+      }
+    }
   } catch (error) {
     // Only the files this call created are removed: a file that was already
     // there belongs to the asset that put it there, and another upload may
@@ -432,6 +455,7 @@ export async function persistAsset(
     blurDataUrl: prepared.blurDataUrl,
     sha256,
     variants,
+    thumbnail,
     filename: metadataFilename(input.originalFilename, relativePath),
     created: written.includes(relativePath),
     averageColor: prepared.averageColor,
@@ -462,9 +486,10 @@ function prepareSvgAsset(buffer: Buffer): ProcessedImage {
     averageColor: null,
     derivatives: [],
     skippedDerivatives: [],
+    thumbnail: null,
     sanitizationRemoved: removed,
     notes: [
-      'SVG stored after sanitisation: vectors get no blur placeholder and no raster derivatives',
+      'SVG stored after sanitisation: vectors get no blur placeholder, no raster derivatives and no thumbnail',
     ],
   }
 }
@@ -544,6 +569,7 @@ export async function storeAsset(
       blurDataUrl: persisted.blurDataUrl,
       sha256: persisted.sha256,
       variants: persisted.variants,
+      thumbnail: persisted.thumbnail,
       alt: truncate(input.alt ?? null, 500),
       uploadedBy: input.ownerId ?? null,
     })
@@ -579,6 +605,7 @@ export async function storeAsset(
       mime: inserted.mime,
       size: inserted.size,
       variants: inserted.variants.length,
+      thumbnail: inserted.thumbnail !== null,
     },
   })
 

@@ -360,6 +360,26 @@ export const contentLinks = pgTable(
 /*  Assets                                                                     */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * A scaled-down copy of an asset, written for the admin's grid.
+ *
+ * Not one of `variants`: a variant is the same picture at the same size in
+ * another format, which is what makes it safe to offer a browser through a
+ * `<picture>` element. This is a *smaller* picture, and substituting it for the
+ * original would change the layout — so it is a field of its own rather than an
+ * entry in a list every consumer already treats as interchangeable.
+ *
+ * `width` and `height` are stored because they are not the row's: the row
+ * describes the original, and a scaled copy whose geometry is nowhere on the
+ * record cannot be described without fetching the file to measure it.
+ */
+export interface AssetThumbnail {
+  url: string
+  width: number
+  height: number
+  size: number
+}
+
 export const assets = pgTable(
   'assets',
   {
@@ -383,6 +403,12 @@ export const assets = pgTable(
       .$type<{ format: string; url: string; size: number }[]>()
       .notNull()
       .default(sql`'[]'::jsonb`),
+    /**
+     * Null when there is nothing to scale: an SVG and an animation are stored
+     * without derivatives, and an image already no larger than the thumbnail is
+     * left alone rather than upscaled into a copy of itself.
+     */
+    thumbnail: jsonb('thumbnail').$type<AssetThumbnail>(),
     alt: varchar('alt', { length: 500 }),
     uploadedBy: uuid('uploaded_by').references(() => users.id, {
       onDelete: 'set null',

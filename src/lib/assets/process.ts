@@ -63,6 +63,28 @@ export function canReencode(mime: string): boolean {
 export const DERIVATIVE_FORMATS = ['webp', 'avif'] as const
 export type DerivativeFormat = (typeof DERIVATIVE_FORMATS)[number]
 
+/* -------------------------------------------------------------------------- */
+/*  Thumbnail                                                                  */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Long edge of the thumbnail, in pixels.
+ *
+ * The admin's grid is four columns at its widest, so a cell is a little over
+ * 200px across and a 2x display asks for a little over 400 device pixels; 480
+ * covers that. It is deliberately not a second full-size download: a document's
+ * images are laid out at content width, and a 480px file stretched to 760 is
+ * blurry, which is why this is offered only where the box is small.
+ */
+export const THUMBNAIL_LONG_EDGE = 480
+
+export interface ThumbnailDerivative {
+  bytes: Buffer
+  /** Dimensions of `bytes`, which are the original's scaled, not the row's. */
+  width: number
+  height: number
+}
+
 interface DerivativeEncoder {
   mime: string
   ext: string
@@ -136,6 +158,8 @@ export interface ProcessedImage {
   averageColor: string | null
   derivatives: EncodedDerivative[]
   skippedDerivatives: SkippedDerivative[]
+  /** Null when the image is already no larger than one, or could not be scaled. */
+  thumbnail: ThumbnailDerivative | null
   /**
    * What SVG sanitisation removed. Always empty here — an SVG never reaches
    * this module — but present so `persistAsset` can treat the two preparation
@@ -191,6 +215,7 @@ export async function processImage(
       averageColor: null,
       derivatives: [],
       skippedDerivatives: [],
+      thumbnail: null,
       sanitizationRemoved: [],
       notes: [
         `stored as uploaded: this build has no decoder for ${sniff.mime}, so no metadata was stripped and no derivatives were produced`,
@@ -220,6 +245,7 @@ export async function processImage(
       averageColor: null,
       derivatives: [],
       skippedDerivatives: [],
+      thumbnail: null,
       sanitizationRemoved: [],
       notes: [
         `stored as uploaded: ${metadata.pages} frames, and a still re-encode would drop all but the first`,
@@ -317,6 +343,7 @@ async function processStill(
   const notes: string[] = []
   const blurDataUrl = await blurPlaceholder(bytes, notes)
   const averageColor = await averageColorOf(bytes)
+  const thumbnail = await thumbnailOf(bytes, width, height, notes)
 
   return {
     bytes,
@@ -326,8 +353,68 @@ async function processStill(
     averageColor,
     derivatives,
     skippedDerivatives,
+    thumbnail,
     sanitizationRemoved: [],
     notes,
+  }
+}
+
+/**
+ * A copy scaled to fit the thumbnail box, or null with the reason in `notes`.
+ *
+ * Two reasons, and they are different kinds of thing. A failure is a codec
+ * saying no, which must not fail the upload — the original is stored and the
+ * grid falls back to serving it. A skip is a decision: an image that is already
+ * within the box produces a file with the same pixels under a second name, and
+ * the honest answer there is that this asset does not need a thumbnail.
+ *
+ * The output is compared against the original rather than the source metadata
+ * being consulted, because sharp has already applied the EXIF orientation by
+ * this point and the metadata's width and height may be the pre-rotation ones.
+ */
+async function thumbnailOf(
+  bytes: Buffer,
+  width: number,
+  height: number,
+  notes: string[],
+): Promise<ThumbnailDerivative | null> {
+  let encoded: { data: Buffer; info: OutputInfo }
+  try {
+    // The WebP encoder is the derivative one, so the quality is stated in a
+    // single place: a thumbnail differs from a same-size derivative in its
+    // dimensions, not in how careful the encoder is.
+    encoded = await DERIVATIVE_ENCODERS.webp
+      .encode(
+        sharp(bytes)
+          // `withoutEnlargement` is what makes the skip below the normal case
+          // for a small image rather than an error: a 300x200 icon comes back
+          // 300x200 rather than blown up to fit the box.
+          .resize(THUMBNAIL_LONG_EDGE, THUMBNAIL_LONG_EDGE, {
+            fit: 'inside',
+            withoutEnlargement: true,
+          }),
+      )
+      .toBuffer({ resolveWithObject: true })
+  } catch (error) {
+    notes.push(`thumbnail skipped: ${messageOf(error)}`)
+    return null
+  }
+
+  // Nothing was scaled, so what came back is the original twice over: the same
+  // pixels under a second name and a second URL. Compared against the stored
+  // dimensions rather than the source metadata, because sharp has applied the
+  // EXIF orientation by now and the metadata may hold the pre-rotation ones.
+  if (encoded.info.width >= width && encoded.info.height >= height) {
+    notes.push(
+      `thumbnail skipped: at ${width}x${height} the image already fits the ${THUMBNAIL_LONG_EDGE}px box`,
+    )
+    return null
+  }
+
+  return {
+    bytes: encoded.data,
+    width: encoded.info.width,
+    height: encoded.info.height,
   }
 }
 

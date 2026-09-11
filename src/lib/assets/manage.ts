@@ -263,16 +263,33 @@ export function isAssetInUse(
  * the original: a `<picture>` element can point at the AVIF or WebP and at
  * nothing else, and an asset whose only reference is a derivative would
  * otherwise be reported as unused, then deleted out from under a working page.
+ *
+ * The thumbnail counts too, though nothing in the product writes a reference to
+ * it: any file this asset is served as can be pasted into a document — its URL
+ * is printed on the asset's own page — and while the check is one more string to
+ * look for, the failure it prevents is a page whose image has been deleted. A
+ * file that is referenced is referenced, whichever of its files was pasted.
  */
 export function referenceMatchKeys(
-  asset: Pick<AssetRow, 'path' | 'url' | 'variants'>,
+  asset: Pick<AssetRow, 'path' | 'url' | 'variants' | 'thumbnail'>,
 ): string[] {
   const keys = new Set<string>([asset.path])
-  for (const url of [asset.url, ...asset.variants.map((variant) => variant.url)]) {
+  for (const url of assetUrls(asset)) {
     const key = relativePathFromUrl(url)
     if (key) keys.add(key)
   }
   return [...keys]
+}
+
+/** Every URL this asset is served or described by. */
+function assetUrls(
+  asset: Pick<AssetRow, 'url' | 'variants' | 'thumbnail'>,
+): string[] {
+  return [
+    asset.url,
+    ...asset.variants.map((variant) => variant.url),
+    ...(asset.thumbnail ? [asset.thumbnail.url] : []),
+  ]
 }
 
 /**
@@ -282,13 +299,7 @@ export function referenceMatchKeys(
  * less often, the storage path itself. Both are matched.
  */
 function referenceForms(asset: AssetRow): string[] {
-  return [
-    ...new Set([
-      asset.url,
-      ...asset.variants.map((variant) => variant.url),
-      ...referenceMatchKeys(asset),
-    ]),
-  ]
+  return [...new Set([...assetUrls(asset), ...referenceMatchKeys(asset)])]
 }
 
 /** Documents and settings that point at this asset. */
@@ -541,10 +552,11 @@ export async function findUnusedAssets(
 
   // Batched rather than one query with a `NOT IN`, because "referenced" has to
   // mean the same thing here as it does in `deleteAsset`, and half of a
-  // reference lives in `assets.variants` — a jsonb array of URLs. Recovering the
-  // storage key from those URLs in SQL would be `normalizeImageKey` written a
-  // second time, in a different language, free to drift. The referenced set is
-  // one entry per image link in the corpus, so this is a hash lookup per asset.
+  // reference lives in the URLs on the row — `assets.variants` and
+  // `assets.thumbnail`, both jsonb. Recovering the storage key from those URLs in
+  // SQL would be `normalizeImageKey` written a second time, in a different
+  // language, free to drift. The referenced set is one entry per image link in
+  // the corpus, so this is a hash lookup per asset.
   const BATCH = 500
   for (let offset = 0; unused.length < limit; offset += BATCH) {
     const batch = await db

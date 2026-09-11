@@ -31,6 +31,7 @@ import {
   BLUR_LONG_EDGE,
   BLUR_MAX_DATA_URL_LENGTH,
   ImageProcessingError,
+  THUMBNAIL_LONG_EDGE,
   isAnimated,
   processImage,
 } from '@/lib/assets/process'
@@ -445,6 +446,100 @@ describe('derivatives and placeholder', () => {
 })
 
 /* -------------------------------------------------------------------------- */
+/*  Thumbnail                                                                  */
+/* -------------------------------------------------------------------------- */
+
+describe('the thumbnail', () => {
+  it('scales a large image into the box and keeps its shape', async () => {
+    const stored = await persistAsset({
+      buffer: await makeJpegWithExif(1200, 800, 1),
+      originalFilename: 'wide.jpg',
+    })
+
+    const thumbnail = stored.thumbnail
+    expect(thumbnail).not.toBeNull()
+    expect(thumbnail?.width).toBe(THUMBNAIL_LONG_EDGE)
+    // 1200x800 is 3:2, so the box's long edge lands on the width and the height
+    // follows. A thumbnail that changed the shape would reflow the grid it was
+    // made for.
+    expect(thumbnail?.height).toBe(320)
+
+    // Measured from the file, not from the record: a row saying 480 is worth
+    // nothing if the bytes on disk are something else.
+    const relative = relativePathFromUrl(thumbnail?.url ?? '')
+    expect(relative).not.toBeNull()
+    const onDisk = await fs.readFile(resolveAssetFile(relative ?? ''))
+    const meta = await sharp(onDisk).metadata()
+
+    expect(meta.format).toBe('webp')
+    expect(meta.width).toBe(480)
+    expect(meta.height).toBe(320)
+    expect(thumbnail?.size).toBe(onDisk.length)
+    expect(thumbnail?.size).toBeLessThan(stored.size)
+  })
+
+  it('scales a portrait image by its long edge, not its width', async () => {
+    const stored = await persistAsset({
+      buffer: await makeJpegWithExif(600, 1800, 1),
+      originalFilename: 'tall.jpg',
+    })
+
+    expect(stored.thumbnail?.width).toBe(160)
+    expect(stored.thumbnail?.height).toBe(THUMBNAIL_LONG_EDGE)
+  })
+
+  it('leaves an image that already fits the box alone, and says why', async () => {
+    const stored = await persistAsset({
+      buffer: await makePng(400, 300),
+      originalFilename: 'small.png',
+    })
+
+    expect(stored.width).toBe(400)
+    expect(stored.thumbnail).toBeNull()
+    // The reason is on the record rather than inferred from the absence: an
+    // admin looking for a thumbnail is told there was nothing to make one from,
+    // which is a different answer from a failure.
+    expect(stored.notes.some((note) => note.includes('thumbnail skipped'))).toBe(true)
+    expect(stored.notes.some((note) => note.includes('already fits'))).toBe(true)
+  })
+
+  it('names the file after its own bytes, whatever the original is called', async () => {
+    const stored = await persistAsset({
+      buffer: await makeJpegWithExif(1200, 800, 1),
+      originalFilename: 'holiday.jpg',
+    })
+
+    const relative = relativePathFromUrl(stored.thumbnail?.url ?? '')
+    const bytes = await fs.readFile(resolveAssetFile(relative ?? ''))
+    // The same content addressing as everything else: the URL is a hash of what
+    // was written, so a thumbnail cannot be walked to either.
+    expect(relative).toBe(storedRelativePath(sha256Of(bytes), '.webp'))
+    expect(relative).not.toContain('holiday')
+  })
+
+  it('counts as one of the files the asset owns', async () => {
+    const stored = await persistAsset({
+      buffer: await makeJpegWithExif(1200, 800, 1),
+      originalFilename: 'wide.jpg',
+    })
+
+    const files = assetFilePaths({
+      path: stored.path,
+      variants: stored.variants,
+      thumbnail: stored.thumbnail,
+    })
+
+    // Original, two formats, one thumbnail. A list that missed the thumbnail
+    // would leave it on disk forever after a delete — invisible, because the
+    // database is the only manifest the upload directory has.
+    expect(files).toHaveLength(4)
+    for (const file of files) {
+      await expect(fs.stat(resolveAssetFile(file))).resolves.toBeDefined()
+    }
+  })
+})
+
+/* -------------------------------------------------------------------------- */
 /*  SVG                                                                        */
 /* -------------------------------------------------------------------------- */
 
@@ -490,6 +585,9 @@ describe('SVG sanitisation', () => {
     expect(stored.blurDataUrl).toBeNull()
     expect(stored.averageColor).toBeNull()
     expect(stored.variants).toEqual([])
+    // Rasterising a vector to 480px would turn the one form that is sharp at
+    // every size into a form that is sharp at one.
+    expect(stored.thumbnail).toBeNull()
     expect(stored.notes.length).toBeGreaterThan(0)
   })
 
@@ -521,28 +619,33 @@ describe('which documents reference an asset', () => {
     })
     const variant = stored.variants[0]
     expect(variant).toBeDefined()
+    expect(stored.thumbnail).not.toBeNull()
 
-    // Both forms the scanner recognises: a Markdown image and a raw `<img>`,
-    // the second one pointing at a derivative rather than at the original,
-    // which is what a `<picture>` element's fallback does.
+    // Every form the scanner recognises: a Markdown image, a raw `<img>`
+    // pointing at a derivative rather than at the original — which is what a
+    // `<picture>` element's fallback does — and one pointing at the thumbnail.
     const markdown = [
       `![The diagram](${stored.url})`,
       '',
       `<img src="${variant?.url}" alt="derivative">`,
+      '',
+      `<img src="${stored.thumbnail?.url}" alt="thumbnail">`,
     ].join('\n')
 
     const scanned = keysForAsset(stored, markdown)
-    expect(scanned.length).toBeGreaterThanOrEqual(2)
+    expect(scanned.length).toBeGreaterThanOrEqual(3)
 
     const matches = referenceMatchKeys({
       path: stored.path,
       url: stored.url,
       variants: stored.variants,
+      thumbnail: stored.thumbnail,
     })
 
     // Every way a document can name this asset is in the set the delete check
     // looks for, including the derivative URL that appears on its own in a
-    // `<source srcset>`.
+    // `<source srcset>` and the thumbnail URL, which is printed on the asset's
+    // page and can be pasted into a document like any other URL there.
     for (const key of scanned) {
       expect(matches).toContain(key)
     }
@@ -566,6 +669,7 @@ describe('which documents reference an asset', () => {
       path: stored.path,
       url: stored.url,
       variants: stored.variants,
+      thumbnail: stored.thumbnail,
     })
 
     expect(scanned.some((key) => matches.includes(key))).toBe(false)
@@ -668,11 +772,19 @@ describe.skipIf(!hasTestDatabase)('references against a database', () => {
     })
   }
 
-  /** An asset with a real row and a real file, distinct from every other. */
+  /**
+   * An asset with a real row and a real file, distinct from every other.
+   *
+   * Large enough to be scaled, so it has a thumbnail as well as derivatives: an
+   * asset in these tests is a row with four files behind it, and a fixture too
+   * small to be resized would leave the newest of them out of every assertion
+   * about what a delete touches. The colour is what makes each fixture distinct
+   * — identical bytes would be the same asset.
+   */
   async function storeImage(name: string): Promise<AssetRow> {
     imageCount += 1
     const stored = await storeAsset({
-      buffer: await makePng(64, 48, { r: imageCount, g: 20, b: 30 }),
+      buffer: await makePng(1200, 800, { r: imageCount, g: 20, b: 30 }),
       originalFilename: name,
     })
     assetIds.push(stored.asset.id)
@@ -761,13 +873,18 @@ describe.skipIf(!hasTestDatabase)('references against a database', () => {
     expect(denied?.outcome).toBe('denied')
   })
 
-  it('deletes a forced asset, its file and its audit row', async () => {
+  it('deletes a forced asset, its files and its audit row', async () => {
     const asset = await storeImage('doomed.png')
+    // The original, the two formats and the thumbnail. Asserted before the
+    // delete, so a fixture that lost its thumbnail cannot make the loop below
+    // pass by having nothing to check.
+    const files = assetFilePaths(asset)
+    expect(files).toHaveLength(4)
 
     const result = await deleteAsset(asset.id, { force: true })
 
-    expect(result.filesRemoved).toContain(asset.path)
-    for (const file of result.filesRemoved) {
+    for (const file of files) {
+      expect(result.filesRemoved).toContain(file)
       await expect(fs.access(resolveAssetFile(file))).rejects.toThrow()
     }
     expect(await findAssetReferences(asset.id)).toBeNull()

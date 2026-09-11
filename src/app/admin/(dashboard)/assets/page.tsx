@@ -20,9 +20,12 @@ const PER_PAGE = 24
  *
  * Every row is a file on disk with a row in `assets`; the database is the
  * manifest, which is why the list can show dimensions and sizes without touching
- * the filesystem. Thumbnails are the stored image itself at a fixed box rather
- * than a generated preview — the derivatives already exist, and a second
- * thumbnail cache would be another thing to keep in step with the originals.
+ * the filesystem. The grid loads the stored thumbnail rather than the original:
+ * a cell is a little over 200px across and the file behind it can be 4000px, so
+ * scaling it in CSS means paying for the difference on every visit to this page.
+ * Assets without one — an SVG, an animation, an image already small enough, or
+ * one uploaded before thumbnails existed — fall back to the original, which is
+ * correct and merely larger.
  *
  * The unused view is deliberately a separate mode rather than a filter chip
  * beside the others: it is the only view whose purpose is deletion, and its rows
@@ -206,7 +209,7 @@ export default async function AssetsPage({
                   {asset.mime.startsWith('image/') ? (
                     /* eslint-disable-next-line @next/next/no-img-element */
                     <img
-                      src={asset.url}
+                      src={asset.thumbnail?.url ?? asset.url}
                       alt={asset.alt ?? ''}
                       loading="lazy"
                       decoding="async"
@@ -271,6 +274,7 @@ function AssetTable({
     alt: string | null
     createdAt: Date
     variants: { format: string; url: string; size: number }[]
+    thumbnail: { url: string; width: number; height: number; size: number } | null
   }[]
   context: { locale: string; timeZone: string; now: Date }
 }) {
@@ -305,8 +309,19 @@ function AssetTable({
                   {asset.filename}
                 </Link>
                 <span className="mt-0.5 block font-mono text-xs text-ink-subtle">{asset.mime}</span>
-                {asset.variants.length > 0 ? (
-                  <span className="mt-1 block">
+                {asset.variants.length > 0 || asset.thumbnail ? (
+                  <span className="mt-1 flex flex-wrap items-center gap-1">
+                    {asset.thumbnail ? (
+                      // Not a variant, so it is not labelled like one: a variant
+                      // is the same picture in another format and its format is
+                      // the whole news, while a thumbnail is a smaller picture
+                      // and the dimensions are. The grid on this page is what
+                      // loads it, which is why it is worth naming here.
+                      <Badge variant="secondary">
+                        thumb {asset.thumbnail.width}×{asset.thumbnail.height}{' '}
+                        {formatBytes(asset.thumbnail.size)}
+                      </Badge>
+                    ) : null}
                     {asset.variants.map((variant) => (
                       <Badge key={variant.format} variant="outline">
                         {variant.format} {formatBytes(variant.size)}

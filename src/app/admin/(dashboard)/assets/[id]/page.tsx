@@ -111,6 +111,41 @@ export default async function AssetPage({ params }: { params: Promise<{ id: stri
             </dl>
           </Section>
 
+          {asset.thumbnail ? (
+            <Section
+              title="Thumbnail"
+              description="A scaled copy written for the asset grid. Not for documents: a document's images are laid out wider than this, and a 480px file stretched to fit is blurry."
+            >
+              <div className="flex items-start gap-3 py-1">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={asset.thumbnail.url}
+                  alt=""
+                  decoding="async"
+                  className="h-16 w-auto border border-line bg-sunken object-contain"
+                />
+                <dl className="min-w-0 space-y-1 text-sm">
+                  <div className="flex gap-2">
+                    <dt className="text-ink-muted">Dimensions</dt>
+                    <dd className="tabular-nums text-ink">
+                      {asset.thumbnail.width} × {asset.thumbnail.height}
+                    </dd>
+                  </div>
+                  <div className="flex gap-2">
+                    <dt className="text-ink-muted">Size</dt>
+                    <dd className="tabular-nums text-ink">{formatBytes(asset.thumbnail.size)}</dd>
+                  </div>
+                  <div className="flex gap-2">
+                    <dt className="text-ink-muted">Stored at</dt>
+                    <dd className="break-all font-mono text-xs text-ink-muted">
+                      {asset.thumbnail.url}
+                    </dd>
+                  </div>
+                </dl>
+              </div>
+            </Section>
+          ) : null}
+
           {asset.variants.length > 0 ? (
             <Section
               title="Derivatives"
