@@ -1,0 +1,151 @@
+/*
+ * Admin-only styles.
+ *
+ * Scoped to the admin layout rather than added to globals.css: the public site
+ * has no chart and no CodeMirror, and this file is the one place the brief
+ * allows the admin to style what Tailwind utilities cannot reach.
+ */
+
+/*
+ * Chart ink.
+ *
+ * Two categorical series, one step per mode. The values are not picked by eye:
+ * both pairs were run through a CVD validator, and in each mode the pair passes
+ * the lightness band, the chroma floor, protan/deutan separation (ΔE 22.7 dark,
+ * 23.7 light), the normal-vision floor and 3:1 contrast against the canvas.
+ *
+ * They are separate from `--color-brand` because that token is tuned for text
+ * and focus rings — the brand's dark-mode step sits at L 0.78, which is right
+ * for a link on a dark page and too light for a 2px line meant to be read as a
+ * quantity. The chart's ochre is the same hue, one step down.
+ */
+:root {
+  --color-chart-views: oklch(48% 0.115 62);
+  --color-chart-visitors: oklch(52% 0.14 250);
+}
+
+.dark {
+  --color-chart-views: oklch(66% 0.12 72);
+  --color-chart-visitors: oklch(62% 0.13 250);
+}
+
+/*
+ * CodeMirror.
+ *
+ * The editor is built on CodeMirror 6 rather than a textarea because a
+ * Markdown document wants line numbers, bracket matching and a syntax mode that
+ * does not highlight the YAML header as prose. It arrives as a set of DOM
+ * elements and a stylesheet, so its theme is set here — from the same tokens
+ * everything else uses, so it follows dark mode without a second theme object.
+ */
+.cm-editor {
+  height: 100%;
+  background-color: transparent;
+  color: var(--color-ink);
+  font-family: var(--font-mono);
+  font-size: 0.875rem;
+}
+
+.cm-editor.cm-focused {
+  outline: none;
+}
+
+.cm-editor .cm-scroller {
+  font-family: var(--font-mono);
+  line-height: 1.7;
+  padding: 0.75rem 0;
+}
+
+.cm-editor .cm-content {
+  caret-color: var(--color-brand);
+}
+
+.cm-editor .cm-cursor,
+.cm-editor .cm-dropCursor {
+  border-left-color: var(--color-ink);
+}
+
+.cm-editor .cm-gutters {
+  background-color: transparent;
+  border-right: 1px solid var(--color-line);
+  color: var(--color-ink-subtle);
+}
+
+.cm-editor .cm-activeLineGutter,
+.cm-editor .cm-activeLine {
+  background-color: var(--color-sunken);
+}
+
+.cm-editor .cm-selectionBackground,
+.cm-editor .cm-content ::selection {
+  background-color: var(--color-brand-quiet);
+}
+
+.cm-editor .cm-selectionMatch {
+  background-color: var(--color-brand-quiet);
+}
+
+.cm-editor .cm-panels {
+  background-color: var(--color-surface);
+  border-color: var(--color-line);
+  color: var(--color-ink);
+}
+
+.cm-editor .cm-tooltip {
+  background-color: var(--color-surface);
+  border: 1px solid var(--color-line-strong);
+  border-radius: var(--radius-sm);
+  color: var(--color-ink);
+}
+
+.cm-editor .cm-tooltip-autocomplete ul li[aria-selected] {
+  background-color: var(--color-brand-quiet);
+  color: var(--color-brand);
+}
+
+/*
+ * Markdown tokens, as syntax rather than as prose: the punctuation that
+ * structure is made of stays subdued, the words stay readable. A Markdown file
+ * that renders like formatted text stops being a file you can edit.
+ */
+.cm-heading {
+  color: var(--color-ink);
+  font-weight: 600;
+}
+.cm-strong {
+  font-weight: 600;
+  color: var(--color-ink);
+}
+.cm-emphasis {
+  font-style: italic;
+}
+.cm-link,
+.cm-url {
+  color: var(--color-brand);
+}
+.cm-monospace {
+  color: var(--color-ink);
+  background-color: var(--color-sunken);
+}
+.cm-quote {
+  color: var(--color-ink-muted);
+}
+.cm-list {
+  color: var(--color-ink-subtle);
+}
+.cm-meta,
+.cm-comment {
+  color: var(--color-ink-subtle);
+}
+.cm-processingInstruction {
+  color: var(--color-info);
+}
+
+/*
+ * The preview pane's blocks are rendered with the site's `.prose` rules, which
+ * are built for a page that owns the viewport. Inside a split pane they need a
+ * horizontal inset and nothing else.
+ */
+.editor-preview .prose {
+  padding-bottom: 3rem;
+}

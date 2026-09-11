@@ -1,0 +1,696 @@
+'use client'
+
+import Link from 'next/link'
+import { useRouter } from 'next/navigation'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { toast } from 'sonner'
+
+import type { ContentStatus, ContentType } from '@/lib/content/schema'
+import type { ContentFormValues } from '@/lib/admin/frontmatter-form'
+import type { ActionFailure } from '@/lib/admin/result'
+import { textStats, type TextStats } from '@/lib/utils/text'
+import { cn } from '@/lib/utils/cn'
+import { autosaveContentAction, saveContentAction } from '@/app/admin/actions/content'
+import { previewMarkdownAction } from '@/app/admin/actions/preview'
+import { uploadAssetAction } from '@/app/admin/actions/assets'
+import { Button } from '@/components/ui/button'
+import { Kbd } from '@/components/ui/kbd'
+import { StatusBadge } from '@/components/admin/status-badge'
+import { MetadataPanel } from './metadata-panel'
+import { MarkdownEditor, type MarkdownEditorHandle } from './markdown-editor'
+
+/**
+ * The editor.
+ *
+ * Three things are true at once here and the UI has to keep them apart, because
+ * confusing any two of them is how an author loses work:
+ *
+ *   1. **The buffer** — what is in the text field. Only this can be unsaved.
+ *   2. **The file** — written on Ctrl/Cmd+S, or by nothing at all. Autosave does
+ *      not touch it.
+ *   3. **The draft revision** — captured two seconds after typing stops, inside
+ *      Postgres. It is what survives a crash, and it is not a save.
+ *
+ * So the status line reports the file ("Saved to file at 14:32") and, separately,
+ * the draft ("Draft revision recorded 14:32"). A failed save says the file was
+ * not modified, because that is the only fact the author needs to decide whether
+ * to retype their work.
+ */
+
+export interface EditorDocumentPayload {
+  type: ContentType
+  slug: string
+  path: string
+  status: ContentStatus
+  checksum: string
+  body: string
+  values: ContentFormValues
+  /** Frontmatter keys the panel does not own, shown read-only. */
+  preserved: Record<string, unknown>
+  wordCount: number
+  updatedAt: string
+  derivedTitle: string
+  /** True when the index row's checksum disagrees with the file on disk. */
+  driftedFromIndex: boolean
+}
+
+type SaveState =
+  | { kind: 'saved'; at: string | null }
+  | { kind: 'dirty' }
+  | { kind: 'saving' }
+  | { kind: 'failed'; failure: ActionFailure }
+
+type DraftState =
+  | { kind: 'idle' }
+  | { kind: 'saving' }
+  | { kind: 'recorded'; at: string; revisionNo: number | null }
+  | { kind: 'off' }
+  | { kind: 'failed'; message: string }
+
+type PreviewState =
+  | { kind: 'idle' }
+  | { kind: 'loading' }
+  | { kind: 'ready'; html: string; broken: string[] }
+  | { kind: 'failed'; message: string }
+
+type Mode = 'write' | 'split' | 'preview'
+type Pane = 'metadata' | 'write' | 'preview'
+
+const AUTOSAVE_DELAY_MS = 2000
+const PREVIEW_DELAY_MS = 350
+const UNSAVED_MESSAGE =
+  'This document has changes that have not been saved to the file. Leave anyway?'
+
+export function Editor({
+  doc,
+  locale,
+  listHref,
+  segment,
+}: {
+  doc: EditorDocumentPayload
+  locale: string
+  listHref: string
+  segment: string
+}) {
+  const router = useRouter()
+  const editor = useRef<MarkdownEditorHandle | null>(null)
+
+  // The buffer, the metadata and the checksum are refs as well as state: the
+  // autosave timer and the save handler read them when they fire, and a closure
+  // over a state value would send whatever the render that scheduled it saw.
+  const bodyRef = useRef(doc.body)
+  const valuesRef = useRef(doc.values)
+  const checksumRef = useRef(doc.checksum)
+  const slugRef = useRef(doc.slug)
+  const dirtyRef = useRef(false)
+  const savingRef = useRef(false)
+  const reloadRequested = useRef(false)
+
+  const [values, setValues] = useState(doc.values)
+  const [stats, setStats] = useState<TextStats>(() => textStats(doc.body))
+  const [save, setSave] = useState<SaveState>({ kind: 'saved', at: null })
+  const [draft, setDraft] = useState<DraftState>({ kind: 'idle' })
+  const [preview, setPreview] = useState<PreviewState>({ kind: 'idle' })
+  const [mode, setMode] = useState<Mode>('split')
+  const [pane, setPane] = useState<Pane>('write')
+  const [uploading, setUploading] = useState(false)
+  /**
+   * Bumped on every edit. The debounced effects depend on this rather than on
+   * the text itself, because the text lives in a ref and a ref is not a
+   * dependency React can see change.
+   */
+  const [revision, setRevision] = useState(0)
+
+  const readOnly = save.kind === 'failed' && save.failure.code === 'stale'
+  const dirty = save.kind === 'dirty' || save.kind === 'failed'
+
+  const markDirty = useCallback(() => {
+    dirtyRef.current = true
+    setRevision((value) => value + 1)
+    setSave((current) => (current.kind === 'saving' ? current : { kind: 'dirty' }))
+  }, [])
+
+  const handleBodyChange = useCallback(
+    (text: string) => {
+      bodyRef.current = text
+      setStats(textStats(text))
+      markDirty()
+    },
+    [markDirty],
+  )
+
+  const handleValuesChange = useCallback(
+    (next: ContentFormValues) => {
+      valuesRef.current = next
+      setValues(next)
+      markDirty()
+    },
+    [markDirty],
+  )
+
+  const formatTime = useCallback(
+    (date: Date) =>
+      new Intl.DateTimeFormat(locale, { hour: '2-digit', minute: '2-digit' }).format(date),
+    [locale],
+  )
+
+  /* ---------------------------------------------------------------------- */
+  /*  Save                                                                   */
+  /* ---------------------------------------------------------------------- */
+
+  const runSave = useCallback(
+    async (force = false) => {
+      if (savingRef.current) return
+      savingRef.current = true
+      setSave({ kind: 'saving' })
+
+      try {
+        const result = await saveContentAction({
+          path: doc.path,
+          baseChecksum: checksumRef.current,
+          values: valuesRef.current,
+          body: bodyRef.current,
+          force,
+        })
+
+        if (!result.ok) {
+          setSave({ kind: 'failed', failure: result })
+          return
+        }
+
+        checksumRef.current = result.data.checksum
+        dirtyRef.current = false
+        setSave({ kind: 'saved', at: formatTime(new Date(result.data.savedAt)) })
+        setDraft((current) => (current.kind === 'recorded' ? { kind: 'idle' } : current))
+        setStats(textStats(bodyRef.current))
+
+        if (result.data.slug !== slugRef.current) {
+          slugRef.current = result.data.slug
+          // The URL names the slug, so a rename is a navigation. `replace`, not
+          // `push`: the old URL no longer resolves to anything.
+          router.replace(`/admin/${segment}/${result.data.slug}/edit`)
+        } else {
+          router.refresh()
+        }
+      } finally {
+        savingRef.current = false
+      }
+    },
+    [doc.path, formatTime, router, segment],
+  )
+
+  /* ---------------------------------------------------------------------- */
+  /*  Autosave                                                               */
+  /* ---------------------------------------------------------------------- */
+
+  useEffect(() => {
+    if (!dirty) return
+    const timer = setTimeout(async () => {
+      // A save in flight already carries this buffer to disk; recording a draft
+      // beside it would file the same keystrokes twice.
+      if (savingRef.current) return
+      setDraft({ kind: 'saving' })
+
+      const result = await autosaveContentAction({
+        path: doc.path,
+        values: valuesRef.current,
+        body: bodyRef.current,
+      })
+
+      if (!result.ok) {
+        setDraft({ kind: 'failed', message: result.error })
+        return
+      }
+      if (result.data.revisionsDisabled) {
+        setDraft({ kind: 'off' })
+        return
+      }
+      setDraft({
+        kind: 'recorded',
+        at: formatTime(new Date(result.data.savedAt)),
+        revisionNo: result.data.revisionNo,
+      })
+    }, AUTOSAVE_DELAY_MS)
+
+    return () => clearTimeout(timer)
+  }, [dirty, revision, doc.path, formatTime])
+
+  /* ---------------------------------------------------------------------- */
+  /*  Preview                                                                */
+  /* ---------------------------------------------------------------------- */
+
+  const previewVisible = mode !== 'write' || pane === 'preview'
+
+  useEffect(() => {
+    if (!previewVisible) return
+    const timer = setTimeout(async () => {
+      setPreview({ kind: 'loading' })
+      const result = await previewMarkdownAction({
+        body: bodyRef.current,
+        title: valuesRef.current.title,
+      })
+      if (!result.ok) {
+        setPreview({ kind: 'failed', message: result.error })
+        return
+      }
+      setPreview({ kind: 'ready', html: result.data.html, broken: result.data.broken })
+    }, PREVIEW_DELAY_MS)
+
+    return () => clearTimeout(timer)
+  }, [previewVisible, revision])
+
+  /* ---------------------------------------------------------------------- */
+  /*  Leaving with unsaved changes                                           */
+  /* ---------------------------------------------------------------------- */
+
+  useEffect(() => {
+    const onBeforeUnload = (event: BeforeUnloadEvent) => {
+      if (!dirtyRef.current) return
+      event.preventDefault()
+    }
+    window.addEventListener('beforeunload', onBeforeUnload)
+    return () => window.removeEventListener('beforeunload', onBeforeUnload)
+  }, [])
+
+  useEffect(() => {
+    // Next's client router drives link clicks through the History API, so the
+    // `beforeunload` above never fires for them. Intercepting in the capture
+    // phase catches every internal link before the router sees it.
+    const onClick = (event: MouseEvent) => {
+      if (!dirtyRef.current || event.defaultPrevented) return
+      if (event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return
+
+      const anchor = (event.target as Element | null)?.closest('a')
+      if (!anchor) return
+      const href = anchor.getAttribute('href')
+      if (!href || href.startsWith('#') || anchor.target === '_blank') return
+      if (!href.startsWith('/')) return
+
+      if (!window.confirm(UNSAVED_MESSAGE)) {
+        event.preventDefault()
+        event.stopPropagation()
+      }
+    }
+    document.addEventListener('click', onClick, true)
+    return () => document.removeEventListener('click', onClick, true)
+  }, [])
+
+  useEffect(() => {
+    const onPopState = () => {
+      if (!dirtyRef.current) return
+      // The browser has already moved. Put the entry back so the address bar
+      // matches the document on screen, then ask; on consent, `back()` returns
+      // to the entry the reader was heading for.
+      window.history.pushState(null, '', window.location.pathname)
+      if (window.confirm(UNSAVED_MESSAGE)) {
+        dirtyRef.current = false
+        window.history.back()
+      }
+    }
+    window.addEventListener('popstate', onPopState)
+    return () => window.removeEventListener('popstate', onPopState)
+  }, [])
+
+  /* ---------------------------------------------------------------------- */
+  /*  Reload from disk                                                       */
+  /* ---------------------------------------------------------------------- */
+
+  // The page re-renders from the server after `router.refresh()`, which brings
+  // new props and a new checksum. Adopting them is deliberate — it discards the
+  // buffer — so it only happens when the author asked for it.
+  useEffect(() => {
+    if (!reloadRequested.current) return
+    if (doc.checksum === checksumRef.current) return
+    reloadRequested.current = false
+    bodyRef.current = doc.body
+    valuesRef.current = doc.values
+    checksumRef.current = doc.checksum
+    slugRef.current = doc.slug
+    dirtyRef.current = false
+    editor.current?.replaceAll(doc.body)
+    setValues(doc.values)
+    setStats(textStats(doc.body))
+    setSave({ kind: 'saved', at: null })
+    setDraft({ kind: 'idle' })
+  }, [doc.body, doc.checksum, doc.slug, doc.values])
+
+  const handleUpload = useCallback(async (file: File) => {
+    const formData = new FormData()
+    formData.set('file', file)
+    const result = await uploadAssetAction(formData)
+    if (!result.ok) {
+      toast.error(result.error, { description: result.detail })
+      return null
+    }
+    toast.success('Uploaded.', {
+      description: `${result.data.filename} · ${formatBytes(result.data.size)}`,
+    })
+    return { markdown: result.data.markdown, filename: result.data.filename }
+  }, [])
+
+  const failure = save.kind === 'failed' ? save.failure : null
+  const title = values.title.trim() || doc.derivedTitle
+
+  return (
+    <div className="mx-auto flex w-full max-w-none flex-col">
+      <header className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-line pb-4">
+        <Link href={listHref} className="text-sm text-ink-muted no-underline hover:text-brand">
+          ← List
+        </Link>
+        <span className="font-mono text-[11px] uppercase tracking-[0.12em] text-ink-subtle">
+          {doc.type}
+        </span>
+        <h1 className="min-w-0 flex-1 truncate font-serif text-lg tracking-tight text-ink">
+          {title}
+        </h1>
+        <StatusBadge status={values.status} />
+
+        <div className="flex items-center gap-2">
+          <Link
+            href={`/admin/${segment}/${values.slug}/revisions`}
+            className="text-sm text-ink-muted hover:text-brand"
+          >
+            Revisions
+          </Link>
+          <Button
+            type="button"
+            size="sm"
+            onClick={() => void runSave()}
+            disabled={save.kind === 'saving' || !dirty}
+          >
+            {save.kind === 'saving' ? 'Saving…' : 'Save'}
+          </Button>
+        </div>
+      </header>
+
+      <StatusLine
+        save={save}
+        draft={draft}
+        stats={stats}
+        uploading={uploading}
+        path={doc.path}
+      />
+
+      {doc.driftedFromIndex ? (
+        <p className="mt-4 border border-warning/40 bg-warning/5 px-4 py-3 text-sm text-ink">
+          The index row for this document does not match the file&rsquo;s checksum — it was changed
+          outside the admin. Saving from here replaces those changes with this buffer.
+        </p>
+      ) : null}
+
+      {failure ? (
+        <FailureBanner
+          failure={failure}
+          onOverwrite={() => void runSave(true)}
+          onReload={() => {
+            reloadRequested.current = true
+            router.refresh()
+          }}
+        />
+      ) : null}
+
+      <ModeBar
+        mode={mode}
+        pane={pane}
+        onMode={setMode}
+        onPane={setPane}
+        broken={preview.kind === 'ready' ? preview.broken : []}
+      />
+
+      <div className="mt-4 grid min-h-[70vh] grid-cols-1 gap-px overflow-hidden border border-line bg-line lg:grid-cols-[19rem_1fr]">
+        {/* Metadata: a pane of its own below the breakpoint, a fixed column above it. */}
+        <aside
+          className={cn(
+            'min-w-0 overflow-y-auto bg-surface p-4 lg:block lg:max-h-[80vh]',
+            pane === 'metadata' ? 'block' : 'hidden',
+          )}
+        >
+          <MetadataPanel
+            type={doc.type}
+            values={values}
+            onChange={handleValuesChange}
+            preserved={doc.preserved}
+            errors={failure?.fieldErrors}
+            disabled={save.kind === 'saving' || readOnly}
+          />
+        </aside>
+
+        <div className="min-w-0 bg-surface lg:col-start-2">
+          <div
+            className={cn(
+              'grid min-h-[70vh] grid-cols-1',
+              mode === 'split' ? 'lg:grid-cols-2 lg:gap-px lg:bg-line' : 'lg:grid-cols-1',
+            )}
+          >
+            <div
+              className={cn(
+                'min-w-0 bg-surface lg:block',
+                pane === 'write' ? 'block' : 'hidden',
+                mode === 'preview' ? 'lg:hidden' : '',
+              )}
+            >
+              <MarkdownEditor
+                ref={editor}
+                initialValue={doc.body}
+                onChange={handleBodyChange}
+                onSave={() => void runSave()}
+                onUploadFile={handleUpload}
+                onUploadStateChange={(state) => setUploading(state === 'uploading')}
+                onTogglePreview={() =>
+                  setMode((current) => (current === 'write' ? 'split' : 'write'))
+                }
+                readOnly={readOnly}
+                aria-label={`Markdown source for ${title}`}
+              />
+            </div>
+
+            <div
+              className={cn(
+                'min-w-0 overflow-y-auto bg-surface lg:block lg:max-h-[80vh]',
+                pane === 'preview' ? 'block' : 'hidden',
+                mode === 'write' ? 'lg:hidden' : '',
+              )}
+            >
+              <Preview state={preview} />
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <p className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 font-mono text-[11px] text-ink-subtle">
+        <span>
+          <Kbd>Ctrl</Kbd> <Kbd>S</Kbd> save to file
+        </span>
+        <span>
+          <Kbd>Ctrl</Kbd> <Kbd>P</Kbd> preview
+        </span>
+        <span>Paste or drop an image to upload it</span>
+        <span className="truncate">{doc.path}</span>
+      </p>
+    </div>
+  )
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Pieces                                                                     */
+/* -------------------------------------------------------------------------- */
+
+function StatusLine({
+  save,
+  draft,
+  stats,
+  uploading,
+  path,
+}: {
+  save: SaveState
+  draft: DraftState
+  stats: TextStats
+  uploading: boolean
+  path: string
+}) {
+  return (
+    <div
+      className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs"
+      role="status"
+      aria-live="polite"
+    >
+      <span
+        className={cn(
+          'font-medium',
+          save.kind === 'saved' && 'text-success',
+          save.kind === 'dirty' && 'text-warning',
+          save.kind === 'saving' && 'text-ink-muted',
+          save.kind === 'failed' && 'text-danger',
+        )}
+      >
+        {save.kind === 'saved'
+          ? save.at
+            ? `Saved to file at ${save.at}`
+            : 'Saved to file'
+          : save.kind === 'dirty'
+            ? 'Unsaved changes — not yet written to the file'
+            : save.kind === 'saving'
+              ? 'Saving to file…'
+              : 'Not saved to file'}
+      </span>
+
+      <span className="text-ink-subtle">
+        {draft.kind === 'recorded'
+          ? `Draft revision recorded ${draft.at}${draft.revisionNo ? ` (#${draft.revisionNo})` : ''}`
+          : draft.kind === 'saving'
+            ? 'Recording draft revision…'
+            : draft.kind === 'off'
+              ? 'Revision history is switched off — drafts are not being recorded'
+              : draft.kind === 'failed'
+                ? `Draft not recorded: ${draft.message}`
+                : 'Draft revisions record two seconds after you stop typing'}
+      </span>
+
+      {uploading ? <span className="text-ink-muted">Uploading…</span> : null}
+
+      <span className="ml-auto tabular-nums text-ink-subtle">
+        {stats.words} words · {stats.readingTime} min read ·{' '}
+        <span className="font-mono">{path}</span>
+      </span>
+    </div>
+  )
+}
+
+function FailureBanner({
+  failure,
+  onOverwrite,
+  onReload,
+}: {
+  failure: ActionFailure
+  onOverwrite: () => void
+  onReload: () => void
+}) {
+  return (
+    <div role="alert" className="mt-4 border border-danger/40 bg-danger/5 px-4 py-3 text-sm text-ink">
+      <p className="font-medium">{failure.error}</p>
+      {failure.detail ? <p className="mt-1 text-xs text-ink-muted">{failure.detail}</p> : null}
+      {failure.code === 'stale' ? (
+        <>
+          <p className="mt-2 text-xs text-ink-muted">
+            The version on disk was not modified, and neither was the buffer below — it is still
+            what you typed. Reloading discards the buffer; overwriting replaces the file with it.
+          </p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <Button type="button" size="sm" variant="destructive" onClick={onOverwrite}>
+              Overwrite the file with this buffer
+            </Button>
+            <Button type="button" size="sm" variant="outline" onClick={onReload}>
+              Discard the buffer and reload from disk
+            </Button>
+          </div>
+        </>
+      ) : null}
+    </div>
+  )
+}
+
+function ModeBar({
+  mode,
+  pane,
+  onMode,
+  onPane,
+  broken,
+}: {
+  mode: Mode
+  pane: Pane
+  onMode: (mode: Mode) => void
+  onPane: (pane: Pane) => void
+  broken: string[]
+}) {
+  return (
+    <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+      {/* Below the breakpoint there is no room for two panes side by side, so
+          the same three choices become one visible pane at a time. */}
+      <div className="flex gap-1 lg:hidden" role="group" aria-label="Editor pane">
+        {(
+          [
+            ['metadata', 'Metadata'],
+            ['write', 'Write'],
+            ['preview', 'Preview'],
+          ] as const
+        ).map(([value, label]) => (
+          <button
+            key={value}
+            type="button"
+            aria-pressed={pane === value}
+            onClick={() => onPane(value)}
+            className={cn(
+              'rounded-sm border px-3 py-1.5 text-sm transition-colors',
+              pane === value
+                ? 'border-line-strong bg-sunken text-ink'
+                : 'border-transparent text-ink-muted hover:text-ink',
+            )}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      <div className="hidden gap-1 lg:flex" role="group" aria-label="Editor layout">
+        {(
+          [
+            ['write', 'Write'],
+            ['split', 'Split'],
+            ['preview', 'Preview'],
+          ] as const
+        ).map(([value, label]) => (
+          <button
+            key={value}
+            type="button"
+            aria-pressed={mode === value}
+            onClick={() => onMode(value)}
+            className={cn(
+              'rounded-sm border px-3 py-1.5 text-sm transition-colors',
+              mode === value
+                ? 'border-line-strong bg-sunken text-ink'
+                : 'border-transparent text-ink-muted hover:text-ink',
+            )}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      <p className="text-xs text-ink-subtle" aria-live="polite">
+        {broken.length > 0
+          ? `${broken.length} link${broken.length === 1 ? '' : 's'} point at nothing: ${broken
+              .slice(0, 3)
+              .join(', ')}${broken.length > 3 ? '…' : ''}`
+          : ''}
+      </p>
+    </div>
+  )
+}
+
+function Preview({ state }: { state: PreviewState }) {
+  if (state.kind === 'failed') {
+    return (
+      <p className="p-4 text-sm text-danger" role="alert">
+        The preview could not be rendered: {state.message}
+      </p>
+    )
+  }
+  if (state.kind === 'ready') {
+    return (
+      <div className="editor-preview px-5 pt-4">
+        <div className="prose" dangerouslySetInnerHTML={{ __html: state.html }} />
+      </div>
+    )
+  }
+  return (
+    <p className="p-4 text-sm text-ink-subtle">
+      {state.kind === 'loading' ? 'Rendering…' : 'The preview appears here as you type.'}
+    </p>
+  )
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} kB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
