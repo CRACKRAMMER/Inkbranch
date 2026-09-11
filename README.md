@@ -36,8 +36,13 @@ codebase:
   prerendered at build time, so the Docker build needs no database and the
   image cannot contain a snapshot of your development content. See the comment
   in `src/app/(site)/layout.tsx` for the full reasoning.
-- **Postgres can disappear and the site still reads.** Every published page
-  renders from the filesystem; the database adds indexing, not content.
+- **Postgres can disappear and the site still reads *content*.** Article bodies
+  and their metadata come from the filesystem, so nothing is lost when the
+  database is gone. The site does not keep *serving* without it, though: the
+  public layout reads settings and navigation on every render, so a Postgres
+  outage is an outage. What the file-first design buys is that the content — the
+  part that took years to write — is never trapped behind a database, not that
+  the site is immune to one.
 
 ---
 
