@@ -376,7 +376,7 @@ function FeaturesSection({ api }: { api: Api }) {
           id="setting-analyticsEnabled"
           label="Analytics"
           checked={api.draft.analyticsEnabled}
-          description="Stored, and read by nothing: collection is gated by ANALYTICS_ENABLED in the environment. Turning it off here does not stop the site from recording views."
+          description="Records page views, rolled up into daily totals and read by the analytics page. The site sends nothing unless this and ANALYTICS_ENABLED are both on, so switching it off here stops collection without a redeploy — though a browser holding a cached page still has the old markup."
           onChange={(value) => api.set('analyticsEnabled', value)}
         />
         <div className="py-3">

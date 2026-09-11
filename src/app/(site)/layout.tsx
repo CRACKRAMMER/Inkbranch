@@ -1,6 +1,8 @@
+import { AnalyticsBeacon } from '@/components/site/analytics-beacon'
 import { SiteFooter } from '@/components/site/site-footer'
 import { SiteHeader } from '@/components/site/site-header'
 import type { SiteLink } from '@/components/site/nav-link'
+import { env } from '@/env'
 import { getNavLinks } from '@/lib/navigation'
 import { getSettings } from '@/lib/settings'
 
@@ -98,6 +100,28 @@ export default async function SiteLayout({ children }: { children: React.ReactNo
       <main id="main" tabIndex={-1} className="flex-1 focus:outline-none">
         {children}
       </main>
+
+      {/*
+        The page-view beacon, and the two switches that decide whether it exists.
+
+        `ANALYTICS_ENABLED` is the deployment's: an operator who switches it off
+        gets a site that does nothing at all — no page view is reported, and the
+        route drops one that arrives anyway. The setting is the author's: off
+        means the public site stops sending. They are checked together, here,
+        rather than in the beacon, so that a site with collection off ships no
+        component, no listener and no request.
+
+        An author's setting cannot be the whole answer, which is why both exist:
+        a reader with a cached bundle keeps sending beacons until the bundle is
+        replaced, and only the server-side flag can refuse those. The route asks
+        it again for that reason, and it is the reason the flag is described as
+        the operator's rather than the author's.
+
+        Deliberately not rendered in the admin. Those are the author's own page
+        views, and a dashboard whose traffic figures are mostly its owner
+        reloading the page it is on is a dashboard nobody trusts.
+      */}
+      {env.ANALYTICS_ENABLED && settings.analyticsEnabled ? <AnalyticsBeacon /> : null}
 
       <SiteFooter
         siteName={settings.siteName}

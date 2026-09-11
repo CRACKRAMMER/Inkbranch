@@ -125,6 +125,42 @@ export const E2E_BASE_URL = process.env.E2E_BASE_URL ?? `http://127.0.0.1:${E2E_
  * `127.0.0.1` is a secure context: Chromium accepts a `Secure` cookie from it
  * over plain HTTP. The alternative — setting `COOKIE_SECURE=0` — does not start
  * the server at all.
+ *
+ * ## Why the embedded worker is switched off
+ *
+ * `WORKER_ENABLED=0` turns off the loop the server starts for itself, and it is
+ * off here for a reason that is about this suite rather than about the worker:
+ * **the server under test starts before the database it will use exists.**
+ * `globalSetup` creates the database, so a loop that starts with the server
+ * either fails to connect or — on a re-run, when the database is still there
+ * from last time — connects to the schema that `globalSetup` is about to drop,
+ * writes job rows into it, and has them deleted underneath it. Either way the
+ * result is a worker whose behaviour depends on how fast the setup ran, which is
+ * not something a test can assert on.
+ *
+ * The worker is tested where the database exists before the process does:
+ * `tests/unit/jobs.test.ts` starts one against the integration database and
+ * watches the cadence write rows. What is given up here is one line —
+ * `src/instrumentation.ts` calling `startEmbeddedWorker()` behind the flag —
+ * which has no branch of its own to get wrong.
+ *
+ * `CONTENT_SYNC_ON_BOOT` stays on because it is the *read* path that needs it:
+ * it is what makes the first request to a freshly seeded index correct, and it
+ * is exercised by every test that looks at a public page.
+ *
+ * ## Why collection is switched on
+ *
+ * The opposite call, and for the opposite reason. `ANALYTICS_ENABLED=0` would
+ * stop the layout from rendering the beacon at all, so a suite run with it off
+ * asserts nothing about the one part of analytics that only a browser can test:
+ * that a real reader's page view is reported, once, when they leave. `tests/e2e/analytics.spec.ts`
+ * is what this flag is on for, and it is the only file that depends on it.
+ *
+ * It is safe to leave on for the rest of the suite because the two halves are
+ * independent: a beacon that is *dropped* writes no row and sets no cookie, and
+ * — as `analytics.spec.ts` explains at length — every beacon this suite's
+ * browser sends is dropped, because the server is configured `https://` and the
+ * browser speaks `http://`. Nothing else in the suite can see a difference.
  */
 export function serverEnv(): Record<string, string> {
   return {
@@ -136,7 +172,8 @@ export function serverEnv(): Record<string, string> {
     COOKIE_SECURE: '1',
     SITE_URL: `https://127.0.0.1:${E2E_PORT}`,
     TRUSTED_ORIGINS: `127.0.0.1:${E2E_PORT},localhost:${E2E_PORT}`,
-    ANALYTICS_ENABLED: '0',
+    WORKER_ENABLED: '0',
+    ANALYTICS_ENABLED: '1',
     CONTENT_SYNC_ON_BOOT: '1',
   }
 }

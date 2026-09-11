@@ -4,9 +4,19 @@ import { env, siteOrigin } from '@/env'
 import {
   DayRollup,
   aggregateDay,
+  aggregateDays,
+  aggregatePending,
   aggregateRange,
+  pendingDays,
   type RollupEvent,
 } from '@/lib/analytics/aggregate'
+import {
+  MAX_DURATION_MS,
+  MAX_REFERRER_LENGTH,
+  NAVIGATION_TYPES,
+  buildBeacon,
+} from '@/lib/analytics/beacon'
+import { DwellClock } from '@/lib/analytics/dwell'
 import {
   VISITOR_COOKIE_NAME,
   beaconSchema,
@@ -480,6 +490,233 @@ describe('beaconSchema', () => {
     for (const body of [null, undefined, 'text', 7, []]) {
       expect(beaconSchema.safeParse(body).success).toBe(false)
     }
+  })
+})
+
+/* -------------------------------------------------------------------------- */
+/*  The client half                                                            */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * `DwellClock` and `./beacon` are what the browser actually runs; the component
+ * around them only attaches listeners. Both are free of the DOM so that this is
+ * possible at all — a component that owns a `document` listener can only be
+ * tested by driving a browser, which in practice means it is not tested.
+ */
+describe('DwellClock', () => {
+  /** A clock the test moves by hand. No timers, no waiting, no flakiness. */
+  function clockAt(startMs = 0) {
+    let now = startMs
+    return {
+      clock: new DwellClock(() => now),
+      advance(ms: number) {
+        now += ms
+      },
+      set(ms: number) {
+        now = ms
+      },
+    }
+  }
+
+  it('counts nothing before the page is shown', () => {
+    const { clock, advance } = clockAt()
+    advance(5_000)
+    expect(clock.elapsedMs()).toBe(0)
+  })
+
+  it('counts the stretch the page is visible for', () => {
+    const { clock, advance } = clockAt()
+    clock.show()
+    advance(4_200)
+    expect(clock.elapsedMs()).toBe(4_200)
+  })
+
+  it('banks what it counted, and adds the next stretch to it', () => {
+    // A reader who switches to another tab and comes back was reading for both
+    // stretches, and only the time in between is not theirs.
+    const { clock, advance } = clockAt()
+    clock.show()
+    advance(1_000)
+    clock.hide()
+    advance(60_000)
+    clock.show()
+    advance(500)
+    expect(clock.elapsedMs()).toBe(1_500)
+  })
+
+  it('stops counting while the page is hidden', () => {
+    const { clock, advance } = clockAt()
+    clock.show()
+    advance(1_000)
+    clock.hide()
+    advance(10_000)
+    expect(clock.elapsedMs()).toBe(1_000)
+  })
+
+  it('does not start a second stretch when shown twice', () => {
+    // `visibilitychange` can fire with the same value twice, and a handler that
+    // took the second call as a fresh start would report half the time.
+    const { clock, advance } = clockAt()
+    clock.show()
+    advance(1_000)
+    clock.show()
+    advance(1_000)
+    expect(clock.elapsedMs()).toBe(2_000)
+  })
+
+  it('banks nothing when hidden without having been shown', () => {
+    const { clock, advance } = clockAt()
+    clock.hide()
+    advance(1_000)
+    clock.show()
+    advance(1_000)
+    expect(clock.elapsedMs()).toBe(1_000)
+  })
+
+  it('never counts backwards when the clock does', () => {
+    // An NTP correction, or a laptop waking from suspend. A negative duration
+    // fails the schema, and a failed schema drops the whole beacon — the view
+    // would be lost, not just this field.
+    const { clock, set, advance } = clockAt(1_000_000)
+    clock.show()
+    set(1_000_000 - 30_000)
+    expect(clock.elapsedMs()).toBe(0)
+
+    // The stretch is measured against the corrected clock, so counting resumes
+    // when it passes the point the stretch started from rather than at the jump.
+    advance(30_000)
+    expect(clock.elapsedMs()).toBe(0)
+    advance(1_000)
+    expect(clock.elapsedMs()).toBe(1_000)
+
+    clock.hide()
+    expect(clock.elapsedMs()).toBe(1_000)
+  })
+
+  it('banks nothing for a stretch the clock says was negative', () => {
+    // The same correction, this time landing on `hide()`: the time is banked
+    // through the same clamp, so nothing is carried forward from it.
+    const { clock, set, advance } = clockAt(1_000_000)
+    clock.show()
+    set(1_000_000 - 60_000)
+    clock.hide()
+    expect(clock.elapsedMs()).toBe(0)
+
+    advance(1_000)
+    clock.show()
+    advance(2_000)
+    expect(clock.elapsedMs()).toBe(2_000)
+  })
+
+  it('lets a view be reported exactly once', () => {
+    // Not tidiness: the server writes one row per beacon and cannot recognise a
+    // repeat without keeping something about the reader to recognise it with.
+    // A second beacon is a second view, so on a phone this is every app switch.
+    const { clock } = clockAt()
+    expect(clock.isReported).toBe(false)
+    expect(clock.claim()).toBe(true)
+    expect(clock.isReported).toBe(true)
+    expect(clock.claim()).toBe(false)
+  })
+})
+
+describe('what the client builds, the server accepts', () => {
+  /**
+   * The drift guard, in the direction that can silently break the site.
+   *
+   * `./beacon` is the client's half of the contract and `beaconSchema` is the
+   * server's, and they are two files because the server's half imports zod —
+   * which a page's bundle must not, to validate a payload the client itself
+   * just built. The risk of that split is one-directional: a client that sends
+   * a field the schema refuses has every beacon dropped, and a dropped beacon
+   * is invisible. The dashboard would go quiet and nothing would fail.
+   *
+   * So these do not test the shape of either half. They build payloads the way
+   * the browser builds them, and require the server to accept every one.
+   */
+  const asBuilt = [
+    buildBeacon({}),
+    buildBeacon({ durationMs: 0 }),
+    buildBeacon({ durationMs: 8_431 }),
+    buildBeacon({ durationMs: 0.4 }),
+    buildBeacon({ durationMs: 7 * 24 * 60 * 60 * 1000 }),
+    buildBeacon({ durationMs: Number.NaN }),
+    buildBeacon({ durationMs: -1 }),
+    buildBeacon({ durationMs: Number.POSITIVE_INFINITY }),
+    buildBeacon({ referrer: 'https://news.ycombinator.com/item?id=42' }),
+    buildBeacon({ referrer: '' }),
+    buildBeacon({ referrer: '   ' }),
+    buildBeacon({ referrer: null }),
+    buildBeacon({ referrer: 'x'.repeat(4_096) }),
+    buildBeacon({ referrer: 'https://example.com/post', durationMs: 900 }),
+    ...NAVIGATION_TYPES.map((navigationType) =>
+      buildBeacon({ navigationType, durationMs: 1 }),
+    ),
+  ]
+
+  it('accepts every payload the client can build', () => {
+    for (const payload of asBuilt) {
+      const parsed = beaconSchema.safeParse(payload)
+      expect(parsed.success, JSON.stringify(payload)).toBe(true)
+    }
+  })
+
+  it('sends a payload the server stores exactly as it arrived', () => {
+    const payload = buildBeacon({
+      referrer: 'https://example.com/post',
+      durationMs: 8_431,
+      navigationType: 'reload',
+    })
+    expect(beaconSchema.parse(payload)).toEqual(payload)
+  })
+
+  it('truncates a referrer to exactly the limit the schema enforces', () => {
+    const payload = buildBeacon({ referrer: `https://example.com/${'x'.repeat(4_000)}` })
+    expect(payload.referrer).toHaveLength(MAX_REFERRER_LENGTH)
+    expect(beaconSchema.safeParse(payload).success).toBe(true)
+
+    // And the boundary is real: one character more is refused, which is what
+    // makes truncating rather than sending the whole thing the right call.
+    expect(
+      beaconSchema.safeParse({ referrer: 'x'.repeat(MAX_REFERRER_LENGTH + 1) }).success,
+    ).toBe(false)
+  })
+
+  it('clamps a duration to the day the schema allows', () => {
+    const week = 7 * 24 * 60 * 60 * 1000
+    expect(buildBeacon({ durationMs: week }).durationMs).toBe(MAX_DURATION_MS)
+    expect(buildBeacon({ durationMs: MAX_DURATION_MS }).durationMs).toBe(MAX_DURATION_MS)
+    // A clock that was never shown, or one that moved backwards.
+    expect(buildBeacon({ durationMs: Number.NaN }).durationMs).toBe(0)
+    expect(buildBeacon({ durationMs: -5 }).durationMs).toBe(0)
+  })
+
+  it('omits a field rather than sending an empty one', () => {
+    // The schema's version of "no referrer" is a missing key, and a zero-length
+    // string is a different thing on the wire. `strictObject` would refuse the
+    // extra key if it were sent; it cannot refuse a key that is absent.
+    expect('referrer' in buildBeacon({ referrer: '' })).toBe(false)
+    expect('referrer' in buildBeacon({ referrer: '   ' })).toBe(false)
+    expect('referrer' in buildBeacon({ referrer: null })).toBe(false)
+    expect('referrer' in buildBeacon({})).toBe(false)
+    // A client-side navigation within the site is none of the four arrivals,
+    // and reporting nothing is the honest answer rather than a fifth word.
+    expect('navigationType' in buildBeacon({})).toBe(false)
+    expect('navigationType' in buildBeacon({ navigationType: undefined })).toBe(false)
+    // Duration is always present: zero is a real answer to "how long".
+    expect(buildBeacon({}).durationMs).toBe(0)
+  })
+
+  it('names arrivals with the four words the browser itself uses', () => {
+    // Exactly `PerformanceNavigationTiming.type`'s values, so the client can
+    // pass one through without mapping it.
+    expect([...NAVIGATION_TYPES]).toEqual([
+      'navigate',
+      'reload',
+      'back_forward',
+      'prerender',
+    ])
+    expect(beaconSchema.safeParse({ navigationType: 'push' }).success).toBe(false)
   })
 })
 
@@ -1494,6 +1731,157 @@ describe.skipIf(!hasTestDatabase)('analytics against a database', () => {
       const daily = await dailyRows(unaggregated)
       expect(daily).toHaveLength(1)
       expect(daily[0]?.views).toBe(3)
+    })
+  })
+
+  /* ------------------------------------------------------------------------ */
+  /*  Catching up                                                             */
+  /* ------------------------------------------------------------------------ */
+
+  /**
+   * `pendingDays` and `aggregatePending`: the question the worker asks on every
+   * tick, and what it does about the answer.
+   *
+   * Every day here is in 2030 and `pendingDays` is handed a matching `now`, and
+   * both halves of that matter. The sweep looks back the retention window from
+   * today: a fixture in 2023 is outside it and would prove nothing, while the
+   * rest of this file writes events at the real today — which, read by a sweep
+   * pointed at it, would appear as a hole this test never created.
+   */
+  describe('catching up', () => {
+    const NOW = new Date('2030-01-15T12:00:00.000Z')
+    const TODAY = '2030-01-15'
+    const YESTERDAY = '2030-01-14'
+    /** Two days inside the lookback with events and no daily row: the holes. */
+    const HOLE_OLD = '2030-01-10'
+    const HOLE_NEW = '2030-01-12'
+    /** A day the aggregator has already written, so it is not behind. */
+    const DONE = '2030-01-11'
+    /** A day whose events no retention window still covers. */
+    function beyondTheWindow(): string {
+      return addDays(TODAY, -(env.ANALYTICS_RAW_RETENTION_DAYS + 5))
+    }
+
+    const HOLE_PATH = `/__analytics_test__/${RUN}/hole`
+    const DONE_PATH = `/__analytics_test__/${RUN}/done`
+
+    const FIXTURE_DAYS = [TODAY, YESTERDAY, HOLE_OLD, HOLE_NEW, DONE]
+
+    afterAll(async () => {
+      for (const day of [...FIXTURE_DAYS, beyondTheWindow()]) {
+        await clearDay(day)
+      }
+    })
+
+    /** Three views by two readers on the old hole, one view on the new one. */
+    async function seedHoles(): Promise<void> {
+      await clearDay(HOLE_OLD)
+      await clearDay(HOLE_NEW)
+      await insertRawEvents([
+        { day: HOLE_OLD, offset: 0, path: HOLE_PATH, visitorHash: 'b1' },
+        { day: HOLE_OLD, offset: 1, path: HOLE_PATH, visitorHash: 'b2' },
+        { day: HOLE_OLD, offset: 2, path: HOLE_PATH, visitorHash: 'b1' },
+        { day: HOLE_NEW, offset: 0, path: HOLE_PATH, visitorHash: 'b3' },
+      ])
+    }
+
+    it('asks for today and yesterday, then the oldest hole first', async () => {
+      for (const day of [...FIXTURE_DAYS, beyondTheWindow()]) {
+        await clearDay(day)
+      }
+      await seedHoles()
+
+      // A day that is already rolled up, and a day older than anything the
+      // sweep looks back over.
+      await clearDay(DONE)
+      await db.insert(analyticsDaily).values({
+        day: DONE,
+        path: DONE_PATH,
+        views: 4,
+        visitors: 2,
+        referrerDomain: '',
+        device: 'desktop',
+        country: '',
+      })
+      await insertRawEvents([
+        { day: beyondTheWindow(), offset: 0, path: HOLE_PATH },
+      ])
+
+      const pending = await pendingDays(NOW)
+
+      // Today is not over and yesterday's last event can outlive the last run
+      // of that day, so neither is ever considered finished.
+      expect(pending.days.slice(0, 2)).toEqual([TODAY, YESTERDAY])
+
+      expect(pending.days).toContain(HOLE_OLD)
+      expect(pending.days).toContain(HOLE_NEW)
+      // Already rolled up, so there is nothing to rebuild.
+      expect(pending.days).not.toContain(DONE)
+      // Older than the window. Retention has already had its chance at that
+      // day, or is about to; either way this sweep is not what unblocks it.
+      expect(pending.days).not.toContain(beyondTheWindow())
+
+      // Oldest first, which is what stops the day retention is waiting on from
+      // being the day that gets deferred.
+      expect(pending.days.indexOf(HOLE_OLD)).toBeLessThan(
+        pending.days.indexOf(HOLE_NEW),
+      )
+    })
+
+    it('rebuilds the days that are behind and names the ones with nothing', async () => {
+      for (const day of [...FIXTURE_DAYS, beyondTheWindow()]) {
+        await clearDay(day)
+      }
+      await seedHoles()
+
+      const result = await aggregatePending(NOW)
+
+      expect(result.aggregated).toContain(HOLE_OLD)
+      expect(result.aggregated).toContain(HOLE_NEW)
+      // Nothing happened on those two, and a day that had nothing is reported
+      // rather than written as a zero row.
+      expect(result.empty).toContain(TODAY)
+      expect(result.empty).toContain(YESTERDAY)
+      // A day is rebuilt or it was empty. Both is a double count.
+      expect(result.aggregated.filter((day) => result.empty.includes(day))).toEqual([])
+
+      expect(await dailyRows(HOLE_OLD)).toMatchObject([
+        { path: HOLE_PATH, views: 3, visitors: 2 },
+      ])
+      expect(await dailyRows(HOLE_NEW)).toMatchObject([
+        { path: HOLE_PATH, views: 1, visitors: 1 },
+      ])
+      // Aggregating reads the raw events. Retention is what deletes them.
+      expect(await rawCount(HOLE_OLD)).toBe(3)
+      expect(await rawCount(HOLE_NEW)).toBe(1)
+
+      // Today was not rolled up — there was nothing to roll up — so it has no
+      // rows at all rather than an empty set of them.
+      expect(await dailyRows(TODAY)).toEqual([])
+    })
+
+    it('sums what the days it rebuilt produced', async () => {
+      // These are the numbers an operator reads in the job list, so they have
+      // to be the day's totals and not, say, the number of days touched.
+      await clearDay(YESTERDAY)
+      await seedHoles()
+
+      expect(await aggregateDays([HOLE_OLD, HOLE_NEW, YESTERDAY])).toEqual({
+        aggregated: [HOLE_OLD, HOLE_NEW],
+        empty: [YESTERDAY],
+        rows: 2,
+        views: 4,
+        visitors: 3,
+      })
+
+      // A run with nothing to do is a run with nothing to do, not an error.
+      expect(await aggregateDays([])).toEqual({
+        aggregated: [],
+        empty: [],
+        rows: 0,
+        views: 0,
+        visitors: 0,
+      })
     })
   })
 

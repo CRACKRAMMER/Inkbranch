@@ -7,6 +7,7 @@ import { env, siteOrigin } from '@/env'
 import { parseInternalTarget } from '@/lib/content/links'
 import { db } from '@/lib/db'
 import { analyticsEvents, contentIndex, type DeviceType } from '@/lib/db/schema'
+import { MAX_DURATION_MS, MAX_REFERRER_LENGTH, NAVIGATION_TYPES, type BeaconPayload } from './beacon'
 import { utcDay } from './day'
 
 /**
@@ -28,9 +29,12 @@ import { utcDay } from './day'
  *   a first-party cookie that expires at UTC midnight — not a fingerprint, not
  *   anything derived from the machine, nothing that survives the day.
  *
- * The beacon contract is `beaconSchema` below. It is deliberately strict: a
- * payload this server does not recognise is dropped, because a dropped beacon is
- * invisible while a half-understood one is a wrong number on a dashboard.
+ * The beacon contract is `beaconSchema` below, which is built from the shape in
+ * `./beacon` — the one module the browser and the server both import, and the
+ * only place the two halves of the contract are written down. It is deliberately
+ * strict: a payload this server does not recognise is dropped, because a dropped
+ * beacon is invisible while a half-understood one is a wrong number on a
+ * dashboard.
  */
 
 /* -------------------------------------------------------------------------- */
@@ -41,12 +45,14 @@ import { utcDay } from './day'
 const MAX_PATH_LENGTH = 512
 /** Column width of `referrer_domain`; a DNS name cannot exceed 253 characters. */
 const MAX_DOMAIN_LENGTH = 255
-/** A referrer longer than this is not a referrer. */
-const MAX_REFERRER_LENGTH = 2048
-/** A body larger than this is not a beacon. */
+/**
+ * A body larger than this is not a beacon.
+ *
+ * `MAX_REFERRER_LENGTH` and `MAX_DURATION_MS` are not here: they belong to the
+ * shape the client has to respect before it sends, so they live in `./beacon`
+ * with the rest of the contract.
+ */
 const MAX_BEACON_BYTES = 4096
-/** One day: a page cannot claim a reader stayed longer than the reader has existed. */
-const MAX_DURATION_MS = 24 * 60 * 60 * 1000
 
 // eslint-disable-next-line no-control-regex
 const CONTROL_CHARS = /[\u0000-\u001f\u007f]/
@@ -63,18 +69,20 @@ const CONTROL_CHARS = /[\u0000-\u001f\u007f]/
  * unknown field meant. The cost is that a stale client's beacons are dropped
  * until its bundle is replaced, which is the failure this endpoint is allowed to
  * have.
+ *
+ * `satisfies` rather than a declared type, so the schema's inferred type is what
+ * `BeaconPayload` means while the shared interface is still checked against it
+ * here: a field added to the contract in `./beacon` but not accepted below
+ * becomes a compile error in this file, rather than a beacon the client sends
+ * and the server drops for the rest of the deployment's life.
  */
 export const beaconSchema = z.strictObject({
   /** `document.referrer`: the page that linked here, if any. */
   referrer: z.string().max(MAX_REFERRER_LENGTH).optional(),
   /** Milliseconds the page was visible. Bounded by the schema, never trusted. */
   durationMs: z.number().int().min(0).max(MAX_DURATION_MS).optional(),
-  navigationType: z
-    .enum(['navigate', 'reload', 'back_forward', 'prerender'])
-    .optional(),
-})
-
-export type BeaconPayload = z.infer<typeof beaconSchema>
+  navigationType: z.enum(NAVIGATION_TYPES).optional(),
+}) satisfies z.ZodType<BeaconPayload>
 
 /** The part of a page view that can be derived without touching the database. */
 export interface CollectedPageView {
