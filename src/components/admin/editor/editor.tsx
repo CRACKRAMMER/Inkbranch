@@ -103,6 +103,7 @@ export function Editor({
 }) {
   const router = useRouter()
   const editor = useRef<MarkdownEditorHandle | null>(null)
+  const imageInput = useRef<HTMLInputElement | null>(null)
 
   // The buffer, the metadata and the checksum are refs as well as state: the
   // autosave timer and the save handler read them when they fire, and a closure
@@ -317,6 +318,41 @@ export function Editor({
     return { markdown: result.data.markdown, filename: result.data.filename }
   }, [])
 
+  /*
+   * Ctrl/Cmd+Shift+I, which is the keyboard route to what paste and drop
+   * already do.
+   *
+   * The picker is a real `<input type="file">` in the document rather than the
+   * File System Access API, because the input is the one that works everywhere
+   * and needs no permission prompt. The editor cannot reach it — the view has
+   * no idea a picker exists — so the key travels up as a request and comes back
+   * as a file, which is the same `handleUpload` the paste path uses. One upload
+   * implementation, three ways in.
+   *
+   * The markdown lands at the caret, which survives the dialog: focus leaving
+   * the view does not clear its selection, so the author gets the image where
+   * they were typing rather than at the start of the document.
+   */
+  const handlePickImage = useCallback(() => {
+    imageInput.current?.click()
+  }, [])
+
+  const handlePickedImage = useCallback(
+    async (event: React.ChangeEvent<HTMLInputElement>) => {
+      const file = event.target.files?.[0]
+      // Cleared before the upload, and not after: picking the same file twice
+      // in a row is a real thing to do — the first attempt failed, say — and an
+      // input whose value never changed fires no second change event. Clearing
+      // it also drops the reference the browser holds to the file.
+      event.target.value = ''
+      if (!file) return
+
+      const uploaded = await handleUpload(file)
+      if (uploaded) editor.current?.insert(uploaded.markdown)
+    },
+    [handleUpload],
+  )
+
   const failure = save.kind === 'failed' ? save.failure : null
   const title = values.title.trim() || doc.derivedTitle
 
@@ -425,11 +461,28 @@ export function Editor({
                 onSave={() => void runSave()}
                 onUploadFile={handleUpload}
                 onUploadStateChange={(state) => setUploading(state === 'uploading')}
+                onPickImage={handlePickImage}
                 onTogglePreview={() =>
                   setMode((current) => (current === 'write' ? 'split' : 'write'))
                 }
                 readOnly={readOnly}
                 aria-label={`Markdown source for ${title}`}
+              />
+
+              {/*
+                Here rather than in the editor: it is the parent that owns the
+                upload action, and an input inside CodeMirror's own DOM would be
+                a node the view does not know about. `hidden` and not
+                `sr-only` — a file input reachable by Tab is a control nobody
+                asked for, and its dialog is opened from the keyboard by the
+                shortcut (or by clicking the line of hints below).
+              */}
+              <input
+                ref={imageInput}
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={(event) => void handlePickedImage(event)}
               />
             </div>
 
@@ -452,6 +505,12 @@ export function Editor({
         </span>
         <span>
           <Kbd>Ctrl</Kbd> <Kbd>P</Kbd> preview
+        </span>
+        <span>
+          <Kbd>Ctrl</Kbd> <Kbd>K</Kbd> link
+        </span>
+        <span>
+          <Kbd>Ctrl</Kbd> <Kbd>Shift</Kbd> <Kbd>I</Kbd> image
         </span>
         <span>Paste or drop an image to upload it</span>
         <span className="truncate">{doc.path}</span>

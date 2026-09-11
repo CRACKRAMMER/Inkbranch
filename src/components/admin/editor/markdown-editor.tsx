@@ -55,7 +55,42 @@ export interface MarkdownEditorHandle {
   insert(text: string): void
   /** Wrap the selection (or the caret's word-less position) in markers. */
   wrapSelection(before: string, after: string): void
+  /** Insert a Markdown link, leaving the caret on the part only the author has. */
+  insertLink(): void
   focus(): void
+}
+
+/**
+ * `[text](url)`, with the caret on whatever is still missing.
+ *
+ * Two shapes, because the two cases are missing different halves. With a
+ * selection the text is already right and only the destination is missing, so
+ * the caret goes inside the empty parentheses — paste the URL and the link is
+ * done. With no selection both halves are missing, and the half an author types
+ * first is the text, so the template goes in with `text` selected: typing
+ * replaces it.
+ *
+ * No dialog asking for the URL. The author is looking at the Markdown source —
+ * that is what this editor is — and a modal would be a slower way to type two
+ * characters they can see. Markdown is the interface here, not an implementation
+ * detail behind one.
+ */
+function insertLink(instance: EditorView): void {
+  const { from, to } = instance.state.selection.main
+  const selected = instance.state.sliceDoc(from, to)
+
+  const text = selected || 'text'
+  const insert = `[${text}](url)`
+  // With a selection: an empty destination, caret inside it. Without: the
+  // placeholder `text` selected, so the first keystroke replaces it. The
+  // destination is left as the literal `url` in that case, because a link with
+  // nothing in the parentheses is not Markdown anybody can see is unfinished.
+  const selection = selected
+    ? { anchor: from + insert.length - 1 }
+    : { anchor: from + 1, head: from + 1 + text.length }
+
+  instance.dispatch({ changes: { from, to, insert }, selection })
+  instance.focus()
 }
 
 export interface UploadedMarkdown {
@@ -73,6 +108,12 @@ export interface MarkdownEditorProps {
   onUploadFile?: (file: File) => Promise<UploadedMarkdown | null>
   /** Called when a paste or drop upload starts and finishes, for the status line. */
   onUploadStateChange?: (state: 'idle' | 'uploading' | 'failed') => void
+  /**
+   * Called for Mod-Shift-I. The editor cannot open a file picker itself: the
+   * upload belongs to the parent, which owns the action, the progress line and
+   * the message on failure. All this side does is say the key was pressed.
+   */
+  onPickImage?: () => void
   onTogglePreview?: () => void
   readOnly?: boolean
   'aria-label'?: string
@@ -86,6 +127,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
       onSave,
       onUploadFile,
       onUploadStateChange,
+      onPickImage,
       onTogglePreview,
       readOnly = false,
       'aria-label': ariaLabel,
@@ -98,9 +140,23 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
     // Callbacks live in refs so the view is built once. Rebuilding it on a
     // render would discard the undo history, the selection and the scroll
     // position — for a prop that changed because a parent re-rendered.
-    const handlers = useRef({ onChange, onSave, onUploadFile, onUploadStateChange, onTogglePreview })
+    const handlers = useRef({
+      onChange,
+      onSave,
+      onUploadFile,
+      onUploadStateChange,
+      onPickImage,
+      onTogglePreview,
+    })
     useEffect(() => {
-      handlers.current = { onChange, onSave, onUploadFile, onUploadStateChange, onTogglePreview }
+      handlers.current = {
+        onChange,
+        onSave,
+        onUploadFile,
+        onUploadStateChange,
+        onPickImage,
+        onTogglePreview,
+      }
     })
 
     useImperativeHandle(
@@ -137,6 +193,11 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
               : { anchor: from + before.length },
           })
           instance.focus()
+        },
+        insertLink() {
+          const instance = view.current
+          if (!instance) return
+          insertLink(instance)
         },
         focus() {
           view.current?.focus()
@@ -209,6 +270,25 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
               preventDefault: true,
               run: () => {
                 handlers.current.onTogglePreview?.()
+                return true
+              },
+            },
+            {
+              // The view is the argument rather than `view.current`: this runs
+              // inside the keymap the view itself owns, and reading the ref
+              // would be a second source of truth for the same instance.
+              key: 'Mod-k',
+              preventDefault: true,
+              run: (target) => {
+                insertLink(target)
+                return true
+              },
+            },
+            {
+              key: 'Mod-Shift-i',
+              preventDefault: true,
+              run: () => {
+                handlers.current.onPickImage?.()
                 return true
               },
             },

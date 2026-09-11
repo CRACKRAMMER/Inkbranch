@@ -399,13 +399,14 @@ backups/2026-09-11T10-30-00Z/
 ## 10. Future Improvements（后续改进）
 
 以下是实际阅读代码后确认的**未完成项与缺口**，一条一条列出，不含推测。这一节随实现移动：
-上一版列在这里、现已补齐的有十一项——重定向未生效、Analytics 两端未接、按 tag / 分类的 RSS
+上一版列在这里、现已补齐的有十二项——重定向未生效、Analytics 两端未接、按 tag / 分类的 RSS
 缺失、Git 自动提交只有开关、Worker 循环无人启动、About 页缺两个区块、TOC 无平滑滚动、
 终端样式是空规则、sitemap 缺 tag 与 series 页、加载时没有骨架屏、JSON-LD 只有 Article 与
-Breadcrumb（依次对应设定稿第二十五、二十八、二十六、四十二、三十九、四十三、八、七、
-二十三、四十九、二十三节，其中 sitemap 与 JSON-LD 同属第二十三节），因此不再出现在下面。
+Breadcrumb、编辑器的两个快捷键（依次对应设定稿第二十五、二十八、二十六、四十二、三十九、
+四十三、八、七、二十三、四十九、二十三、十七节，其中 sitemap 与 JSON-LD 同属第二十三节），
+因此不再出现在下面。
 
-补上来的几项顺带记下五个决定：第八节的平滑滚动没有写成 `html { scroll-behavior: smooth }`，
+补上来的几项顺带记下六个决定：第八节的平滑滚动没有写成 `html { scroll-behavior: smooth }`，
 因为那个属性作用于视口的**每一次**滚动——Next 在路由切换时用 `scrollIntoView()` 定位，全局
 声明会把"从长文中点开另一篇文章"也变成动画。改为在点击目录链接时把该属性临时设在根元素上、
 滚动结束（`scrollend`，或 1s 上限）后收回，浏览器的原生行为——URL 片段、历史记录、焦点顺序、
@@ -438,30 +439,44 @@ fallback，这是正确行为而不是缺陷；用 `page.route` 延迟响应也�
 拼出来的字符串），因为"两个文档、一个实体"这种约定只有跨页比较才测得到；首页那个节点单独
 放在 `tests/e2e/structured-data.spec.ts`。
 
+第十七节的两个快捷键落在编辑器自己身上。`Ctrl/Cmd+K` 插入 `[text](url)`，两种形状各自缺的
+那一半不同：有选区时 `text` 用选中的文字、光标停在空的圆括号里，粘贴 URL 即完成；没有选区时
+模板整段落下、`text` 是选中态，敲字即替换。目标地址因此保留字面量 `url` 而不是留空——一个
+括号里什么都没有的链接，作者看不出它是"还没写完"还是"本来就没写"。这里也没有弹窗去问 URL：
+作者面前就是 Markdown 源码，用一个模态框问他想写的两个字符比直接写更慢。`Ctrl/Cmd+Shift+I`
+不能由编辑器自己开文件选择框——上传属于父组件（它拥有 action、进度行和失败提示），编辑器只
+负责说"这个键被按了"（`onPickImage`），返回的 Markdown 走粘贴与拖拽同一条插入路径。
+`tests/e2e/authoring.spec.ts` 用真实文件选择框和一张真实的一像素 PNG 证明这一条：先断言源码，
+再断言渲染后的页面——链接被跟到 href、图片被读 `naturalWidth`，因为"存了 Markdown 没存字节"
+看起来正好是一张加载不出来的图片。这条用例还改了一处部署配置：E2E 的 `UPLOAD_DIR` 是临时
+目录，而 Next 的静态处理器只服务 `public/`，所以 `serverEnv()` 把 `UPLOAD_URL_PREFIX` 指到
+`/api/assets`——那正是这个路由存在的部署，于是这条用例顺带把整条服务链路也证明了。顺带记一条
+实测：`mobile` 项目里"先点一下编辑器再按 `Enter`"会丢按键（带点击 6/6、不带点击 2/6，
+`chromium` 0/6），事件日志显示 `Enter` 在那里走的是浏览器原生的 contenteditable 插入路径
+（`keypress` + `beforeinput insertParagraph`）而不是 CodeMirror 的 keymap——所以这条用例里
+没有一处按 `Enter`，插入的落点由正文最后一段给出。
+
 **功能缺口**
 
 1. **资源缩略图变体没有实现**。`src/lib/assets/` 生成 webp/avif 变体并保存宽高与 blur
    占位，但没有 thumbnail 变体；后台列表用 CSS 缩放原图。设定稿第二十节列出了 thumbnail。
-2. **编辑器的两个快捷键没有绑定**：`Ctrl/Cmd+K` 插入链接与 `Ctrl/Cmd+Shift+I` 上传图片
-   （`Cmd+S` 保存、`Cmd+P` 预览、粘贴图片、拖拽图片上传都已实现）。设定稿第十七节列出
-   了这四个快捷键。
 
 **架构性限制**（属于已知取舍，不是遗漏）
 
-3. 搜索索引与关系索引都在进程内，多副本部署会成为陈旧窗口的来源（副本自己构建一份索引
+2. 搜索索引与关系索引都在进程内，多副本部署会成为陈旧窗口的来源（副本自己构建一份索引
    是正确的，但写时的失效只到达处理本次保存的那个副本）。
-4. CJK 采用 bigram 分词，对罕见词会过度切分、无法做单字前缀匹配；`SearchProvider`
+3. CJK 采用 bigram 分词，对罕见词会过度切分、无法做单字前缀匹配；`SearchProvider`
    接口就是为换 Meilisearch 留的缝。
-5. 修订以完整快照存在 `bytea` 中会增长数据库。约束是**内联**的而非后台任务：每次具名保存
+4. 修订以完整快照存在 `bytea` 中会增长数据库。约束是**内联**的而非后台任务：每次具名保存
     之后 `pruneRevisions` 按 `revisionsMaxPerContent`（默认 50）裁剪该文档的具名修订，
     自动保存由存储层在自己的事务里按 `AUTOSAVE_REVISIONS_KEPT` 单独裁剪
     （`src/lib/revision/store.ts`）。裁剪按文档进行，且总在写入之后——删掉文档，修订随之
     级联删除；没有任何 worker 任务参与这一步（`JOB_KINDS` 里没有 revision 相关类型）。
-6. 没有多作者工作流：schema 里有 `owner` / `editor` 角色，但没有评审队列或编辑审批。
+5. 没有多作者工作流：schema 里有 `owner` / `editor` 角色，但没有评审队列或编辑审批。
 
 **有意保留的"没有读取方"**
 
-7. `site_settings.googleVerification` 与 `commentsEnabled` 没有任何生产读取点。这是披露
+6. `site_settings.googleVerification` 与 `commentsEnabled` 没有任何生产读取点。这是披露
     而不是遗漏：后台在各自的输入框下面直接写明"加入它不会验证站点"/"打开它不会改变任何
     页面"。另有 `SETTINGS_CACHE_TAG`，后台的"清除缓存"动作会 `updateTag` 它，但当前没有
     `'use cache'` 消费者（`getSettings` 是每请求 memo）——这同样写在

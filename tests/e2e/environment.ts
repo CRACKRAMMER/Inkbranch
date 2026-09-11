@@ -205,6 +205,15 @@ export function serverEnv(): Record<string, string> {
     DATABASE_URL: e2eDatabaseUrl(),
     CONTENT_DIR: E2E_CONTENT_DIR,
     UPLOAD_DIR: E2E_UPLOAD_DIR,
+    /*
+     * Uploads are served by the route rather than by the platform, because the
+     * directory above is a temp path and Next's static handler only serves
+     * `public/`. That is the deployment this route exists for, so the suite
+     * runs in it — and the one spec that uploads (authoring, §17's Ctrl+Shift+I)
+     * therefore proves the whole path: bytes to disk, and an `<img>` whose
+     * `src` the browser can actually load.
+     */
+    UPLOAD_URL_PREFIX: '/api/assets',
     SESSION_SECRET: 'e2e-only-session-secret-not-for-any-real-deployment-00',
     COOKIE_SECURE: '1',
     SITE_URL: `https://127.0.0.1:${E2E_PORT}`,
