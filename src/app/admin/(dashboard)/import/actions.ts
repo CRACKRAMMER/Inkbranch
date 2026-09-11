@@ -273,12 +273,15 @@ async function buildPlan(input: PlanInput, formData: FormData): Promise<PlanResu
   const existing = await collectExistingContent()
   const images = await collectUploadKeys()
 
+  // Shared by all three sources, `overwrite` included: on two of them only, a
+  // directory scan would ignore the checkbox and skip every conflict anyway.
   const options = {
     type: input.type,
     existing: existing.slugs,
     knownTargets: existing.targets,
     knownImages: images,
     applyTitleFix: input.titleFix,
+    overwrite: input.overwrite,
   }
 
   if (input.source === 'directory') {
@@ -344,11 +347,7 @@ async function buildPlan(input: PlanInput, formData: FormData): Promise<PlanResu
   const [first] = files
   if (files.length === 1 && first && /\.zip$/i.test(first.name)) {
     try {
-      const plan = scanImportArchive(first.data, {
-        ...options,
-        source: first.name,
-        overwrite: input.overwrite,
-      })
+      const plan = scanImportArchive(first.data, { ...options, source: first.name })
       return { ok: true, plan }
     } catch (error) {
       return {
@@ -371,7 +370,6 @@ async function buildPlan(input: PlanInput, formData: FormData): Promise<PlanResu
     plan: scanImportFiles(files, {
       ...options,
       source: `${files.length} uploaded file${files.length === 1 ? '' : 's'}`,
-      overwrite: input.overwrite,
     }),
   }
 }

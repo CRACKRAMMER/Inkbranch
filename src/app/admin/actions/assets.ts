@@ -6,12 +6,13 @@ import { z } from 'zod'
 
 import { recordAudit } from '@/lib/audit'
 import { RATE_LIMITS, consumeRateLimit, retryAfterSeconds } from '@/lib/auth/rate-limit'
-import { deleteAsset, type AssetUsage } from '@/lib/assets/manage'
+import { deleteAsset, findAssetReferences, type AssetUsage } from '@/lib/assets/manage'
 import { assetUrl, storeAsset } from '@/lib/assets/storage'
 import { db } from '@/lib/db'
 import { assets, type AssetRow } from '@/lib/db/schema'
 import { actionFailure, actionOk, type ActionResult } from '@/lib/admin/result'
-import { describeActionError, guardAction, parseActionInput } from '@/lib/admin/guard'
+import { describeActionError, guardAction, guardRead, parseActionInput } from '@/lib/admin/guard'
+import { segmentForType } from '@/lib/admin/routes'
 
 /**
  * Uploading, editing and deleting assets.
@@ -146,6 +147,64 @@ export async function updateAssetAltAction(
 
     revalidatePath('/admin/assets')
     return actionOk(updated)
+  } catch (error) {
+    return describeActionError(error)
+  }
+}
+
+const usageSchema = z.object({
+  id: z.uuid(),
+})
+
+export type AssetUsageInput = z.output<typeof usageSchema>
+
+export interface AssetUsageReport {
+  documents: {
+    id: string
+    type: 'post' | 'note' | 'project'
+    slug: string
+    title: string
+    status: string
+    /** Where the reference lives, so the operator knows what to edit. */
+    via: 'link' | 'cover' | 'ogImage'
+    href: string
+  }[]
+  usedAsSiteAvatar: boolean
+}
+
+/**
+ * What references an asset, asked before deleting rather than after being
+ * refused.
+ *
+ * The refusal carries the same information, but a dialog that can list the
+ * documents *with links* while the operator is deciding is the difference
+ * between "this is in use" and being able to go and look.
+ */
+export async function assetUsageAction(
+  input: AssetUsageInput,
+): Promise<ActionResult<AssetUsageReport>> {
+  try {
+    await guardRead()
+    const parsed = parseActionInput(usageSchema, input)
+    if (!parsed.ok) return parsed
+
+    const usage = await findAssetReferences(parsed.value.id)
+    if (!usage) return actionFailure('That asset no longer exists.')
+
+    return actionOk({
+      documents: usage.documents.map((document) => ({
+        id: document.id,
+        type: document.type,
+        slug: document.slug,
+        title: document.title,
+        status: document.status,
+        via: document.via,
+        // The editor, not the public page: what the operator wants to do about a
+        // reference is remove or replace it, and that happens here.
+        href: `/admin/${segmentForType(document.type)}/${document.slug}/edit`,
+      })),
+      usedAsSiteAvatar: usage.usedAsSiteAvatar,
+    })
   } catch (error) {
     return describeActionError(error)
   }

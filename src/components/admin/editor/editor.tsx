@@ -16,6 +16,7 @@ import { uploadAssetAction } from '@/app/admin/actions/assets'
 import { Button } from '@/components/ui/button'
 import { Kbd } from '@/components/ui/kbd'
 import { StatusBadge } from '@/components/admin/status-badge'
+import { useUnsavedGuard } from '@/components/admin/unsaved-guard'
 import { MetadataPanel } from './metadata-panel'
 import { MarkdownEditor, type MarkdownEditorHandle } from './markdown-editor'
 
@@ -263,53 +264,7 @@ export function Editor({
   /*  Leaving with unsaved changes                                           */
   /* ---------------------------------------------------------------------- */
 
-  useEffect(() => {
-    const onBeforeUnload = (event: BeforeUnloadEvent) => {
-      if (!dirtyRef.current) return
-      event.preventDefault()
-    }
-    window.addEventListener('beforeunload', onBeforeUnload)
-    return () => window.removeEventListener('beforeunload', onBeforeUnload)
-  }, [])
-
-  useEffect(() => {
-    // Next's client router drives link clicks through the History API, so the
-    // `beforeunload` above never fires for them. Intercepting in the capture
-    // phase catches every internal link before the router sees it.
-    const onClick = (event: MouseEvent) => {
-      if (!dirtyRef.current || event.defaultPrevented) return
-      if (event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return
-
-      const anchor = (event.target as Element | null)?.closest('a')
-      if (!anchor) return
-      const href = anchor.getAttribute('href')
-      if (!href || href.startsWith('#') || anchor.target === '_blank') return
-      if (!href.startsWith('/')) return
-
-      if (!window.confirm(UNSAVED_MESSAGE)) {
-        event.preventDefault()
-        event.stopPropagation()
-      }
-    }
-    document.addEventListener('click', onClick, true)
-    return () => document.removeEventListener('click', onClick, true)
-  }, [])
-
-  useEffect(() => {
-    const onPopState = () => {
-      if (!dirtyRef.current) return
-      // The browser has already moved. Put the entry back so the address bar
-      // matches the document on screen, then ask; on consent, `back()` returns
-      // to the entry the reader was heading for.
-      window.history.pushState(null, '', window.location.pathname)
-      if (window.confirm(UNSAVED_MESSAGE)) {
-        dirtyRef.current = false
-        window.history.back()
-      }
-    }
-    window.addEventListener('popstate', onPopState)
-    return () => window.removeEventListener('popstate', onPopState)
-  }, [])
+  useUnsavedGuard(dirtyRef, UNSAVED_MESSAGE)
 
   /* ---------------------------------------------------------------------- */
   /*  Reload from disk                                                       */

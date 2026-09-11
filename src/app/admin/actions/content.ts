@@ -4,7 +4,6 @@ import { revalidatePath } from 'next/cache'
 import { z } from 'zod'
 
 import { recordAudit, type AuditAction } from '@/lib/audit'
-import { documentUrl } from '@/lib/content/paths'
 import { parseFrontmatter, serializeFrontmatter } from '@/lib/content/frontmatter'
 import { readDocument } from '@/lib/content/reader'
 import {
@@ -36,6 +35,7 @@ import {
 } from '@/lib/admin/revisions'
 import { actionFailure, actionOk, type ActionResult } from '@/lib/admin/result'
 import { describeActionError, guardAction, parseActionInput } from '@/lib/admin/guard'
+import { revalidateContentChange } from '@/lib/admin/revalidate'
 
 /**
  * Every write an admin makes to a Markdown file goes through this module.
@@ -70,6 +70,10 @@ const contentPathSchema = z
   .max(512)
   .refine(
     (value) =>
+      // Control characters are excluded explicitly: the OS and the path walk
+      // both treat a NUL as a terminator, so a path carrying one addresses a
+      // different file than it appears to.
+      // eslint-disable-next-line no-control-regex
       /^(posts|notes|projects)\/[^/\\\u0000-\u001f\u007f]+\.md$/.test(value) &&
       !value.includes('..'),
     { message: 'Not a content path' },
@@ -250,11 +254,6 @@ async function afterWrite(
   return revision
 }
 
-/** Invalidate the public page and the admin list that show this document. */
-function revalidateDocument(type: ContentType, slug: string): void {
-  revalidatePath(documentUrl(type, slug))
-  revalidatePath(`/admin/${type}s`)
-}
 
 /**
  * Choose the audit action for a status change.
@@ -336,7 +335,7 @@ export async function saveContentAction(
       request: context.request,
     })
 
-    revalidateDocument(type, outcome.slug)
+    revalidateContentChange(type, outcome.slug)
 
     return actionOk({
       path: outcome.path,
@@ -576,7 +575,7 @@ export async function createContentAction(
       request: context.request,
     })
 
-    revalidatePath(`/admin/${type}s`)
+    revalidateContentChange(type, slug)
 
     return actionOk({ path: result.relativePath, slug })
   } catch (error) {
@@ -632,8 +631,12 @@ export async function deleteContentAction(
       request: context.request,
     })
 
-    if (row) revalidatePath(documentUrl(row.type, row.slug))
-    revalidatePath(row ? `/admin/${row.type}s` : '/admin')
+    // The type and slug come from the row read before the file was removed,
+    // because after it there is nothing left to ask. When the row is already
+    // gone there is no document URL to discard and the list is all that is
+    // stale.
+    if (row) revalidateContentChange(row.type, row.slug)
+    else revalidatePath('/admin')
 
     return actionOk({ path: parsed.value.path })
   } catch (error) {
@@ -702,7 +705,8 @@ export async function bulkContentAction(input: BulkInput): Promise<ActionResult<
             },
             request: context.request,
           })
-          revalidatePath(row ? documentUrl(row.type, row.slug) : '/')
+          if (row) revalidateContentChange(row.type, row.slug)
+          else revalidatePath('/')
           report.changed.push({ path, slug: row?.slug ?? path })
           continue
         }
@@ -711,7 +715,7 @@ export async function bulkContentAction(input: BulkInput): Promise<ActionResult<
           const outcome = await addTagToDocument(path, tag as string, context.user.id)
           if (outcome.note) report.changed.push({ path, slug: outcome.slug, note: outcome.note })
           else report.changed.push({ path, slug: outcome.slug })
-          revalidatePath(documentUrl(outcome.type, outcome.slug))
+          revalidateContentChange(outcome.type, outcome.slug)
           continue
         }
 
@@ -755,7 +759,7 @@ export async function bulkContentAction(input: BulkInput): Promise<ActionResult<
           request: context.request,
         })
 
-        revalidateDocument(existing.type, outcome.slug)
+        revalidateContentChange(existing.type, outcome.slug)
         report.changed.push({ path, slug: outcome.slug })
       } catch (error) {
         report.failed.push({ path, error: errorText(error) })

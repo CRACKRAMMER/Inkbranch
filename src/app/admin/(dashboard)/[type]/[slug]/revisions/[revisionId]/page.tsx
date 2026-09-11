@@ -83,7 +83,6 @@ export default async function RevisionDetailPage({
   const context = { locale: settings.locale, timeZone: settings.timezone, now }
   const isCurrent = revision.contentHash === document.checksum
   const others = siblings.filter((entry) => entry.id !== revision.id)
-  const title = document.values.title || document.derivedTitle
   const autosave = revision.summary === AUTOSAVE_SUMMARY
   const listHref = `/admin/${segment}/${document.slug}/revisions`
 

@@ -7,7 +7,6 @@ import {
   RevisionCompareError,
   RevisionNotFoundError,
   compareRevisions,
-  getRevision,
   listRevisions,
 } from '@/lib/revision/store'
 import { getSettings } from '@/lib/settings'

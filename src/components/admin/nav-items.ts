@@ -52,6 +52,11 @@ export const ADMIN_NAV: AdminNavGroup[] = [
         label: 'Tags',
         description: 'Rename, merge and delete tags across documents',
       },
+      {
+        href: '/admin/import',
+        label: 'Import',
+        description: 'Bring in Markdown from an archive or a directory',
+      },
     ],
   },
   {

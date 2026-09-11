@@ -1,6 +1,6 @@
 import 'server-only'
 
-import { asc, eq, inArray, sql } from 'drizzle-orm'
+import { asc, eq, inArray } from 'drizzle-orm'
 
 import { recordAudit } from '@/lib/audit'
 import { parseFrontmatter } from '@/lib/content/frontmatter'
@@ -155,7 +155,12 @@ export async function rewriteTag(options: TagRewriteOptions): Promise<TagRewrite
   const replacement = to ? to.name : null
 
   for (const document of documents) {
-    let next: { data: Record<string, unknown>; body: string } | null = null
+    // What the callback decided to write, carried out of it. A holder object
+    // rather than a `let`: the assignment happens inside a closure, and the
+    // compiler is right not to believe it ran.
+    const written: { next: { data: Record<string, unknown>; body: string } | null } = {
+      next: null,
+    }
 
     try {
       const result = await updateDocument(document.path, (current) => {
@@ -169,16 +174,16 @@ export async function rewriteTag(options: TagRewriteOptions): Promise<TagRewrite
         const rewritten = applyRewrite(currentTags, from.slug, replacement)
 
         if (sameList(currentTags, rewritten)) {
-          next = null
-          // Throwing is how `updateDocument` declines to write; the caller of
-          // the mutate callback is this loop, which reads `next` afterwards.
+          written.next = null
+          // Throwing is how a mutate callback declines to write; nothing has
+          // touched the file when it does.
           throw unchanged()
         }
 
         if (rewritten.length > 0) data.tags = rewritten
         else delete data.tags
 
-        next = { data, body: parsed.content }
+        written.next = { data, body: parsed.content }
         return { data, body: parsed.content }
       })
 
@@ -193,8 +198,8 @@ export async function rewriteTag(options: TagRewriteOptions): Promise<TagRewrite
         contentId: document.id,
         type: document.type,
         slug: document.slug,
-        data: next?.data ?? {},
-        body: next?.body ?? '',
+        data: written.next?.data ?? {},
+        body: written.next?.body ?? '',
         previousContent: result.previousContent,
         reason: 'save',
         actorId: actorId ?? null,

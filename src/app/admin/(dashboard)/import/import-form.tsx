@@ -31,8 +31,14 @@ const TYPE_LABELS: Record<ContentType, string> = {
   project: 'Project',
 }
 
-/** Next's server-action body limit, which no file here can exceed. */
-const SERVER_ACTION_LIMIT = '1 MiB'
+/**
+ * Next's server-action body limit, which no file here can exceed.
+ *
+ * Raised to 40 MB in `next.config.ts`. It is stated in the UI rather than left
+ * to be discovered, because the failure it prevents is a framework error that
+ * names the limit and not the fix.
+ */
+const SERVER_ACTION_LIMIT = '40 MB'
 
 export function ImportForm() {
   const [state, formAction, isPending] = useActionState<ImportState | undefined, FormData>(
@@ -121,8 +127,8 @@ export function ImportForm() {
               {files.length > 0
                 ? `${files.length} file${files.length === 1 ? '' : 's'} selected.`
                 : 'Nothing selected yet.'}{' '}
-              Next caps a server action&rsquo;s request body at {SERVER_ACTION_LIMIT}, so a large
-              archive has to be scanned from a directory instead — that path never uploads the
+              Next caps a server action&rsquo;s request body at {SERVER_ACTION_LIMIT}, so anything
+              larger has to be scanned from a directory instead — that path never uploads the
               bytes.
             </p>
           </div>

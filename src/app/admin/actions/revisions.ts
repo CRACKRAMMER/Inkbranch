@@ -4,12 +4,12 @@ import { revalidatePath } from 'next/cache'
 import { z } from 'zod'
 
 import { recordAudit } from '@/lib/audit'
-import { documentUrl } from '@/lib/content/paths'
 import { syncOneDocument } from '@/lib/content/sync'
 import { getRevision, restoreRevision } from '@/lib/revision/store'
 import { getSettings } from '@/lib/settings'
 import { actionFailure, actionOk, type ActionResult } from '@/lib/admin/result'
 import { describeActionError, guardAction, parseActionInput } from '@/lib/admin/guard'
+import { revalidateContentChange } from '@/lib/admin/revalidate'
 import { pruneRevisions, revisionTarget } from '@/lib/admin/revisions'
 
 /**
@@ -121,8 +121,7 @@ export async function restoreRevisionAction(
       request: context.request,
     })
 
-    revalidatePath(documentUrl(target.type, target.slug))
-    revalidatePath(`/admin/${target.type}s`)
+    revalidateContentChange(target.type, target.slug)
     revalidatePath(`/admin/${target.type}s/${target.slug}/revisions`)
 
     return actionOk({

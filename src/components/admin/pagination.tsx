@@ -14,18 +14,19 @@ export function Pagination({
   pageCount,
   total,
   hrefFor,
+  noun = 'document',
 }: {
   page: number
   pageCount: number
   total: number
   hrefFor: (page: number) => string
+  /** What is being counted, so the count line does not call an asset a document. */
+  noun?: string
 }) {
+  const counted = `${total} ${noun}${total === 1 ? '' : 's'}`
+
   if (pageCount <= 1) {
-    return (
-      <p className="text-xs tabular text-ink-subtle">
-        {total} document{total === 1 ? '' : 's'}
-      </p>
-    )
+    return <p className="text-xs tabular text-ink-subtle">{counted}</p>
   }
 
   const window = pageWindow(page, pageCount)
@@ -55,9 +56,7 @@ export function Pagination({
         ),
       )}
       <PageLink href={hrefFor(page + 1)} disabled={page >= pageCount} label="Next" />
-      <span className="ml-2 text-xs tabular text-ink-subtle">
-        {total} document{total === 1 ? '' : 's'}
-      </span>
+      <span className="ml-2 text-xs tabular text-ink-subtle">{counted}</span>
     </nav>
   )
 }
