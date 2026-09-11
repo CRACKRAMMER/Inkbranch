@@ -1,6 +1,7 @@
 import { asc, eq } from 'drizzle-orm'
 import type { MetadataRoute } from 'next'
 
+import { listTags } from '@/lib/content/queries'
 import { db } from '@/lib/db'
 import { contentIndex, contentTags, tags } from '@/lib/db/schema'
 import type { SeoDocument } from '@/lib/seo/metadata'
@@ -117,5 +118,14 @@ export async function loadSeoDocuments(): Promise<SeoDocument[]> {
 export const dynamic = 'force-dynamic'
 
 export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
-  return buildSitemapEntries({ documents: await loadSeoDocuments() })
+  // The tag list is the one thing the index cannot supply: a document carries
+  // tag names, and a tag page is addressed by a slug that only the `tags` table
+  // knows. `listTags` already means "tags with published content behind them",
+  // which is exactly the set whose pages exist.
+  const [documents, tags] = await Promise.all([loadSeoDocuments(), listTags()])
+
+  return buildSitemapEntries({
+    documents,
+    tagSlugs: new Map(tags.map((tag) => [tag.name, tag.slug])),
+  })
 }

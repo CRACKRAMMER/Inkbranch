@@ -857,6 +857,89 @@ describe('buildSitemapEntries', () => {
       expect(entry.url.startsWith(`${siteOrigin}/`)).toBe(true)
     }
   })
+
+  it('lists a tag page by its slug, not by the name it is filed under', () => {
+    const entries = buildSitemapEntries({
+      documents: [doc({ tags: ['C++'] })],
+      tagSlugs: new Map([['C++', 'c-plus-plus']]),
+      now,
+    })
+
+    expect(entries.map((entry) => entry.url)).toContain(`${siteOrigin}/tags/c-plus-plus`)
+  })
+
+  it('lists a tag page only while something is filed under the tag', () => {
+    const entries = buildSitemapEntries({
+      documents: [
+        doc({ slug: 'live', tags: ['linux'] }),
+        doc({ slug: 'hidden', tags: ['secret'], noindex: true }),
+      ],
+      // Three tags have pages; only one of them has a document a crawler may
+      // see. The other two would be URLs that 404 or that lead to the only
+      // page the author asked not to be indexed.
+      tagSlugs: new Map([
+        ['linux', 'linux'],
+        ['secret', 'secret'],
+        ['unused', 'unused'],
+      ]),
+      now,
+    })
+
+    const urls = entries.map((entry) => entry.url)
+    expect(urls).toContain(`${siteOrigin}/tags/linux`)
+    expect(urls).not.toContain(`${siteOrigin}/tags/secret`)
+    expect(urls).not.toContain(`${siteOrigin}/tags/unused`)
+  })
+
+  it('dates a tag page from the newest document behind it', () => {
+    const entries = buildSitemapEntries({
+      documents: [
+        doc({ slug: 'older', tags: ['linux'], updatedAt: new Date('2026-02-01T00:00:00Z') }),
+        doc({ slug: 'newer', tags: ['linux'], updatedAt: new Date('2026-03-01T00:00:00Z') }),
+      ],
+      tagSlugs: new Map([['linux', 'linux']]),
+      now,
+    })
+
+    expect(entries.find((entry) => entry.url.endsWith('/tags/linux'))?.lastModified).toEqual(
+      new Date('2026-03-01T00:00:00.000Z'),
+    )
+  })
+
+  it('orders tag pages the way the site lists tags, not the way rows arrived', () => {
+    const entries = buildSitemapEntries({
+      documents: [doc({ tags: ['rare'] }), doc({ slug: 'second', tags: ['common'] })],
+      // The map is built from a list ordered most-used first, and insertion
+      // order is what carries that through.
+      tagSlugs: new Map([
+        ['common', 'common'],
+        ['rare', 'rare'],
+      ]),
+      now,
+    })
+
+    const tags = entries.map((entry) => entry.url).filter((url) => url.includes('/tags/'))
+    expect(tags).toEqual([`${siteOrigin}/tags/common`, `${siteOrigin}/tags/rare`])
+  })
+
+  it('lists a series page for the documents that belong to one', () => {
+    const entries = buildSitemapEntries({
+      documents: [doc({ series: 'Rebuilding the blog' }), doc({ slug: 'loose' })],
+      now,
+    })
+
+    const urls = entries.map((entry) => entry.url)
+    // Encoded the way the page's own canonical URL is: a series is a string an
+    // author typed, not a slug.
+    expect(urls).toContain(`${siteOrigin}/series/Rebuilding%20the%20blog`)
+    expect(urls.some((url) => url.includes('/series/undefined'))).toBe(false)
+  })
+
+  it('leaves the tag pages out when the caller cannot supply their slugs', () => {
+    const entries = buildSitemapEntries({ documents: [doc({ tags: ['linux'] })], now })
+
+    expect(entries.some((entry) => entry.url.includes('/tags/'))).toBe(false)
+  })
 })
 
 /* -------------------------------------------------------------------------- */

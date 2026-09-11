@@ -399,18 +399,22 @@ backups/2026-09-11T10-30-00Z/
 ## 10. Future Improvements（后续改进）
 
 以下是实际阅读代码后确认的**未完成项与缺口**，一条一条列出，不含推测。这一节随实现移动：
-上一版列在这里、现已补齐的有八项——重定向未生效、Analytics 两端未接、按 tag / 分类的 RSS
+上一版列在这里、现已补齐的有九项——重定向未生效、Analytics 两端未接、按 tag / 分类的 RSS
 缺失、Git 自动提交只有开关、Worker 循环无人启动、About 页缺两个区块、TOC 无平滑滚动、
-终端样式是空规则（依次对应设定稿第二十五、二十八、二十六、四十二、三十九、四十三、八、
-七节），因此不再出现在下面。
+终端样式是空规则、sitemap 缺 tag 与 series 页（依次对应设定稿第二十五、二十八、二十六、
+四十二、三十九、四十三、八、七、二十三节），因此不再出现在下面。
 
-补上来的两项顺带记下两个决定：第八节的平滑滚动没有写成 `html { scroll-behavior: smooth }`，
+补上来的三项顺带记下三个决定：第八节的平滑滚动没有写成 `html { scroll-behavior: smooth }`，
 因为那个属性作用于视口的**每一次**滚动——Next 在路由切换时用 `scrollIntoView()` 定位，全局
 声明会把"从长文中点开另一篇文章"也变成动画。改为在点击目录链接时把该属性临时设在根元素上、
 滚动结束（`scrollend`，或 1s 上限）后收回，浏览器的原生行为——URL 片段、历史记录、焦点顺序、
 `scroll-padding-top`——一样都没动，实现见 `src/components/content/table-of-contents.tsx`。
 第七节的"bash output"落成了 ```` ```bash terminal ```` 这个元数据词（`code-meta.ts` 已有文档但
-此前没实现），终端块因此有一条左侧竖轨，并且不再重复显示语言徽标。
+此前没实现），终端块因此有一条左侧竖轨，并且不再重复显示语言徽标。第二十三节的 tag 页与
+series 页由文档本身派生（`buildSitemapEntries` 里新增的 `topicEntries`）：只有当某个 tag 底下
+真的有一篇可被索引的文章时，它才会出现在 sitemap 里——与 tag 页本身"没有内容就 404"是同一条
+规则；tag 名到 slug 的映射由路由从 `listTags()` 传入，因为只有 `tags` 表知道 `C++` 的页面
+地址是 `/tags/c-plus-plus`。
 
 **功能缺口**
 
@@ -419,30 +423,27 @@ backups/2026-09-11T10-30-00Z/
 2. **编辑器的两个快捷键没有绑定**：`Ctrl/Cmd+K` 插入链接与 `Ctrl/Cmd+Shift+I` 上传图片
    （`Cmd+S` 保存、`Cmd+P` 预览、粘贴图片、拖拽图片上传都已实现）。设定稿第十七节列出
    了这四个快捷键。
-3. **sitemap 不含 tag 与 series 页**。`src/lib/seo/sitemap.ts` 的 `STATIC_ROUTES` 是八条
-   静态路由，加上每篇文档一条 URL，就这些；tag 页与 series 页各自有页面、有 RSS，但没有
-   任何一条 URL 进 sitemap。代码注释自己承认这是"真实的缺口而不是一个决定"。
-4. **没有 `loading.tsx`**。`src/components/ui/skeleton.tsx` 存在但没有任何引用点，设定稿
+3. **没有 `loading.tsx`**。`src/components/ui/skeleton.tsx` 存在但没有任何引用点，设定稿
    第四十九节要求加载时用 Skeleton。
-5. **JSON-LD 只输出 Article 与 Breadcrumb**。`buildWebsiteJsonLd` 与
+4. **JSON-LD 只输出 Article 与 Breadcrumb**。`buildWebsiteJsonLd` 与
    `buildPersonJsonLd` 已实现并有测试，但没有生产调用方。
 
 **架构性限制**（属于已知取舍，不是遗漏）
 
-6. 搜索索引与关系索引都在进程内，多副本部署会成为陈旧窗口的来源（副本自己构建一份索引
+5. 搜索索引与关系索引都在进程内，多副本部署会成为陈旧窗口的来源（副本自己构建一份索引
    是正确的，但写时的失效只到达处理本次保存的那个副本）。
-7. CJK 采用 bigram 分词，对罕见词会过度切分、无法做单字前缀匹配；`SearchProvider`
+6. CJK 采用 bigram 分词，对罕见词会过度切分、无法做单字前缀匹配；`SearchProvider`
    接口就是为换 Meilisearch 留的缝。
-8. 修订以完整快照存在 `bytea` 中会增长数据库。约束是**内联**的而非后台任务：每次具名保存
+7. 修订以完整快照存在 `bytea` 中会增长数据库。约束是**内联**的而非后台任务：每次具名保存
     之后 `pruneRevisions` 按 `revisionsMaxPerContent`（默认 50）裁剪该文档的具名修订，
     自动保存由存储层在自己的事务里按 `AUTOSAVE_REVISIONS_KEPT` 单独裁剪
     （`src/lib/revision/store.ts`）。裁剪按文档进行，且总在写入之后——删掉文档，修订随之
     级联删除；没有任何 worker 任务参与这一步（`JOB_KINDS` 里没有 revision 相关类型）。
-9. 没有多作者工作流：schema 里有 `owner` / `editor` 角色，但没有评审队列或编辑审批。
+8. 没有多作者工作流：schema 里有 `owner` / `editor` 角色，但没有评审队列或编辑审批。
 
 **有意保留的"没有读取方"**
 
-10. `site_settings.googleVerification` 与 `commentsEnabled` 没有任何生产读取点。这是披露
+9. `site_settings.googleVerification` 与 `commentsEnabled` 没有任何生产读取点。这是披露
     而不是遗漏：后台在各自的输入框下面直接写明"加入它不会验证站点"/"打开它不会改变任何
     页面"。另有 `SETTINGS_CACHE_TAG`，后台的"清除缓存"动作会 `updateTag` 它，但当前没有
     `'use cache'` 消费者（`getSettings` 是每请求 memo）——这同样写在

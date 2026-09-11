@@ -29,8 +29,8 @@ const SITE_ORIGIN = `https://127.0.0.1:${E2E_PORT}`
 /** The one answer this site gives for a feed address with no feed behind it. */
 const NO_FEED = 'No feed is served at this address.'
 
-/** A feed document from an address, with the status it was answered with. */
-async function fetchFeed(
+/** An XML document from an address — a feed or the sitemap — with its status. */
+async function fetchXml(
   request: APIRequestContext,
   path: string,
 ): Promise<{ status: number; contentType: string; body: string }> {
@@ -114,7 +114,7 @@ test('a topic is served as a feed of its own, and the page says where', async ({
   })
 
   await test.step('serves the tag as an RSS feed', async () => {
-    const feed = await fetchFeed(request, `/rss/${tag}.xml`)
+    const feed = await fetchXml(request, `/rss/${tag}.xml`)
 
     expect(feed.status).toBe(200)
     expect(feed.contentType).toContain('application/rss+xml')
@@ -132,9 +132,24 @@ test('a topic is served as a feed of its own, and the page says where', async ({
     expect(entries[0]).toContain(`${SITE_ORIGIN}/posts/${slug}`)
   })
 
+  await test.step('lists the post, and the tag page it created, in the sitemap', async () => {
+    const sitemap = await fetchXml(request, '/sitemap.xml')
+
+    expect(sitemap.status).toBe(200)
+    expect(sitemap.contentType).toContain('xml')
+    expect(sitemap.body).toContain(`${SITE_ORIGIN}/posts/${slug}`)
+
+    // The tag page is the part of this the sitemap could not see before: the
+    // document list carries tag *names*, while the page is addressed by a slug
+    // that only the tags table knows. A tag whose only document is a draft has
+    // no page, and a sitemap that guessed the slug from the name would list one
+    // that 404s.
+    expect(sitemap.body).toContain(`${SITE_ORIGIN}/tags/${tag}`)
+  })
+
   await test.step('serves the category as a feed too', async () => {
     const path = `/rss/category/${encodeURIComponent(category)}.xml`
-    const feed = await fetchFeed(request, path)
+    const feed = await fetchXml(request, path)
 
     expect(feed.status).toBe(200)
     expect(feed.contentType).toContain('application/rss+xml')
@@ -151,7 +166,7 @@ test('a topic is served as a feed of its own, and the page says where', async ({
     // The same category, lower-cased. One category has to have one feed URL —
     // `atom:link rel="self"` can only name one — so a forgiving comparison
     // would put two addresses in circulation for the same feed.
-    const lower = await fetchFeed(
+    const lower = await fetchXml(
       request,
       `/rss/category/${encodeURIComponent(category.toLowerCase())}.xml`,
     )
@@ -165,7 +180,7 @@ test('a topic is served as a feed of its own, and the page says where', async ({
     // Followed rather than compared against a string this test built: the
     // failure being guarded against is a page advertising a URL no route
     // serves, and only the request can tell the two apart.
-    const feed = await fetchFeed(request, href)
+    const feed = await fetchXml(request, href)
     expect(feed.status).toBe(200)
     expect(items(feed.body)).toHaveLength(1)
   })
@@ -189,7 +204,7 @@ test('a topic is served as a feed of its own, and the page says where', async ({
       `/rss/${tag}`,
       '/rss/category',
     ]) {
-      const answer = await fetchFeed(request, path)
+      const answer = await fetchXml(request, path)
       expect(answer.status, path).toBe(404)
       expect(answer.body, path).toContain(NO_FEED)
       expect(answer.contentType, path).toContain('text/plain')
@@ -212,11 +227,21 @@ test('a topic is served as a feed of its own, and the page says where', async ({
     await expect(row).toBeHidden()
   })
 
+  await test.step('stops listing the deleted post, and its tag page, in the sitemap', async () => {
+    // The same rule that 404s the feed: a tag page exists only while something
+    // is published under it. Asking a crawler to fetch either one now would be
+    // asking it to record a 404.
+    const sitemap = await fetchXml(request, '/sitemap.xml')
+
+    expect(sitemap.body).not.toContain(`${SITE_ORIGIN}/posts/${slug}`)
+    expect(sitemap.body).not.toContain(`${SITE_ORIGIN}/tags/${tag}`)
+  })
+
   await test.step('stops serving the topic feed when nothing is behind it', async () => {
     // The tag row outlives the document, and `getTag` only returns a tag with
     // published content behind it — so the page 404s and the feed does too,
     // rather than turning into a feed of nothing.
-    const feed = await fetchFeed(request, `/rss/${tag}.xml`)
+    const feed = await fetchXml(request, `/rss/${tag}.xml`)
     expect(feed.status).toBe(404)
     expect(feed.body).toContain(NO_FEED)
   })
