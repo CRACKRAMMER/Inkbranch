@@ -6,7 +6,9 @@ import { z } from 'zod'
 import { getAdminTag } from '@/lib/admin/queries'
 import { actionFailure, actionOk, type ActionResult } from '@/lib/admin/result'
 import { describeActionError, guardAction, parseActionInput } from '@/lib/admin/guard'
+import { commitContentChange } from '@/lib/admin/git'
 import { carryTagAppearance, rewriteTag, type TagRewriteReport } from '@/lib/admin/tags'
+import type { GitCommitOutcome } from '@/lib/git'
 import { tagSlug } from '@/lib/utils/slug'
 
 /**
@@ -54,6 +56,32 @@ export type DeleteTagInput = z.output<typeof deleteSchema>
 export interface TagActionResult extends TagRewriteReport {
   /** Public paths whose tag listing changed, so the UI can be specific. */
   affectedPaths: string[]
+  /** The one commit the rewrite produced, when the site asks for commits. */
+  git: GitCommitOutcome | null
+}
+
+/**
+ * The commit a tag rewrite leaves behind.
+ *
+ * These actions rewrite a corpus — a tag lives in the frontmatter of every
+ * document carrying it — so this is deliberately one commit for the run: forty
+ * entries in the log for one rename is noise, and the forty files are the same
+ * decision. `written` is what the rewrite actually changed, so a document that
+ * already said the new name is not named.
+ *
+ * A run that wrote nothing commits nothing, and the caller gets null.
+ */
+async function commitTagRewrite(report: TagRewriteReport): Promise<GitCommitOutcome | null> {
+  if (report.written.length === 0) return null
+
+  return commitContentChange({
+    action: 'tag',
+    title:
+      report.mode === 'delete'
+        ? `${report.from.name} removed`
+        : `${report.from.name} → ${report.to?.name ?? ''}`,
+    paths: report.written.map((entry) => entry.path),
+  })
 }
 
 function revalidateTagPages(slugs: (string | null)[]): string[] {
@@ -105,9 +133,12 @@ export async function renameTagAction(
       await carryTagAppearance(slug, nextSlug)
     }
 
+    const git = await commitTagRewrite(report)
+
     return actionOk({
       ...report,
       affectedPaths: revalidateTagPages([slug, nextSlug]),
+      git,
     })
   } catch (error) {
     return describeActionError(error)
@@ -142,9 +173,12 @@ export async function mergeTagAction(
       actorId: context.user.id,
     })
 
+    const git = await commitTagRewrite(report)
+
     return actionOk({
       ...report,
       affectedPaths: revalidateTagPages([slug, into]),
+      git,
     })
   } catch (error) {
     return describeActionError(error)
@@ -171,9 +205,12 @@ export async function deleteTagAction(
       actorId: context.user.id,
     })
 
+    const git = await commitTagRewrite(report)
+
     return actionOk({
       ...report,
       affectedPaths: revalidateTagPages([slug]),
+      git,
     })
   } catch (error) {
     return describeActionError(error)

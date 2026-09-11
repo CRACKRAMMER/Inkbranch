@@ -210,6 +210,77 @@ Triggers:
 
 The scan is bounded: `CONTENT_MAX_FILES` (default 5000) guards against a mis-mounted volume turning boot into a filesystem walk of `/`.
 
+### Git auto-commit
+
+Optional, off by default, and never pushes. `src/lib/git/` shells out to `git`
+after a write has already succeeded, so the content directory keeps a commit
+history alongside its files:
+
+```
+content: update "Linux Network Debugging"
+content: publish "Linux Network Debugging"
+content: delete "Linux Network Debugging"
+content: tag "linux → unix"            (one commit for the whole rewrite)
+content: publish "12 documents"        (one commit for a bulk run)
+```
+
+**Two switches have to agree.** The settings (`gitEnabled`, `gitAutoCommit`) say
+whether the *site* wants commits; `GIT_INTEGRATION_ENABLED` says whether the
+*deployment* permits them, and no admin screen can turn it on. Three
+combinations matter:
+
+| settings | env | behaviour |
+|----------|-----|-----------|
+| off | any | silence — the site never asked for this |
+| on | `0` | a `deployment-disabled` note in the editor after every save, and in the log |
+| on | `1` | the commit is attempted and its outcome reported |
+
+**One commit per decision, not per file.** A save, a deletion and a revision
+restore commit their document. A bulk operation and a tag rename commit once for
+the whole run, naming every file it actually wrote — forty entries in the log for
+one rename is noise, and forty files are one decision.
+
+**What is enforced, not promised** (`src/lib/git/index.ts`):
+
+- `GIT_SUBCOMMANDS` is an allow-list — `add`, `commit`, `rev-parse`, `status`,
+  `var` — checked before every spawn, so `push` is not a code path this module
+  has. Nothing here reaches a remote.
+- Every command carries an explicit pathspec, so a change the operator has staged
+  themselves, or a stray file beside the documents, cannot ride along in a commit
+  called `content: update "…"`. `:(literal)` neutralises globbing; absolute paths,
+  `..` and leading `-` are refused.
+- `execFile` with an argument array: no shell, so a title containing `$(…)` is a
+  title.
+- Commits are chained within the process, because two that overlap race for
+  `.git/index.lock`. A second process is not coordinated — that is a logged
+  failure, not a lost save.
+
+**A commit cannot fail a save.** The file is written first; the commit is the
+last thing an action does and every outcome — no repository, no identity, no
+`git` binary, nothing to commit, git refusing — is a described result. Failures
+go to the server log in git's own words; the browser is told a classification
+(`src/lib/git/message.ts`), never a transcript, because git's stderr can carry
+paths. The editor shows the phrase beside the save, never as the save.
+
+**Messages** come from `gitCommitTemplate` (`content: {action} "{title}"` by
+default), with `{action}` one of `create`, `update`, `publish`, `unpublish`,
+`delete`, `restore`, `tag`. Titles are flattened to one line and capped at 100
+characters — a newline in a title would otherwise become a commit body, which is
+not what the template promised — and an unknown placeholder is left as typed.
+The template default lives in exactly one place: `DEFAULT_COMMIT_TEMPLATE`, which
+`SETTINGS_DEFAULTS` re-uses.
+
+**How it is tested.** `tests/unit/git.test.ts` runs the real thing against
+repositories it creates under a throwaway content root: the message rules, the
+allow-list, pathspec scoping, a deletion, and every failure mode as an outcome
+rather than a rejection. `tests/integration/git-commit.test.ts` composes the
+admin half against a real settings row. `tests/e2e/git.spec.ts` is the one that
+puts the claim end to end: it turns the switches on in the settings UI, publishes
+a post through the editor, and checks that the `committed <sha>` it was shown is
+the repository's `HEAD`. That last assertion is the point of the file — the
+phrase is the product's only claim about the commit, so a suite that believed it
+would pass against a status line that lies.
+
 ---
 
 ## 6. Markdown Pipeline
@@ -379,6 +450,6 @@ Recorded honestly, because a design document that only lists wins is marketing.
 1. **Bigram CJK tokenization** over-segments rare terms and cannot do prefix matching on single Chinese characters. Acceptable for a single-author site; Meilisearch is the escape hatch, and the provider interface exists for it.
 2. **In-process search index** does not survive to multi-instance deployments. A second replica would either build its own copy (fine, it is cheap) or talk to an external provider.
 3. **Revisions in `bytea`** grow the database. Pruning is a scheduled job, and the default of 50 per document bounds it.
-4. **Git auto-commit** shells out to `git` and assumes the content directory is already a repository with a clean identity. It is off by default and never pushes.
+4. **Git auto-commit** shells out to `git` and assumes the content directory is already a repository (or inside one) with a configured identity — a container needs git installed for it to do anything. It is off by default, needs two switches to agree, and never pushes. Commits are serialised within one process only; two processes committing at once contend on the index lock and the loser is logged and skipped.
 5. **No multi-author workflow.** Roles exist in the schema (`owner` / `editor`), but there is no review queue or editorial approval step.
 6. **Analytics are aggregate-only by design.** No funnels, no sessions, no cohorts — this is a deliberate product boundary, not an unfinished feature.

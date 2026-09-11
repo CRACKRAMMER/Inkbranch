@@ -22,6 +22,8 @@ import {
   updateDocument,
 } from '@/lib/content/writer'
 import { contentRowByPath, takenSlugs } from '@/lib/admin/queries'
+import { commitContentChange, commitTitle } from '@/lib/admin/git'
+import type { GitCommitOutcome } from '@/lib/git'
 import {
   contentFormSchema,
   dateKeyOf,
@@ -107,6 +109,12 @@ export interface SaveContentResult {
    * `disabled` means the settings switch is off rather than that anything broke.
    */
   revision: CaptureWithPolicyResult
+  /**
+   * What became of the git commit, or null when the site has not asked for one.
+   * It describes a file that is already written: a `failed` here is a note, not
+   * a save that did not happen.
+   */
+  git: GitCommitOutcome | null
 }
 
 /**
@@ -255,6 +263,15 @@ async function afterWrite(
 }
 
 
+/** What a save did to a document's visibility. */
+type StatusTransition = 'publish' | 'unpublish' | 'update'
+
+function statusTransition(from: ContentStatus, to: ContentStatus): StatusTransition {
+  if (from !== 'published' && to === 'published') return 'publish'
+  if (from === 'published' && to !== 'published') return 'unpublish'
+  return 'update'
+}
+
 /**
  * Choose the audit action for a status change.
  *
@@ -262,11 +279,15 @@ async function afterWrite(
  * `post.*` ones, so notes and projects record under the same five names with
  * their type in the metadata. Inventing `note.publish` here would write rows no
  * query in the codebase looks for.
+ *
+ * Mapped from `statusTransition` rather than decided again: the audit row and
+ * the commit message are two descriptions of the same event, and two `if` chains
+ * would eventually disagree about whether a save was a publish.
  */
-function auditActionForTransition(from: ContentStatus, to: ContentStatus): AuditAction {
-  if (from !== 'published' && to === 'published') return 'post.publish'
-  if (from === 'published' && to !== 'published') return 'post.unpublish'
-  return 'post.update'
+const AUDIT_FOR_TRANSITION: Record<StatusTransition, AuditAction> = {
+  publish: 'post.publish',
+  unpublish: 'post.unpublish',
+  update: 'post.update',
 }
 
 /* -------------------------------------------------------------------------- */
@@ -319,8 +340,10 @@ export async function saveContentAction(
       context.user.id,
     )
 
+    const transition = statusTransition(previousStatus, outcome.status)
+
     await recordAudit({
-      action: auditActionForTransition(previousStatus, outcome.status),
+      action: AUDIT_FOR_TRANSITION[transition],
       actorId: context.user.id,
       targetType: 'content',
       targetId: outcome.path,
@@ -337,6 +360,12 @@ export async function saveContentAction(
 
     revalidateContentChange(type, outcome.slug)
 
+    const git = await commitContentChange({
+      action: transition,
+      title: commitTitle(outcome.data, outcome.slug),
+      paths: [outcome.path],
+    })
+
     return actionOk({
       path: outcome.path,
       slug: outcome.slug,
@@ -345,6 +374,7 @@ export async function saveContentAction(
       savedAt: new Date().toISOString(),
       wordCount: outcome.wordCount,
       revision,
+      git,
     })
   } catch (error) {
     if (error instanceof SaveRefusedError) {
@@ -506,7 +536,7 @@ export type CreateContentInput = z.output<typeof createSchema>
 
 export async function createContentAction(
   input: CreateContentInput,
-): Promise<ActionResult<{ path: string; slug: string }>> {
+): Promise<ActionResult<{ path: string; slug: string; git: GitCommitOutcome | null }>> {
   try {
     const context = await guardAction()
     const parsed = parseActionInput(createSchema, input)
@@ -577,7 +607,13 @@ export async function createContentAction(
 
     revalidateContentChange(type, slug)
 
-    return actionOk({ path: result.relativePath, slug })
+    const git = await commitContentChange({
+      action: 'create',
+      title: commitTitle(built, slug),
+      paths: [result.relativePath],
+    })
+
+    return actionOk({ path: result.relativePath, slug, git })
   } catch (error) {
     return describeActionError(error)
   }
@@ -602,7 +638,7 @@ export type DeleteContentInput = z.output<typeof deleteSchema>
  */
 export async function deleteContentAction(
   input: DeleteContentInput,
-): Promise<ActionResult<{ path: string }>> {
+): Promise<ActionResult<{ path: string; git: GitCommitOutcome | null }>> {
   try {
     const context = await guardAction()
     const parsed = parseActionInput(deleteSchema, input)
@@ -644,7 +680,16 @@ export async function deleteContentAction(
     if (row) revalidateContentChange(row.type, row.slug)
     else revalidatePath('/admin')
 
-    return actionOk({ path: parsed.value.path })
+    // Committed after the index row is gone, so a commit that lands and then a
+    // process death cannot leave a file git knows about and the site does not.
+    // The reverse order is a commit for a file that still exists.
+    const git = await commitContentChange({
+      action: 'delete',
+      title: row?.title || slugFromPath(parsed.value.path),
+      paths: [parsed.value.path],
+    })
+
+    return actionOk({ path: parsed.value.path, git })
   } catch (error) {
     return describeActionError(error)
   }
@@ -662,6 +707,8 @@ export interface BulkReport {
   action: string
   changed: { path: string; slug: string; note?: string }[]
   failed: { path: string; error: string }[]
+  /** The one commit the whole run produced, when the site asks for commits. */
+  git: GitCommitOutcome | null
 }
 
 /**
@@ -686,7 +733,7 @@ export async function bulkContentAction(input: BulkInput): Promise<ActionResult<
       return actionFailure('A tag name is required.')
     }
 
-    const report: BulkReport = { action, changed: [], failed: [] }
+    const report: BulkReport = { action, changed: [], failed: [], git: null }
 
     for (const path of paths) {
       try {
@@ -772,10 +819,27 @@ export async function bulkContentAction(input: BulkInput): Promise<ActionResult<
       }
     }
 
+    // One commit for the run rather than one per document: a bulk publish of
+    // forty posts is one editorial decision, and forty commits would bury every
+    // other change in the log. Only the documents that were actually written are
+    // named — a `note` is the report saying nothing changed for that path, and
+    // asking git to commit an unchanged file is asking it to fail.
+    report.git = await commitContentChange({
+      action: action === 'add-tag' ? 'tag' : action,
+      title: bulkTitle(action, tag, report.changed.filter((entry) => !entry.note).length),
+      paths: report.changed.filter((entry) => !entry.note).map((entry) => entry.path),
+    })
+
     return actionOk(report)
   } catch (error) {
     return describeActionError(error)
   }
+}
+
+/** The `{title}` for a bulk run: what was done, and to how many. */
+function bulkTitle(action: BulkInput['action'], tag: string | undefined, count: number): string {
+  const documents = `${count} document${count === 1 ? '' : 's'}`
+  return action === 'add-tag' ? `${documents} tagged ${tag ?? ''}`.trim() : documents
 }
 
 /** Rewrite one document's `tags` list. Shared with the tag manager. */
@@ -816,6 +880,17 @@ async function addTagToDocument(
 
 function todayIso(): string {
   return new Date().toISOString().slice(0, 10)
+}
+
+/**
+ * A title for a document that has none to read.
+ *
+ * Only the delete path needs it: the file is gone and the index row may be too,
+ * but the path itself remains, and `posts/linux-network-debugging.md` names the
+ * document far better than an empty pair of quotes would.
+ */
+function slugFromPath(path: string): string {
+  return path.slice(path.lastIndexOf('/') + 1).replace(/\.md$/, '')
 }
 
 function errorText(error: unknown): string {

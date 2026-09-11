@@ -8,6 +8,10 @@ import { toast } from 'sonner'
 import type { ContentStatus, ContentType } from '@/lib/content/schema'
 import type { ContentFormValues } from '@/lib/admin/frontmatter-form'
 import type { ActionFailure } from '@/lib/admin/result'
+// From `message`, not `@/lib/git`: this is a client component, and the module
+// that runs git is server-only. What is imported here is the phrase — pure
+// string formatting with no process and no filesystem behind it.
+import { describeGitOutcome, type GitCommitNote } from '@/lib/git/message'
 import { textStats, type TextStats } from '@/lib/utils/text'
 import { cn } from '@/lib/utils/cn'
 import { autosaveContentAction, saveContentAction } from '@/app/admin/actions/content'
@@ -36,6 +40,10 @@ import { MarkdownEditor, type MarkdownEditorHandle } from './markdown-editor'
  * the draft ("Draft revision recorded 14:32"). A failed save says the file was
  * not modified, because that is the only fact the author needs to decide whether
  * to retype their work.
+ *
+ * A fourth line belongs to none of them: whether the content directory's git
+ * repository took the change. It is reported beside the save and never as the
+ * save, because a commit that did not happen leaves a file that is still written.
  */
 
 export interface EditorDocumentPayload {
@@ -56,7 +64,7 @@ export interface EditorDocumentPayload {
 }
 
 type SaveState =
-  | { kind: 'saved'; at: string | null }
+  | { kind: 'saved'; at: string | null; commit: GitCommitNote | null }
   | { kind: 'dirty' }
   | { kind: 'saving' }
   | { kind: 'failed'; failure: ActionFailure }
@@ -109,7 +117,7 @@ export function Editor({
 
   const [values, setValues] = useState(doc.values)
   const [stats, setStats] = useState<TextStats>(() => textStats(doc.body))
-  const [save, setSave] = useState<SaveState>({ kind: 'saved', at: null })
+  const [save, setSave] = useState<SaveState>({ kind: 'saved', at: null, commit: null })
   const [draft, setDraft] = useState<DraftState>({ kind: 'idle' })
   const [preview, setPreview] = useState<PreviewState>({ kind: 'idle' })
   const [mode, setMode] = useState<Mode>('split')
@@ -181,7 +189,13 @@ export function Editor({
 
         checksumRef.current = result.data.checksum
         dirtyRef.current = false
-        setSave({ kind: 'saved', at: formatTime(new Date(result.data.savedAt)) })
+        setSave({
+          kind: 'saved',
+          at: formatTime(new Date(result.data.savedAt)),
+          // Null unless this site has asked git to commit its content. The file
+          // is written either way: what this adds is a phrase, never a state.
+          commit: result.data.git ? describeGitOutcome(result.data.git) : null,
+        })
         setDraft((current) => (current.kind === 'recorded' ? { kind: 'idle' } : current))
         setStats(textStats(bodyRef.current))
 
@@ -285,7 +299,7 @@ export function Editor({
     editor.current?.replaceAll(doc.body)
     setValues(doc.values)
     setStats(textStats(doc.body))
-    setSave({ kind: 'saved', at: null })
+    setSave({ kind: 'saved', at: null, commit: null })
     setDraft({ kind: 'idle' })
   }, [doc.body, doc.checksum, doc.slug, doc.values])
 
@@ -488,6 +502,12 @@ function StatusLine({
               ? 'Saving to file…'
               : 'Not saved to file'}
       </span>
+
+      {save.kind === 'saved' && save.commit ? (
+        <span className={cn(save.commit.attention ? 'text-warning' : 'text-ink-subtle')}>
+          {save.commit.text}
+        </span>
+      ) : null}
 
       <span className="text-ink-subtle">
         {draft.kind === 'recorded'

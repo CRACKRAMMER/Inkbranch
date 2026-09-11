@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { DEFAULT_COMMIT_TEMPLATE } from '@/lib/git/message'
 import { internalOrExternalUrlSchema, linkHrefSchema } from '@/lib/security/urls'
 
 /**
@@ -216,7 +217,10 @@ export const SETTINGS_DEFAULTS: Settings = {
 
   gitEnabled: false,
   gitAutoCommit: false,
-  gitCommitTemplate: 'content: {action} "{title}"',
+  // Shared with the module that commits rather than repeated here: the default
+  // an operator never edited and the fallback an unreadable template gets have
+  // to be the same sentence.
+  gitCommitTemplate: DEFAULT_COMMIT_TEMPLATE,
 
   revisionsEnabled: true,
   revisionsMaxPerContent: 50,

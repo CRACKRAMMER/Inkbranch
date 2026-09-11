@@ -75,6 +75,16 @@ const schema = z.object({
   ANALYTICS_ENABLED: bool('1'),
   ANALYTICS_RAW_RETENTION_DAYS: int(30),
 
+  /**
+   * Permission for this deployment to commit the content directory.
+   *
+   * The second of the two switches git auto-commit needs, and the one no admin
+   * screen can reach: the settings decide whether the *site* wants commits, this
+   * decides whether the *process* may make them. Off by default, so a deployment
+   * that has changed nothing runs no git process at all — and when the settings
+   * ask and this refuses, the editor says so after each save rather than doing
+   * nothing quietly. Nothing here ever pushes, whatever it is set to.
+   */
   GIT_INTEGRATION_ENABLED: bool('0'),
 
   /**

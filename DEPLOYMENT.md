@@ -169,7 +169,7 @@ validated at import. `.env.example` documents the same set with commentary.
 | `MAX_UPLOAD_SIZE` | `20971520` (20 MiB) | no | Per-file upload ceiling. Your reverse proxy needs its own limit set at least this high (§9). |
 | `ANALYTICS_ENABLED` | `1` | no | `0` disables collection entirely (the collector stops writing). |
 | `ANALYTICS_RAW_RETENTION_DAYS` | `30` | no | How long raw events are kept before aggregation-only retention. |
-| `GIT_INTEGRATION_ENABLED` | `0` | no | Declared for content auto-commit. The flag and the matching admin settings exist, but nothing reads them yet — there is no `src/lib/git` (see §10). |
+| `GIT_INTEGRATION_ENABLED` | `0` | no | Permission for content auto-commit. The settings say whether the site wants commits, this says whether the process may make them, and the feature needs both — see §10. Off by default: a deployment that changed nothing runs no `git` process at all. |
 | `WORKER_INTERVAL_MS` | `60000` | no | The worker loop's poll interval; see §10. |
 | `TEST_DATABASE_URL` | — | no | Read only by the test suites, never by the app. |
 
@@ -476,6 +476,50 @@ pnpm content:sync        # full reconcile, verbose
 pnpm content:sync --check # is the index out of sync? writes nothing
 ```
 
+### Committing the content directory to git
+
+The other direction: `src/lib/git/` can commit what the admin writes, so the
+Markdown tree accumulates a history of its own. Two switches have to agree —
+Settings → Git (**Git integration** plus **Commit content changes
+automatically**) and `GIT_INTEGRATION_ENABLED=1` in the app's environment. Set
+the settings and leave the flag at `0` and the editor says so after every save,
+by design: a switch that does nothing quietly is worse than one that explains
+itself. Both default to off.
+
+Turning it on needs three things the shipped image does not provide:
+
+- **`git` in the image.** The `runner` stage installs `libc6-compat` and nothing
+  else. Add `git` to the `apk add` line in the `base` stage, or run the app
+  outside a container. Without it every save reports "git is not installed on the
+  server" and the file is written anyway.
+- **A repository the process can write.** Either the site repository itself —
+  `/app/content` is inside it — or one created inside the volume: `git init` in
+  `/app/content`. A bind mount or volume must let uid 1001 write `.git/`.
+- **An identity.** `git config user.name` and `user.email`, globally or in that
+  repository. Without one, commits are refused and reported as
+  `no-identity` rather than failing a save.
+
+Operationally:
+
+- One commit per save, deletion and revision restore; one for a bulk or tag
+  operation however many documents it touched.
+- Messages come from the settings template — `content: update "Linux Network
+  Debugging"` by default.
+- Only the files that operation changed are staged. Anything you have staged
+  yourself is left alone.
+- **It never pushes.** The subcommand allow-list in `src/lib/git/index.ts` has no
+  remote on it; a deploy is still `git push` from wherever you keep the origin.
+- A commit that fails is logged and shown in the editor. It never fails a save:
+  the file is written first.
+
+The unit and integration suites run with `GIT_INTEGRATION_ENABLED=0`, so nothing
+there reaches a repository. The E2E suite runs with it on, against a repository
+`global-setup.ts` creates inside the throwaway content tree and leaves with no
+commits in it: `tests/e2e/git.spec.ts` turns auto-commit on, saves, checks the
+repository and the editor's report of it, and turns the settings off again —
+including when it fails. Every other spec in that run leaves the settings off
+and commits nothing, which is what the suite's repository is a check on.
+
 ### Upgrading
 
 ```bash
@@ -504,8 +548,11 @@ is not undone by an older image.
   reads `analytics_daily`, which in practice stays empty.
 - **Redirects are stored but not served.** `resolveRedirect` has no production
   caller and the middleware only covers `/admin`.
-- **Git auto-commit is a settings toggle with no implementation behind it** —
-  `src/lib/git` does not exist.
+- **Git auto-commit commits within one process.** Two app instances writing to
+  one repository, or a save overlapping `pnpm content:sync` in a terminal, can
+  contend for `.git/index.lock`; the loser's commit is logged and skipped, and
+  the next save commits the file. Nothing is lost from the files themselves, and
+  nothing here pushes.
 - **The worker loop is started by nothing.** `pnpm worker` is the only entry
   point to `runWorker`, and the runtime image has no `tsx`, so a pure Compose
   deployment does not run it (§10). Scheduled posts still become visible on

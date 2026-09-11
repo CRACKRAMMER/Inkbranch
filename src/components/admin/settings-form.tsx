@@ -431,19 +431,21 @@ function GitSection({ api }: { api: Api }) {
   return (
     <Section
       title="Git"
-      description="Stored configuration, and nothing more: no module in this build commits anything, and GIT_INTEGRATION_ENABLED — which nothing reads either — is off by default. Turning a switch on here will not make the site start committing."
+      description="Commits the content directory after a save. Two switches have to agree: this one, and GIT_INTEGRATION_ENABLED in the server environment, which is off by default and which only the operator who starts the process can set. When this page asks for commits and the environment refuses, the editor says so after every save. Nothing here ever pushes."
     >
       <div className="divide-y divide-line border-y border-line">
         <ToggleField
           id="setting-gitEnabled"
           label="Git integration"
           checked={api.draft.gitEnabled}
+          description="The content directory has to be a git repository — or inside one — with a user.name and user.email configured, and git has to be installed on the server. A commit that cannot happen is reported in the editor and the server log; the file is written either way."
           onChange={(value) => api.set('gitEnabled', value)}
         />
         <ToggleField
           id="setting-gitAutoCommit"
           label="Commit content changes automatically"
           checked={api.draft.gitAutoCommit}
+          description="One commit per save, per deletion, per revision restore, and one for a bulk or tag operation however many documents it touched. Only the files that operation changed are staged, so nothing you have staged yourself rides along."
           onChange={(value) => api.set('gitAutoCommit', value)}
         />
         <div className="py-3">
@@ -454,7 +456,7 @@ function GitSection({ api }: { api: Api }) {
             error={api.errorFor('gitCommitTemplate')}
             mono
             placeholder='content: {action} "{title}"'
-            description="Placeholders are {action} and {title}."
+            description="Placeholders are {action} — create, update, publish, unpublish, delete, restore or tag — and {title}. A template with no placeholders is used as it is."
             onChange={(value) => api.set('gitCommitTemplate', value)}
           />
         </div>

@@ -214,11 +214,13 @@ pnpm test:integration  # needs TEST_DATABASE_URL
 pnpm test:e2e          # needs TEST_DATABASE_URL
 ```
 
-- **Unit** (`tests/unit/`, 17 files) covers the frontmatter parser, slugs,
+- **Unit** (`tests/unit/`, 19 files) covers the frontmatter parser, slugs,
   the Markdown renderer, internal-link parsing, backlinks, content sync,
-  redirects, path validation, search, revisions, jobs, analytics, SEO and
-  settings.
-- **Integration** (`tests/integration/`, 3 files) runs against real Postgres and
+  redirects, path validation, search, revisions, jobs, analytics, SEO, feeds,
+  settings, assets, the relation graph and git auto-commit — the last two
+  against the real things they build, because what is being tested is what git
+  and the layout engine do.
+- **Integration** (`tests/integration/`, 4 files) runs against real Postgres and
   a real temp content tree. `vitest.integration.config.ts` sets
   `fileParallelism: false` deliberately: every file gets its own `CONTENT_DIR`
   but they share one database, and `syncContent` deletes index rows whose file
@@ -232,7 +234,11 @@ pnpm test:e2e          # needs TEST_DATABASE_URL
   development database or `./content`: it creates documents and deletes them, so
   pointing it at the real tree would make it a data-loss tool. It derives its
   database name (`myblog_e2e`) from `TEST_DATABASE_URL` and creates it on the
-  fly.
+  fly. It also empties the sign-in rate-limit buckets before each sign-in
+  (`tests/e2e/support.ts` has the reasoning): that limiter is tight because it
+  exists to bound password guessing, and a suite signing in twice a minute is
+  not guessing — without the seam, a run spends the account's hourly allowance
+  and its last tests fail on "Too many sign-in attempts".
 
 `TEST_DATABASE_URL` must point at the same Postgres server as `DATABASE_URL`
 but a **different database name**. Nothing will stop you from pointing it at
@@ -278,6 +284,7 @@ src/
     security/         path jail, MIME sniffing, sanitizers
     settings/         typed site-settings accessors
     graph/            relation graph construction and layout
+    git/              optional content auto-commit (off by default, never pushes)
   env.ts              validated environment (see DEPLOYMENT.md)
   instrumentation.ts  production posture checks, run once per server start
   middleware.ts       scoped to /admin/:path*, sets x-pathname

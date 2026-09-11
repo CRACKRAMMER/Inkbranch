@@ -9,8 +9,10 @@ import { getRevision, restoreRevision } from '@/lib/revision/store'
 import { getSettings } from '@/lib/settings'
 import { actionFailure, actionOk, type ActionResult } from '@/lib/admin/result'
 import { describeActionError, guardAction, parseActionInput } from '@/lib/admin/guard'
+import { commitContentChange, commitTitle } from '@/lib/admin/git'
 import { revalidateContentChange } from '@/lib/admin/revalidate'
 import { pruneRevisions, revisionTarget } from '@/lib/admin/revisions'
+import type { GitCommitOutcome } from '@/lib/git'
 
 /**
  * Restoring a revision.
@@ -47,6 +49,8 @@ export interface RestoreRevisionResult {
   undoRevisionNo: number | null
   /** Revisions dropped to respect `revisionsMaxPerContent`. */
   trimmed: number
+  /** What became of the commit, when the site asks for one. */
+  git: GitCommitOutcome | null
 }
 
 export async function restoreRevisionAction(
@@ -124,6 +128,12 @@ export async function restoreRevisionAction(
     revalidateContentChange(target.type, target.slug)
     revalidatePath(`/admin/${target.type}s/${target.slug}/revisions`)
 
+    const git = await commitContentChange({
+      action: 'restore',
+      title: commitTitle({ title: target.title }, target.slug),
+      paths: [result.relativePath],
+    })
+
     return actionOk({
       type: target.type,
       slug: target.slug,
@@ -134,6 +144,7 @@ export async function restoreRevisionAction(
       undoRecorded: result.revision.captured,
       undoRevisionNo: result.revision.revisionNo,
       trimmed,
+      git,
     })
   } catch (error) {
     return describeActionError(error)
