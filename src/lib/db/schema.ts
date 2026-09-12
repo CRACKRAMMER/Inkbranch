@@ -256,7 +256,7 @@ export const contentRevisions = pgTable(
     byteSize: integer('byte_size').notNull().default(0),
     additions: integer('additions').notNull().default(0),
     deletions: integer('deletions').notNull().default(0),
-    /** Human label: "Initial import", "Changed title", etc. */
+    /** Human label: "Replaced by import", "Changed title", etc. */
     summary: varchar('summary', { length: 200 }).notNull().default('Saved'),
     authorId: uuid('author_id').references(() => users.id, {
       onDelete: 'set null',

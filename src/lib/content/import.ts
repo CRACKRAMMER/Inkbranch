@@ -20,7 +20,6 @@ import {
   CONTENT_TYPE_DIRS,
   DIR_TO_CONTENT_TYPE,
   buildRelativePath,
-  documentPath,
   isMarkdownFile,
   isReservedDir,
 } from './paths'
@@ -311,10 +310,46 @@ export type ImportEvent =
   | { kind: 'skipped'; sourcePath: string; targetPath: string; reason: string }
   | { kind: 'failed'; sourcePath: string; targetPath: string; message: string }
 
+/**
+ * A file that landed, with everything a caller needs to follow it up.
+ *
+ * Handed to `ImportApplyOptions.afterWrite`. It carries the previous contents
+ * and the written text because the file on disk is only half of an import — the
+ * index is derived from it and the revision of what it replaced is not derivable
+ * from anything — and both of those are the caller's business rather than this
+ * module's. See `ImportApplyOptions.afterWrite`.
+ */
+export interface ImportWrite {
+  sourcePath: string
+  targetPath: string
+  type: ContentType
+  slug: string
+  outcome: 'created' | 'overwritten'
+  /** The text that was written. */
+  content: string
+  /** The text it replaced, or null when the file is new. */
+  previousContent: string | null
+}
+
 export interface ImportApplyOptions {
   /** Write the suggested fixes into the destination copies. */
   applyFixes?: boolean
   onEvent?: (event: ImportEvent) => void
+  /**
+   * Called after each file lands, before the next one is read.
+   *
+   * The importer writes files and touches no database — a boundary worth
+   * keeping, because the engine knows about the content tree and nothing else.
+   * The consequence is that a caller who needs the index to follow, or the
+   * previous contents of an overwritten document to be kept, has to do that
+   * themselves; this is where.
+   *
+   * A rejection is collected into `afterWriteFailures` and the batch carries on.
+   * The file is on disk either way, and stopping would leave the operator with
+   * neither the import nor a list of what landed — which is the same reason a
+   * failed write does not stop it.
+   */
+  afterWrite?: (write: ImportWrite) => Promise<void>
 }
 
 export interface ImportApplyResult {
@@ -324,6 +359,14 @@ export interface ImportApplyResult {
   failed: number
   rejected: number
   files: ImportWrittenFile[]
+  /**
+   * What `afterWrite` reported, one message per failure.
+   *
+   * Separate from `failed` because the files in question were written: counting
+   * them as failures would say a document did not land when it did, and saying
+   * nothing would hide that nothing indexes it.
+   */
+  afterWriteFailures: string[]
   durationMs: number
 }
 
@@ -1821,6 +1864,7 @@ export async function applyImport(
     failed: 0,
     rejected: 0,
     files: [],
+    afterWriteFailures: [],
     durationMs: 0,
   }
 
@@ -1841,7 +1885,6 @@ export async function applyImport(
     }
 
     try {
-      const existed = await existsAt(entry.targetPath)
       const content =
         options.applyFixes && entry.fixes.title
           ? withFixes(entry.content, entry.fixes)
@@ -1871,8 +1914,13 @@ export async function applyImport(
         continue
       }
 
-      const outcome = existed ? 'overwritten' : 'created'
-      if (existed) result.overwritten += 1
+      // `overwritten` means a file was there and is now this one — read from the
+      // write itself, which read the target under its lock. A `stat` taken
+      // before the write would be a second look at a file that another process
+      // can change in between, and the count would disagree with the revision
+      // captured for the same write.
+      const outcome = written.previousContent === null ? 'created' : 'overwritten'
+      if (outcome === 'overwritten') result.overwritten += 1
       else result.created += 1
 
       emit({ kind: outcome, sourcePath: entry.sourcePath, targetPath: written.relativePath })
@@ -1882,6 +1930,24 @@ export async function applyImport(
         outcome,
         checksum: entry.checksum,
       })
+
+      if (options.afterWrite) {
+        try {
+          await options.afterWrite({
+            sourcePath: entry.sourcePath,
+            targetPath: written.relativePath,
+            type: entry.type,
+            slug: entry.slug,
+            outcome,
+            content,
+            previousContent: written.previousContent,
+          })
+        } catch (error) {
+          result.afterWriteFailures.push(
+            `${written.relativePath}: ${error instanceof Error ? error.message : String(error)}`,
+          )
+        }
+      }
     } catch (error) {
       result.failed += 1
       const message = error instanceof Error ? error.message : String(error)
@@ -1903,13 +1969,6 @@ export async function applyImport(
 
   result.durationMs = Date.now() - started
   return result
-}
-
-async function existsAt(relativePath: string): Promise<boolean> {
-  return fs
-    .stat(documentPath(relativePath))
-    .then((stat) => stat.isFile())
-    .catch(() => false)
 }
 
 /** Apply the fixes to a copy of the file, leaving the source untouched. */

@@ -673,7 +673,11 @@ function buildSummary(input: {
     case 'autosave':
       return AUTOSAVE_SUMMARY
     case 'import':
-      return 'Initial import'
+      // Only ever reached for a document that already existed: an import that
+      // creates a file has no previous state to keep, and `captureRevision`
+      // returns `no-previous-state` before it gets here. "Initial import" would
+      // describe the one case this cannot be.
+      return 'Replaced by import'
     case 'restore':
       return 'Before restore'
     case 'publish':

@@ -38,6 +38,7 @@ export const AUDIT_ACTIONS = [
   'post.delete',
   'post.publish',
   'post.unpublish',
+  'post.import',
   'revision.restore',
   'asset.upload',
   'asset.delete',

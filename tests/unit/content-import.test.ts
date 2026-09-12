@@ -19,6 +19,7 @@ import {
   type ImportInspectOptions,
   type ImportProblemCode,
   type ImportScanOptions,
+  type ImportWrite,
 } from '@/lib/content/import'
 import { CONTENT_ROOT, LOCK_DIR, documentPath } from '@/lib/content/paths'
 
@@ -885,6 +886,92 @@ describe('applyImport', () => {
     for (const candidate of created) {
       expect(candidate.targetPath).not.toContain('..')
       expect(candidate.targetPath.startsWith('/')).toBe(false)
+    }
+  })
+})
+
+/* -------------------------------------------------------------------------- */
+/*  After the write                                                            */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * `afterWrite` is how the caller keeps what the import replaced — the importer
+ * itself writes files and nothing else, so the revision comes from a hook.
+ *
+ * The two properties worth holding it to are that it sees the *previous* bytes
+ * rather than the new ones, and that a hook which fails does not undo a write
+ * that already happened. Neither is observable from a `WriteResult`, which is
+ * why they are tested here.
+ */
+describe('applyImport afterWrite', () => {
+  it('hands over the contents the write replaced, and null for a new file', async () => {
+    const title = unique('Hooked')
+    const first = datedPost(title, 'The version that gets replaced.')
+    const plan = planFor([entry('hooked.md', first)])
+    const candidate = plan.entries[0] as ImportCandidate
+    const absolute = track(candidate.targetPath)
+
+    const seen: ImportWrite[] = []
+    await applyImport(plan, { afterWrite: async (write) => void seen.push(write) })
+
+    expect(seen).toHaveLength(1)
+    // A file that did not exist has nothing to keep. A revision is not a copy of
+    // the live document; that would put an article in the database.
+    expect(seen[0]?.previousContent).toBeNull()
+    expect(seen[0]?.outcome).toBe('created')
+    expect(seen[0]?.content).toBe(first)
+    expect(seen[0]?.type).toBe('post')
+
+    const replacement = datedPost(title, 'The version that replaces it.')
+    const again = scanImportFiles(
+      [{ name: 'hooked.md', data: Buffer.from(replacement) }],
+      { type: 'post', existing: new Set([`posts/${candidate.slug}`]), overwrite: true },
+    )
+    expect((again.entries[0] as ImportCandidate).action).toBe('overwrite')
+
+    const second: ImportWrite[] = []
+    const result = await applyImport(again, {
+      afterWrite: async (write) => void second.push(write),
+    })
+
+    expect(result.overwritten).toBe(1)
+    // The bytes that were on disk a moment ago, verbatim — this is the only
+    // point in the pipeline where they exist, because the write just replaced
+    // them.
+    expect(second[0]?.previousContent).toBe(first)
+    expect(second[0]?.content).toBe(replacement)
+    expect(second[0]?.outcome).toBe('overwritten')
+    expect(await fs.readFile(absolute, 'utf8')).toBe(replacement)
+  })
+
+  it('collects a failing hook and keeps going, leaving the files written', async () => {
+    const first = unique('Kept going')
+    const second = unique('Also kept')
+    const plan = planFor([
+      entry('one.md', datedPost(first)),
+      entry('two.md', datedPost(second)),
+    ])
+    for (const candidate of plan.entries) track(candidate.targetPath)
+
+    const reached: string[] = []
+    const result = await applyImport(plan, {
+      afterWrite: async (write) => {
+        reached.push(write.targetPath)
+        if (reached.length === 1) throw new Error('the database went away')
+      },
+    })
+
+    // The second file is still visited, and neither write is rolled back: the
+    // files are on disk and the operator gets a list of what could not be
+    // recorded, which is the only honest outcome once a rename has landed.
+    expect(reached).toHaveLength(2)
+    expect(result.created).toBe(2)
+    expect(result.failed).toBe(0)
+    expect(result.afterWriteFailures).toHaveLength(1)
+    expect(result.afterWriteFailures[0]).toContain('the database went away')
+    for (const candidate of plan.entries) {
+      const absolute = documentPath(candidate.targetPath)
+      await expect(fs.stat(absolute)).resolves.toBeDefined()
     }
   })
 })

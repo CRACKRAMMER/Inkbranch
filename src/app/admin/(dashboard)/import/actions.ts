@@ -8,9 +8,11 @@ import { RATE_LIMITS, consumeRateLimit } from '@/lib/auth/rate-limit'
 import { UnauthorizedError } from '@/lib/auth/session'
 import { guardAction, guardRead, parseActionInput } from '@/lib/admin/guard'
 import { segmentForType } from '@/lib/admin/routes'
+import { parseFrontmatter } from '@/lib/content/frontmatter'
 import { documentUrl } from '@/lib/content/paths'
 import { CONTENT_TYPES, type ContentStatus, type ContentType } from '@/lib/content/schema'
 import { syncOneDocument } from '@/lib/content/sync'
+import { captureWithPolicy } from '@/lib/revision/policy'
 import { formatBytes } from '@/lib/utils/format'
 import {
   IMPORT_LIMITS,
@@ -90,8 +92,12 @@ export interface ImportApplyView {
   files: { targetPath: string; outcome: string; message?: string }[]
   /** Documents whose index row was refreshed after the write. */
   indexed: number
-  /** Paths that were written but whose row could not be refreshed. */
-  indexFailures: string[]
+  /**
+   * Writes that landed but whose follow-up did not: a document on disk with no
+   * index row, or one whose previous version could not be kept as a revision.
+   * The file is written either way; this is what the operator has to know about.
+   */
+  followUpFailures: string[]
 }
 
 /** What the form renders. `ok` is the discriminant; everything else is optional. */
@@ -200,16 +206,17 @@ export async function importAction(
       }
     }
 
-    const applied = await applyAndIndex(plan, { applyFixes: input.titleFix })
+    const applied = await applyAndIndex(plan, {
+      applyFixes: input.titleFix,
+      actorId: context.user.id,
+    })
 
     await recordAudit({
-      // `AUDIT_ACTIONS` has no `content.import`, and the closest action it does
-      // have is what the writes amount to: documents were created. The metadata
-      // carries the rest — how they arrived, and what was skipped or refused —
-      // so the log does not read as if these were typed into the editor. Adding
-      // `content.import` to that union belongs in `src/lib/audit.ts`, with the
-      // other actions.
-      action: 'post.create',
+      // A batch import is one act, not one per file: the operator confirmed one
+      // report. The per-document history is the revisions, which the writes
+      // leave behind individually — this row records who ran the batch and what
+      // it did to the tree.
+      action: 'post.import',
       actorId: context.user.id,
       targetType: 'content_import',
       targetId: plan.source.slice(0, 200),
@@ -222,7 +229,9 @@ export async function importAction(
         skip: applied.skipped,
         reject: applied.rejected,
         failed: applied.failed,
-        ...(applied.indexFailures.length > 0 ? { indexFailures: applied.indexFailures } : {}),
+        ...(applied.followUpFailures.length > 0
+          ? { followUpFailures: applied.followUpFailures }
+          : {}),
       },
       request: context.request,
     })
@@ -405,7 +414,7 @@ function toReportView(plan: ImportPlan): ImportReportView {
 /* -------------------------------------------------------------------------- */
 
 /**
- * Write the plan, then index what was written.
+ * Write the plan, then index what was written and keep what it replaced.
  *
  * The engine writes files; it does not touch the database, which is a boundary
  * worth keeping — the importer knows about the content tree and nothing else.
@@ -414,30 +423,50 @@ function toReportView(plan: ImportPlan): ImportReportView {
  * an admin save is. A file whose row could not be refreshed is reported rather
  * than passed over: it is on disk and invisible, which is exactly the state the
  * operator has to know about.
+ *
+ * `afterWrite` is the seam for both of those, and it runs per file rather than
+ * over the finished batch so that the sync happens while the write is still the
+ * most recent thing that happened. Counting `indexed` and collecting failures
+ * works the same either way.
+ *
+ * ## The revision
+ *
+ * An import with `overwrite` is the only write in this application that can
+ * destroy a body nobody has read: the plan is built against a tree the operator
+ * looked at, and the file it lands on may have been written months ago. §19's
+ * rule that a save leaves a revision is what makes that recoverable, and the
+ * previous contents arrive on the write itself — there is no other point in the
+ * pipeline where they still exist.
+ *
+ * Captured *after* the sync, because the revision hangs off `content_index.id`
+ * and the sync is what creates that row for a document that did not have one.
  */
 async function applyAndIndex(
   plan: ImportPlan,
-  options: { applyFixes: boolean },
+  options: { applyFixes: boolean; actorId: string },
 ): Promise<ImportApplyView> {
-  const result = await applyImport(plan, { applyFixes: options.applyFixes })
-
-  const written = result.files.filter(
-    (file) => file.outcome === 'created' || file.outcome === 'overwritten',
-  )
-
-  const indexFailures: string[] = []
   let indexed = 0
 
-  for (const file of written) {
-    try {
-      await syncOneDocument(file.targetPath)
+  const result = await applyImport(plan, {
+    applyFixes: options.applyFixes,
+    afterWrite: async (write) => {
+      const synced = await syncOneDocument(write.targetPath)
       indexed += 1
-    } catch (error) {
-      indexFailures.push(
-        `${file.targetPath}: ${error instanceof Error ? error.message : String(error)}`,
-      )
-    }
-  }
+      if (!synced) return
+
+      const parsed = parseFrontmatter(write.content)
+      await captureWithPolicy({
+        contentId: synced.row.id,
+        type: write.type,
+        slug: write.slug,
+        data: parsed.data,
+        body: parsed.content,
+        previousContent: write.previousContent,
+        reason: 'import',
+        actorId: options.actorId,
+      })
+    },
+  })
 
   if (indexed > 0) {
     // The relations index is a per-process cache of the backlink graph. A
@@ -460,7 +489,10 @@ async function applyAndIndex(
       ...(file.message ? { message: file.message } : {}),
     })),
     indexed,
-    indexFailures,
+    // The engine's own channel for a write that landed and could not be followed
+    // up: a file that is on disk and invisible, or a document whose previous
+    // version was lost. Both are the same kind of thing to the operator.
+    followUpFailures: result.afterWriteFailures,
   }
 }
 

@@ -289,6 +289,18 @@ void run('content:import', async () => {
     )
   }
 
+  if (result.overwritten > 0) {
+    // The admin importer leaves a revision for every document it replaces,
+    // because it has a database to leave it in. This command writes files and
+    // nothing else — it is the path for a content tree that is a checkout, where
+    // the previous version of every file is in version control. Saying which of
+    // the two the operator is on is the difference between having a way back and
+    // finding out afterwards that there is none.
+    info(
+      `${result.overwritten} document${result.overwritten === 1 ? '' : 's'} were replaced. This command writes files only, so the previous versions were not kept as revisions — recover them from version control, or use ${style.bold('/admin/import')} instead if you want them in the revision history.`,
+    )
+  }
+
   if (result.failed > 0) {
     warn('Some files were not written. The summary above says which; nothing else was affected.')
     process.exitCode = 1

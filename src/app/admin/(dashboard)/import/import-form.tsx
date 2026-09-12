@@ -355,14 +355,16 @@ function Applied({ applied }: { applied: NonNullable<ImportState['applied']> }) 
         {applied.indexed} of {applied.created + applied.overwritten} written documents were indexed.
       </p>
 
-      {applied.indexFailures.length > 0 ? (
+      {applied.followUpFailures.length > 0 ? (
         <div className="mt-3 border-l-2 border-warning pl-3">
           <p className="text-sm text-ink">
-            These files are on disk but could not be indexed, so they will not appear in lists or
-            search until the next sync:
+            These files were written, but the step after the write did not finish. A document listed
+            here is either on disk and absent from lists and search until the next sync, or was
+            replaced without its previous version being kept, so it cannot be undone. The file
+            itself is intact and nothing was rolled back:
           </p>
           <ul className="mt-1 flex flex-col gap-1 text-xs text-ink-muted">
-            {applied.indexFailures.map((failure) => (
+            {applied.followUpFailures.map((failure) => (
               <li key={failure}>{failure}</li>
             ))}
           </ul>

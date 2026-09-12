@@ -552,6 +552,22 @@ export interface ImportWriteInput {
 }
 
 /**
+ * What an import write did.
+ *
+ * `previousContent` is here because an import with `overwrite` is the one write
+ * in this application that can destroy a body without anybody having read it —
+ * a bundle is planned against a tree the operator looked at, and the file it
+ * lands on was written by someone else months ago. The caller needs those bytes
+ * to leave a revision; nothing else in the pipeline does.
+ */
+export interface ImportWriteResult {
+  relativePath: string
+  skipped: boolean
+  /** Contents of the file this replaced, or null when there was none. */
+  previousContent: string | null
+}
+
+/**
  * Write a file for the import pipeline, which already has complete Markdown
  * text and must not round-trip it through the parser.
  *
@@ -561,7 +577,7 @@ export interface ImportWriteInput {
  */
 export async function importDocument(
   input: ImportWriteInput,
-): Promise<{ relativePath: string; skipped: boolean }> {
+): Promise<ImportWriteResult> {
   const slug = assertSafeSlug(input.slug)
   const relativePath = buildRelativePath(input.type, slug)
   const absolutePath = documentPath(relativePath)
@@ -570,18 +586,21 @@ export async function importDocument(
 
   const lock = await acquireLock(relativePath)
   try {
-    const exists = await fs
-      .stat(absolutePath)
-      .then(() => true)
-      .catch(() => false)
+    // Read under the lock, not before it: the file this is about to replace has
+    // to be the one it actually replaced, and a `stat` followed by a read would
+    // be two looks at a file another process may write between them.
+    const previousContent = await fs.readFile(absolutePath, 'utf8').catch((error) => {
+      if (isNotFound(error)) return null
+      throw error
+    })
 
-    if (exists && !input.overwrite) {
-      return { relativePath, skipped: true }
+    if (previousContent !== null && !input.overwrite) {
+      return { relativePath, skipped: true, previousContent: null }
     }
 
     await atomicWrite(absolutePath, input.content)
     invalidateContentCache(relativePath)
-    return { relativePath, skipped: false }
+    return { relativePath, skipped: false, previousContent }
   } finally {
     await lock.release()
   }
