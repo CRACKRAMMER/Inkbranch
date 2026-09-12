@@ -90,6 +90,10 @@ export default async function SettingsPage() {
         <SessionList
           sessions={sessions}
           currentSessionId={current.session.id}
+          // Already in memory: `resolveSession` selects the whole user row, so
+          // the account's last sign-in has been on hand on every admin request
+          // for as long as the column has existed.
+          lastSignInAt={current.user.lastLoginAt}
           context={context}
         />
       </div>

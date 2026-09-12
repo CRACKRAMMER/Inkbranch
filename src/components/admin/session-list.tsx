@@ -38,6 +38,19 @@ import { revokeOtherSessionsAction, revokeSessionAction } from '@/app/admin/acti
  * count of what is on screen. The toast outlives that render — a device could
  * have signed in between the render and the click — so it says what happened
  * without a number, and the list refreshes underneath it to say how much.
+ *
+ * ## Why the last sign-in is a line of its own
+ *
+ * `users.last_login_at` is written on every successful sign-in and was read by
+ * nothing — the same complaint as `sessions.ip_hash` above, one table over, and
+ * found the same way. The row is already in hand: `resolveSession` selects the
+ * whole user, so this costs no query.
+ *
+ * It is not the newest row of the table repeated. The table is *live sessions*,
+ * and a session ends: the absolute TTL passes, `auth.prune` deletes the row, and
+ * the last time anyone got into this account leaves the screen with it. This is
+ * the line that stays, which is why it sits outside the table rather than as a
+ * column in it, and why it says what it is rather than being left to be inferred.
  */
 
 export interface SessionListProps {
@@ -45,11 +58,18 @@ export interface SessionListProps {
   sessions: SessionSummary[]
   /** The session reading the page. Its row gets no sign-out button. */
   currentSessionId: string
+  /** `users.last_login_at`: the account's most recent successful sign-in. */
+  lastSignInAt: Date | null
   /** The site's locale and timezone, plus one clock for every relative label. */
   context: DateFormatContext & { now: Date }
 }
 
-export function SessionList({ sessions, currentSessionId, context }: SessionListProps) {
+export function SessionList({
+  sessions,
+  currentSessionId,
+  lastSignInAt,
+  context,
+}: SessionListProps) {
   const others = sessions.filter((session) => session.id !== currentSessionId)
   const absoluteDays = Math.round(env.SESSION_ABSOLUTE_TTL / 86_400)
   const idleDays = Math.round(env.SESSION_IDLE_TTL / 86_400)
@@ -166,6 +186,26 @@ export function SessionList({ sessions, currentSessionId, context }: SessionList
           </tbody>
         </table>
       </div>
+
+      <p className="mt-3 text-xs leading-relaxed text-ink-subtle">
+        This account was last signed in to{' '}
+        {lastSignInAt ? (
+          <>
+            <time dateTime={lastSignInAt.toISOString()}>
+              {formatDate(lastSignInAt, context, 'short')}
+            </time>
+            <span className="ml-2">{formatRelative(lastSignInAt, context)}</span>
+          </>
+        ) : (
+          // An account with no recorded sign-in cannot be reading this page —
+          // a session only exists because one happened — so this is the honest
+          // answer to a row that was edited by hand rather than a state worth
+          // designing for.
+          <span className="font-mono">—</span>
+        )}
+        . Unlike the rows above, it survives them: when a session expires it is
+        pruned, and the fact that someone got in is not.
+      </p>
     </Section>
   )
 }

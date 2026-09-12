@@ -31,6 +31,14 @@ import { clearAdminSessions, signIn } from './support'
  *
  * The second context is deliberately not given the project's device settings —
  * see `signInSecondDevice`, which `password.spec.ts` shares the shape of.
+ *
+ * ## Why the account's last sign-in is asserted here
+ *
+ * `users.last_login_at` was the same defect one table over: written on every
+ * successful sign-in, read by nothing, while the table above it showed per-device
+ * activity. It is now a line under the table, and the two halves — a write in a
+ * server action and a read in a render — meet only in a browser. The assertion
+ * is about the relationship rather than the value, because the value is a clock.
  */
 
 test.skip(
@@ -97,6 +105,30 @@ test('lists the signed-in devices and signs one out without touching this one', 
         name: 'Sign out',
       }),
     ).toHaveCount(0)
+  })
+
+  await test.step('the account line reports the sign-in that just happened', async () => {
+    // `users.last_login_at` is written by the sign-in above and read by this
+    // page, and this is the only layer where the two halves meet: the write is
+    // inside a server action behind a form, and the read is a render.
+    const line = page.locator('p', { hasText: 'This account was last signed in to' })
+    const stamp = await line.locator('time').getAttribute('datetime')
+    expect(stamp).not.toBeNull()
+
+    // This device's own row is the session the sign-in created, so the account's
+    // last sign-in can be neither older than it — which is what a column left
+    // unwritten would look like — nor in the future, which is what a value
+    // written from the browser's clock rather than the database's would be.
+    const session = await page
+      .getByRole('row')
+      .filter({ hasText: 'This device' })
+      .locator('time')
+      .first()
+      .getAttribute('datetime')
+
+    const signedIn = new Date(stamp as string).getTime()
+    expect(signedIn).toBeGreaterThanOrEqual(new Date(session as string).getTime())
+    expect(signedIn).toBeLessThanOrEqual(Date.now() + 60_000)
   })
 
   await test.step('signing the phone out ends exactly that session', async () => {

@@ -161,7 +161,24 @@ export async function loginAction(
 
   await setSessionCookie({ token, expiresAt })
   await setCsrfCookie(csrfToken)
-  await db.update(users).set({ lastLoginAt: sql`now()` }).where(eq(users.id, user.id))
+
+  /*
+   * Best-effort, and it has to be. The cookies above are already set, so
+   * anything thrown here surfaces as a sign-in that failed while the browser is
+   * holding a valid session — the one wrong answer on this path. The value is
+   * not load-bearing either: the audit row below records the sign-in durably,
+   * so a lost update costs a stale timestamp on the settings page and nothing
+   * else. `touchSession` takes the same position on the read side.
+   */
+  try {
+    await db.update(users).set({ lastLoginAt: sql`now()` }).where(eq(users.id, user.id))
+  } catch (error) {
+    console.error('[auth] last-login write failed', {
+      userId: user.id,
+      error: error instanceof Error ? error.message : String(error),
+    })
+  }
+
   await resetRateLimit(ipKey)
 
   await recordAudit({
