@@ -1082,26 +1082,35 @@
 /* -------------------------------------------------------------------------- */
 
 /*
- * KaTeX ships its own stylesheet, loaded only on pages whose frontmatter asks
- * for math. These rules only align it with the page.
+ * KaTeX's own stylesheet is imported by the two components that render Markdown
+ * — `ArticleBody` on the public site and the admin dashboard layout — so it is
+ * in the document routes and the editor, and in no other route. The rules below
+ * only align KaTeX with the page.
+ *
+ * They are scoped to `.prose` for a reason worth stating, because it is not
+ * about specificity for its own sake: `katex.min.css` is a separate stylesheet
+ * and the order the two arrive in is the bundler's decision, not ours. Both of
+ * the declarations here have an equal-specificity counterpart in KaTeX's own
+ * sheet — it sets `.katex { font: normal 1.21em … }` and
+ * `.katex-display { margin: 1em 0 }` — so on a flat selector the winner would
+ * be whichever stylesheet the build happened to put second, and the equations
+ * would grow or shift the day that changed. One extra class removes the
+ * question.
+ *
+ * The class names are KaTeX's, not ours. `rehype-katex` replaces the element it
+ * is given: `math-display` and `math-inline` are the markers it looks *for* and
+ * they do not survive into the output, so a rule written against them is a rule
+ * that never applies. It was written that way once.
  */
-.math-display {
+.prose .katex-display {
   margin: 1.75em 0;
   overflow-x: auto;
   overflow-y: hidden;
   padding: 0.25rem 0;
 }
 
-.math-inline {
-  padding: 0 0.1em;
-}
-
-.katex {
+.prose .katex {
   font-size: 1.05em;
-}
-
-.katex-display {
-  margin: 0;
 }
 
 /* -------------------------------------------------------------------------- */

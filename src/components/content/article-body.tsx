@@ -1,5 +1,7 @@
 import { PROSE_FONT } from '@/lib/fonts'
 
+import 'katex/dist/katex.min.css'
+
 import { CodeEnhancer } from './code-enhancer'
 import { FontPreloadLink } from './font-preload'
 

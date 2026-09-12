@@ -1,5 +1,10 @@
 import { headers } from 'next/headers'
 
+// The editor preview and the revision view both render article Markdown, and
+// both render it with KaTeX. Imported here so the two admin surfaces that show
+// a document body get the stylesheet and no other admin page does.
+import 'katex/dist/katex.min.css'
+
 import { AdminShell } from '@/components/admin/admin-shell'
 import { safeNext } from '@/lib/admin/next-path'
 import { requireUser } from '@/lib/auth/session'

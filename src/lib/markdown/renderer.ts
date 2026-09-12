@@ -16,6 +16,7 @@ import { rehypeCaptureCodeMeta, rehypeCode } from './rehype-code'
 import { rehypeEnhance, type DocumentImage } from './rehype-enhance'
 import { remarkAlerts } from './remark-alerts'
 import { remarkBlocks } from './remark-blocks'
+import { remarkDisplayMath } from './remark-display-math'
 import { ALLOWED_EMBED_ORIGINS, sanitizeSchema } from './sanitize-schema'
 
 /**
@@ -107,6 +108,10 @@ export async function renderMarkdown(
     .use(remarkDirective)
     .use(remarkBlocks)
     .use(remarkAlerts)
+    // Before `remarkRehype`, because this works in mdast: it rewrites an
+    // `inlineMath` the author fenced with `$$` into the `math` node that
+    // `mdastHandlers` turns into a display element.
+    .use(remarkDisplayMath)
     .use(remarkRehype, {
       allowDangerousHtml: true,
       handlers: mdastHandlers,
