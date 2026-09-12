@@ -61,7 +61,7 @@ export default async function EditDocumentPage({
         wordCount: document.wordCount,
         updatedAt: document.updatedAt.toISOString(),
         derivedTitle: document.derivedTitle,
-        driftedFromIndex: document.driftedFromIndex,
+        indexDrift: document.indexDrift,
       }}
       locale={settings.locale}
       listHref={`/admin/${segment}`}

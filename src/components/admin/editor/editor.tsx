@@ -7,6 +7,7 @@ import { toast } from 'sonner'
 
 import type { ContentStatus, ContentType } from '@/lib/content/schema'
 import type { ContentFormValues } from '@/lib/admin/frontmatter-form'
+import { indexDriftNotice, type IndexDrift } from '@/lib/admin/index-drift'
 import type { ActionFailure } from '@/lib/admin/result'
 // From `message`, not `@/lib/git`: this is a client component, and the module
 // that runs git is server-only. What is imported here is the phrase — pure
@@ -60,8 +61,8 @@ export interface EditorDocumentPayload {
   wordCount: number
   updatedAt: string
   derivedTitle: string
-  /** True when the index row's checksum disagrees with the file on disk. */
-  driftedFromIndex: boolean
+  /** How the index disagrees with the file on disk, or null when it does not. */
+  indexDrift: IndexDrift | null
 }
 
 type SaveState =
@@ -356,6 +357,7 @@ export function Editor({
 
   const failure = save.kind === 'failed' ? save.failure : null
   const title = values.title.trim() || doc.derivedTitle
+  const driftNotice = indexDriftNotice(doc.indexDrift)
 
   return (
     <div className="mx-auto flex w-full max-w-none flex-col">
@@ -372,12 +374,17 @@ export function Editor({
         <StatusBadge status={values.status} />
 
         <div className="flex items-center gap-2">
-          <Link
-            href={`/admin/${segment}/${values.slug}/revisions`}
-            className="text-sm text-ink-muted hover:text-brand"
-          >
-            Revisions
-          </Link>
+          {/* A file the index has no row for has no revisions either — they
+              attach to the row's id — and the page that lists them can only
+              answer with a 404. The notice above says why there are none. */}
+          {doc.indexDrift === 'unindexed' ? null : (
+            <Link
+              href={`/admin/${segment}/${values.slug}/revisions`}
+              className="text-sm text-ink-muted hover:text-brand"
+            >
+              Revisions
+            </Link>
+          )}
           <Button
             type="button"
             size="sm"
@@ -397,10 +404,9 @@ export function Editor({
         path={doc.path}
       />
 
-      {doc.driftedFromIndex ? (
+      {driftNotice ? (
         <p className="mt-4 border border-warning/40 bg-warning/5 px-4 py-3 text-sm text-ink">
-          The index row for this document does not match the file&rsquo;s checksum — it was changed
-          outside the admin. Saving from here replaces those changes with this buffer.
+          {driftNotice}
         </p>
       ) : null}
 

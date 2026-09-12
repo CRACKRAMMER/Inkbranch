@@ -11,6 +11,7 @@ import {
   sha256Of,
   storeAsset,
 } from '@/lib/assets/storage'
+import { loadEditorDocument } from '@/lib/admin/documents'
 import { listContent } from '@/lib/content/queries'
 import { readDocument } from '@/lib/content/reader'
 import { removeFromIndex, syncOneDocument } from '@/lib/content/sync'
@@ -558,6 +559,135 @@ describe.skipIf(!hasTestDatabase)('authoring lifecycle', () => {
 
       // The guard has to fail before the write, not after it.
       expect(await fs.readFile(absolutePath, 'utf8')).toBe(before)
+    })
+  })
+
+  /* ------------------------------------------------------------------------ */
+  /*  A file the index has no row for                                          */
+  /* ------------------------------------------------------------------------ */
+
+  /**
+   * The editor's address is a type and a slug, and a slug can name a file the
+   * index has never seen: imported, pulled, copied in or renamed outside the
+   * admin. The index is the fast path and the disk is the fallback, and the
+   * states the fallback has to keep apart are a file with no row at all, a row
+   * describing an earlier version of the file, and a document that is simply not
+   * there. All three are asserted here because all three are one file apart from
+   * each other on disk.
+   */
+  describe('a document the index has not seen', () => {
+    /** Write a document and leave the index alone — the state a hand-added file is in. */
+    async function writeUnindexed(
+      relativePath: string,
+      data: Record<string, unknown>,
+    ): Promise<void> {
+      await writeDocument({
+        relativePath,
+        data,
+        body: 'A body written straight to the disk.\n',
+      })
+      created.push(relativePath)
+    }
+
+    it('opens a file that is on disk and in no row, and says what is missing', async () => {
+      const slug = 'a-document-the-index-has-not-seen'
+      const relativePath = `posts/${slug}.md`
+      await writeUnindexed(
+        relativePath,
+        frontmatter({ title: 'A Document The Index Has Not Seen', slug }),
+      )
+
+      // The premise, asserted rather than assumed: a row here would send every
+      // assertion below through the index instead of past it.
+      const [row] = await db
+        .select({ id: contentIndex.id })
+        .from(contentIndex)
+        .where(eq(contentIndex.path, relativePath))
+        .limit(1)
+      expect(row).toBeUndefined()
+
+      const document = await loadEditorDocument('post', slug)
+
+      expect(document?.path).toBe(relativePath)
+      expect(document?.indexDrift).toBe('unindexed')
+      // No row means no id for a revision to hang off, and no view count to show.
+      expect(document?.contentId).toBeNull()
+      expect(document?.viewCount).toBe(0)
+      expect(document?.body).toContain('written straight to the disk')
+    })
+
+    it('finds a file by the slug its title gives it, not by its filename', async () => {
+      // A document's slug is its frontmatter slug, else the slug of its title,
+      // else its filename — so looking a file up is a parse, and a lookup that
+      // guessed the filename would miss this one. The name is chosen so that the
+      // two cannot be confused for each other.
+      const relativePath = 'posts/0000-a-filename-that-addresses-nothing.md'
+      const { slug: _declared, ...withoutSlug } = frontmatter({
+        title: 'The Title Decides The Slug',
+      })
+      await writeUnindexed(relativePath, withoutSlug)
+
+      const document = await loadEditorDocument('post', 'the-title-decides-the-slug')
+      expect(document?.path).toBe(relativePath)
+      expect(document?.indexDrift).toBe('unindexed')
+
+      // And the filename is not an address for it.
+      expect(
+        await loadEditorDocument('post', '0000-a-filename-that-addresses-nothing'),
+      ).toBeNull()
+    })
+
+    it('does not resolve a file of another type under the same slug', async () => {
+      const slug = 'a-note-and-not-a-post'
+      await writeUnindexed(
+        `notes/${slug}.md`,
+        frontmatter({ title: 'A Note And Not A Post', slug }),
+      )
+
+      expect(await loadEditorDocument('note', slug)).not.toBeNull()
+      expect(await loadEditorDocument('post', slug)).toBeNull()
+    })
+
+    it('tells a row that describes an earlier version of the file from a missing row', async () => {
+      const slug = 'a-file-that-changed-under-the-index'
+      const relativePath = `posts/${slug}.md`
+      await writeUnindexed(
+        relativePath,
+        frontmatter({ title: 'A File That Changed Under The Index', slug }),
+      )
+
+      // The state there is nothing to say about: the row describes these bytes.
+      await syncOneDocument(relativePath)
+      expect((await loadEditorDocument('post', slug))?.indexDrift).toBeNull()
+
+      // Changed on disk while the index was not looking — an editor outside the
+      // admin, a `git pull`. The row's stored checksum is what makes this
+      // visible; nothing else compares the two.
+      await updateDocument(relativePath, (current) => ({
+        data: frontmatter({
+          title: 'A File That Changed Under The Index',
+          slug,
+          description: 'Changed outside the admin.',
+        }),
+        body: current.body,
+      }))
+
+      const drifted = await loadEditorDocument('post', slug)
+      expect(drifted?.indexDrift).toBe('stale')
+
+      // The claim the notice makes, checked against both halves: the file is
+      // what the editor shows, and the row — what the site renders — is behind.
+      expect(drifted?.values.description).toBe('Changed outside the admin.')
+      expect((await indexedRow(relativePath)).description).toBe(
+        'Created by the integration suite.',
+      )
+
+      // And what a save does about it, which is the sequence `afterWrite` runs
+      // once the file is written: the row is rebuilt from the file.
+      await syncOneDocument(relativePath)
+      const repaired = await loadEditorDocument('post', slug)
+      expect(repaired?.indexDrift).toBeNull()
+      expect(repaired?.values.description).toBe('Changed outside the admin.')
     })
   })
 })
