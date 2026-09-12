@@ -508,6 +508,31 @@
   max-width: 100%;
 }
 
+/*
+ * The blur placeholder, painted behind an image until its bytes arrive.
+ *
+ * `--md-blur` is written by whichever half knows the asset row — `rehypeEnhance`
+ * for an image in a body, `CoverImage` for a cover — and carries nothing but a
+ * `data:` URI that was checked before it was written (`blurPlaceholderSource`).
+ * An image with no placeholder carries no property, so `var()` falls through to
+ * `none` and the rule costs one declaration that resolves to nothing. The cover
+ * is named here rather than getting a rule of its own: it is the same three
+ * declarations for the same reason, and a second copy is how the two drift.
+ *
+ * The element painted is the image, not the wrapper around it. The box the
+ * browser reserved from `width`/`height` is exactly the box the picture will
+ * occupy, so `cover` fills it with the composition in the right proportion,
+ * and the image paints over it when it lands. There is no fade: CSS cannot
+ * observe a load, and a transition needs a state change to run from — so what
+ * the reader gets is a blurry page that sharpens, not a blank one that fades.
+ */
+.md-image__img,
+.md-cover img {
+  background-image: var(--md-blur, none);
+  background-size: cover;
+  background-position: center;
+}
+
 .md-figure {
   margin: 2em 0;
 }

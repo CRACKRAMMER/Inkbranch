@@ -30,13 +30,16 @@ import {
   updateAssetAlt,
 } from '@/lib/assets/manage'
 import {
-  BLUR_LONG_EDGE,
-  BLUR_MAX_DATA_URL_LENGTH,
   ImageProcessingError,
   THUMBNAIL_LONG_EDGE,
   isAnimated,
   processImage,
 } from '@/lib/assets/process'
+import {
+  BLUR_LONG_EDGE,
+  BLUR_MAX_DATA_URL_LENGTH,
+  blurPlaceholderSource,
+} from '@/lib/assets/blur'
 import { env } from '@/env'
 import { prepareSvg } from '@/lib/assets/svg'
 import { documentUrl } from '@/lib/content/paths'
@@ -445,6 +448,51 @@ describe('derivatives and placeholder', () => {
     })
     // 200, 40, 90 is #c8285a.
     expect(stored.averageColor).toBe('#c8285a')
+  })
+})
+
+/* -------------------------------------------------------------------------- */
+/*  The placeholder a renderer may paint                                       */
+/* -------------------------------------------------------------------------- */
+
+/*
+ * The other half of the placeholder, and the reason it is a module of its own:
+ * the encoder above produces one, and the renderer below decides whether the
+ * one it is handed may be written into a `style` attribute. The value there
+ * comes from a database column, so the answer cannot be "the pipeline wrote it".
+ */
+describe('blurPlaceholderSource', () => {
+  const VALID = `data:image/webp;base64,${'A'.repeat(48)}`
+
+  it('accepts what the pipeline writes and wraps it as a url()', () => {
+    expect(blurPlaceholderSource(VALID)).toBe(`url(${VALID})`)
+  })
+
+  it('says nothing for an image that has no placeholder', () => {
+    // Null is the ordinary answer, not a failure: an SVG has none by
+    // construction and a row written before the column existed has none either.
+    for (const value of [null, undefined, '']) {
+      expect(blurPlaceholderSource(value)).toBeNull()
+    }
+  })
+
+  it.each([
+    ['a URL that has to be fetched', 'https://example.com/pixel.png'],
+    ['a protocol that runs something', 'javascript:alert(1)'],
+    ['a data URI of something that is not an image', 'data:text/html;base64,PHNjcmlwdD4='],
+    // The declaration-breakout case: a `;` here would end the property and make
+    // the rest a declaration of its own.
+    ['a value that carries a second declaration', `${VALID};background:url(https://e.com/p)`],
+    ['a value with whitespace in it', `data:image/webp;base64,AAAA BBBB`],
+    ['a value with a quote in it', `data:image/webp;base64,AAA"BBB`],
+    ['a value that only contains a data URI', `prefix ${VALID}`],
+    ['a value past the ceiling', `data:image/webp;base64,${'A'.repeat(BLUR_MAX_DATA_URL_LENGTH)}`],
+    // The URL-safe alphabet is deliberately not accepted: this site's encoder
+    // writes standard base64, so anything else is a value it did not produce,
+    // and the cost of refusing is a missing placeholder rather than a page.
+    ['a URL-safe base64 value', `data:image/webp;base64,${'A-_'.repeat(16)}`],
+  ])('refuses %s', (_case, value) => {
+    expect(blurPlaceholderSource(value)).toBeNull()
   })
 })
 

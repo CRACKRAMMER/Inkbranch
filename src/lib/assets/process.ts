@@ -1,6 +1,7 @@
 import 'server-only'
 
 import sharp, { type OutputInfo, type Sharp } from 'sharp'
+import { BLUR_LONG_EDGE, BLUR_MAX_DATA_URL_LENGTH } from '@/lib/assets/blur'
 import type { SniffResult } from '@/lib/security/mime'
 import { formatBytes } from '@/lib/utils/format'
 
@@ -108,29 +109,6 @@ const DERIVATIVE_ENCODERS: Record<DerivativeFormat, DerivativeEncoder> = {
     encode: (pipeline) => pipeline.avif({ quality: 55 }),
   },
 }
-
-/* -------------------------------------------------------------------------- */
-/*  Placeholder                                                                */
-/* -------------------------------------------------------------------------- */
-
-/**
- * Long edge of the blur placeholder, in pixels.
- *
- * The placeholder is stretched to the full display size by the browser, so it
- * only has to carry the composition — 20px on the long edge does that at a
- * payload measured in tens of bytes. Bigger stops being a placeholder and
- * becomes a second download.
- */
-export const BLUR_LONG_EDGE = 20
-
-/**
- * Ceiling on the placeholder's data URI.
- *
- * A data URI is inlined in the HTML of every page that shows the asset, so its
- * size is paid on the critical path. Past this it costs more than the layout
- * shift it prevents, and the honest answer is no placeholder at all.
- */
-export const BLUR_MAX_DATA_URL_LENGTH = 2048
 
 /* -------------------------------------------------------------------------- */
 /*  Results                                                                    */

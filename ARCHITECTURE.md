@@ -318,7 +318,7 @@ raw markdown
   → rehype-capture-code-meta   moves fence meta off the node before rehype-raw (ours)
   → rehype-raw
   → rehype-sanitize       explicit allow-list, extended for the nodes above
-  → rehype-enhance        heading ids, table wrappers, link policy, <picture> (ours)
+  → rehype-enhance        heading ids, table wrappers, link policy, <picture>, blur (ours)
   → rehype-code           Shiki, dual themes, diff and line highlights (ours)
   → rehype-katex
   → feature collection    what the page must know about its own markup (ours)

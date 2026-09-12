@@ -53,6 +53,11 @@ const securityHeaders = [
         ? "script-src 'self' 'unsafe-inline'"
         : "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
       "style-src 'self' 'unsafe-inline'",
+      // `data:` is not only for the icons: it is what the blur placeholder is
+      // painted from. The renderer writes the asset row's data URI into a
+      // custom property and `globals.css` makes it a `background-image`, which
+      // this directive governs — so dropping `data:` here would take the
+      // placeholder off every image on the site, silently.
       "img-src 'self' data: blob:",
       "font-src 'self' data:",
       "connect-src 'self'",

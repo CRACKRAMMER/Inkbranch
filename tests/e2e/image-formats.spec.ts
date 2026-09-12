@@ -19,10 +19,13 @@ import { showMetadata, signIn, typeBody, uniqueSlug } from './support'
  * `naturalWidth` on the decoded result, which is what distinguishes the same
  * picture in another format from a smaller one at the right size.
  *
- * The last step is about the frame rather than the file: the wrapper the
+ * The last two steps are about the page rather than the file. The wrapper the
  * renderer puts around every image is there for the CSS to draw a line around,
  * and whether it actually does is a fact about the rendered box rather than
- * about the markup.
+ * about the markup. The placeholder is the same shape of claim in the other
+ * direction: it is written into the markup as a custom property and turned into
+ * a background by the stylesheet, and a browser that resolves neither shows a
+ * page identical to one whose renderer never wrote the property at all.
  *
  * ## Why the fixture is noise, and why it is different every run
  *
@@ -180,6 +183,28 @@ test('a photograph is offered in the modern formats, and the browser takes one',
 
     expect(wrapper).not.toBeNull()
     expect(round(wrapper)).toEqual(round(image))
+  })
+
+  await test.step('paints the stored placeholder behind the picture', async () => {
+    /*
+     * The placeholder has two halves that live in two files: the renderer
+     * writes the row's data URI into the `style` attribute, and `globals.css`
+     * turns that custom property into a background. Markup can only prove the
+     * first — an image carrying a property nothing consumes looks identical in
+     * the HTML — so the assertion is the *computed* background, which is what
+     * the browser resolved after the stylesheet ran. It reads `none` if either
+     * half is missing, which is exactly the defect this covers: the column was
+     * written at ingest and painted nowhere.
+     */
+    const image = page.locator('[data-article-body] .md-image img')
+
+    await expect
+      .poll(async () => image.evaluate((node) => getComputedStyle(node).backgroundImage))
+      .toMatch(/^url\(["']?data:image\/webp;base64,/)
+
+    // Painted into the box the attributes above reserved, so the composition
+    // is in the right place before a byte of the picture arrives.
+    expect(await image.evaluate((node) => getComputedStyle(node).backgroundSize)).toBe('cover')
   })
 
   await test.step('deletes the article', async () => {

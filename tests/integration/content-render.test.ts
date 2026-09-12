@@ -12,7 +12,7 @@ import { describeImage, documentImages, renderDocument } from '@/lib/content/ren
 import { renderMarkdown } from '@/lib/markdown/renderer'
 import { db } from '@/lib/db'
 import { assets, contentIndex } from '@/lib/db/schema'
-import { inArray } from 'drizzle-orm'
+import { eq, inArray } from 'drizzle-orm'
 
 /**
  * A document rendered with what the database knows about it: its images, and
@@ -206,6 +206,55 @@ describe.skipIf(!hasTestDatabase)('a document and its images', () => {
     // lazy-load: the layout is known before a byte of it arrives.
     expect(html).toContain(`width="${asset.width}"`)
     expect(html).toContain(`height="${asset.height}"`)
+  })
+
+  it('paints the placeholder the row holds, and not one it invented', async () => {
+    const { asset } = await store(await noisyPng(405, 305))
+
+    const { html } = await renderDocument(`![A noisy fixture](${asset.url})\n`)
+
+    // The value is the upload pipeline's, from ingest: it is the same data URI
+    // the admin asset page reports the size of, and the reader's browser paints
+    // it into the box the attributes above reserved.
+    expect(asset.blurDataUrl).toMatch(/^data:image\/webp;base64,/)
+    expect(html).toContain(`--md-blur:url(${asset.blurDataUrl})`)
+  })
+
+  /*
+   * The column is a text field. Everything the site writes into it comes from
+   * `process.ts`, which is what the guard in `blurPlaceholderSource` would
+   * rather not have to assume: this test writes what a hand-edited row — or a
+   * future producer with a bug — could, and asserts that the page is unchanged.
+   */
+  it('does not paint a placeholder a row cannot be trusted with', async () => {
+    const { asset } = await store(await noisyPng(406, 306))
+    const body = `![A noisy fixture](${asset.url})\n`
+
+    const rejected = [
+      // A remote URL is a request every reader's browser would make, and the
+      // one shape of leak this project refuses everywhere else.
+      'https://example.com/pixel.png',
+      // A value that ends the declaration and starts one of its own.
+      'data:image/webp;base64,AAAA;background-image:url(https://example.com/pixel.png)',
+      // The right shape and the wrong thing.
+      'data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==',
+      // Past the ceiling a placeholder may cost, which is paid on every page
+      // that shows the asset.
+      `data:image/webp;base64,${'A'.repeat(2048)}`,
+    ]
+
+    for (const value of rejected) {
+      await db.update(assets).set({ blurDataUrl: value }).where(eq(assets.path, asset.path))
+
+      const { html } = await renderDocument(body)
+
+      expect(html).not.toContain('--md-blur')
+      expect(html).not.toContain('example.com')
+      // Refusing the placeholder does not change the image: it is still the
+      // stored original, still sized from the row, still a `<picture>`.
+      expect(html).toContain(`<img src="${asset.url}"`)
+      expect(html).toContain(`width="${asset.width}"`)
+    }
   })
 
   /*

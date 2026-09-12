@@ -1,3 +1,4 @@
+import { BLUR_PROPERTY, blurPlaceholderSource } from '@/lib/assets/blur'
 import type { DocumentImage } from '@/lib/markdown/rehype-enhance'
 
 /**
@@ -31,6 +32,17 @@ import type { DocumentImage } from '@/lib/markdown/rehype-enhance'
  * already say", which is the honest description of a cover on a page whose
  * title precedes it. Give the schema a `coverAlt` and this is the line to
  * change.
+ *
+ * ## Why the placeholder is written here as well
+ *
+ * The body's images get theirs from `rehype-enhance`, which never sees a cover.
+ * A cover is the one image whose box is usually still empty when the reader
+ * arrives — it is eager and high priority precisely because it is the largest
+ * thing on the page — so it is the image that gains the most from having its
+ * composition painted while it loads. Same guard, same property, same
+ * stylesheet rule: a cover that went without one would be the same decision
+ * made twice and answered differently, which is how two paths for one idea
+ * start to drift.
  */
 export function CoverImage({
   href,
@@ -41,6 +53,15 @@ export function CoverImage({
   /** What the asset row knows, or null when it is not one of ours. */
   image: DocumentImage | null
 }) {
+  /*
+    The stored placeholder, or nothing. `blurPlaceholderSource` answers null for
+    a cover that is not one of ours, for an SVG, and for a row holding something
+    that is not a data URI this site wrote — and null has to mean "no
+    declaration at all" rather than an empty custom property, because an empty
+    one would still be a `style` attribute in the HTML.
+  */
+  const placeholder = blurPlaceholderSource(image?.blurDataUrl)
+
   const img = (
     /*
       `next/image` is deliberately not used anywhere on this site: the upload
@@ -65,12 +86,27 @@ export function CoverImage({
       */
       {...(image?.width != null ? { width: image.width } : {})}
       {...(image?.height != null ? { height: image.height } : {})}
+      /*
+        `undefined` rather than an empty object, because React omits an
+        attribute whose value is undefined and would render `style=""` for an
+        object with nothing in it.
+      */
+      style={
+        placeholder
+          ? // Custom properties are not in React's `CSSProperties`, because
+            // React cannot know which ones exist. The cast is the documented
+            // way to set one; the guard above has already confined the value to
+            // a base64 data URI, so there is nothing here that can escape the
+            // declaration.
+            ({ [BLUR_PROPERTY]: placeholder } as React.CSSProperties)
+          : undefined
+      }
       className="h-auto max-w-full rounded-sm border border-line"
     />
   )
 
   return (
-    <div className="mb-10">
+    <div className="md-cover mb-10">
       {image && image.sources.length > 0 ? (
         <picture>
           {image.sources.map((source) => (

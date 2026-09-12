@@ -110,7 +110,8 @@ async function linkifyWikiLinks(body: string): Promise<string> {
  * which references are images and how each one was written — it is the same
  * scanner the sync engine uses, so the images found here are exactly the images
  * the "which articles use this image" screen knows about. The database knows
- * what each one *is*: its size, and the formats it was also stored in.
+ * what each one *is*: its size, the formats it was also stored in, and the
+ * placeholder the pipeline wrote for it at ingest.
  *
  * The key is the spelling from the document rather than the storage path,
  * because the spelling is what the renderer sees when it arrives at the image.
@@ -148,8 +149,9 @@ export async function documentImages(body: string): Promise<Map<string, Document
  * `documentImages` cannot find it — but it is the same kind of reference,
  * resolved by the same `normalizeImageKey` and answered by the same row. Left
  * to its own path it would be a bare `<img>`: no intrinsic size, so the page
- * shifts as it loads, and no offer of the formats the asset is also stored in,
- * so a browser downloads a PNG where it could have had an AVIF. Two behaviours
+ * shifts as it loads; no offer of the formats the asset is also stored in, so a
+ * browser downloads a PNG where it could have had an AVIF; and no placeholder,
+ * so the largest thing on the page arrives out of an empty box. Two behaviours
  * for one idea is how the two drift.
  *
  * Null for anything not stored here — an external URL, or a path that does not
@@ -187,6 +189,7 @@ async function describe(
       width: assets.width,
       height: assets.height,
       variants: assets.variants,
+      blurDataUrl: assets.blurDataUrl,
     })
     .from(assets)
     .where(inArray(assets.path, [...spellings.keys()]))
@@ -197,6 +200,7 @@ async function describe(
       width: row.width,
       height: row.height,
       sources: sourceList(row.variants),
+      blurDataUrl: row.blurDataUrl,
     }
     for (const written of spellings.get(row.path) ?? []) {
       images.set(written, described)

@@ -1,6 +1,7 @@
 import { toString as hastToString } from 'hast-util-to-string'
 import type { Element, ElementContent, Root } from 'hast'
 import { visit } from 'unist-util-visit'
+import { BLUR_PROPERTY, blurPlaceholderSource } from '@/lib/assets/blur'
 import { isAllowedEmbed } from '@/lib/security/embed-origins'
 import { isExternalWebHref } from '@/lib/utils/url'
 import { HeadingSlugger } from './slugger'
@@ -14,9 +15,9 @@ import { HeadingSlugger } from './slugger'
  * carry, and the reason nothing here has to be sanitised again.
  *
  * What it does is additive: heading anchors, table scroll wrappers, link
- * rel/target policy, image loading hints, intrinsic image sizes and the formats
- * an image is also stored in. The one thing it removes is an `<iframe>` whose
- * origin is not on the allow-list.
+ * rel/target policy, image loading hints, intrinsic image sizes, the formats an
+ * image is also stored in, and the placeholder it is stored with. The one thing
+ * it removes is an `<iframe>` whose origin is not on the allow-list.
  */
 
 export interface EnhanceOptions {
@@ -46,6 +47,14 @@ export interface DocumentImage {
   height: number | null
   /** The same picture in other formats, most preferred first. */
   sources: readonly ImageSource[]
+  /**
+   * The placeholder the pipeline stored for it, or null when it has none.
+   *
+   * Raw as the row holds it: this pass is where it becomes markup, and
+   * `blurPlaceholderSource` decides there whether it may be painted. A cover is
+   * handed the same value and answers the same question the same way.
+   */
+  blurDataUrl: string | null
 }
 
 /** One entry of a `<picture>`'s `<source>` list. */
@@ -274,6 +283,34 @@ function enhanceImage(node: Element, described: DocumentImage | undefined): void
     }
   }
 
+  /*
+   * The placeholder, painted behind the image until its bytes arrive.
+   *
+   * It goes on the `<img>` rather than on the wrapper, because the box the
+   * browser reserves from `width`/`height` above is exactly the box the picture
+   * will occupy — so the composition is already in the right place, and the
+   * image paints over it when it lands. A wrapper would be a second box to keep
+   * in step with that one.
+   *
+   * The value comes from a database row, so it passes the guard in
+   * `blurPlaceholderSource` before it is written anywhere: this attribute is
+   * a CSS declaration list, and the row is not necessarily something this site
+   * wrote. Null — an SVG, a row from before this was painted — is left out
+   * entirely rather than written as an empty property.
+   *
+   * Appended rather than assigned: `style` is on the sanitiser's global
+   * allow-list (`:::columns` and Shiki both depend on that), so the author may
+   * already have declarations on this image, and they are not this pass's to
+   * drop.
+   */
+  const placeholder = blurPlaceholderSource(described?.blurDataUrl)
+  if (placeholder) {
+    node.properties.style = appendDeclaration(
+      node.properties.style,
+      `${BLUR_PROPERTY}:${placeholder}`,
+    )
+  }
+
   node.properties.className = [
     ...toClassList(node.properties.className),
     'md-image__img',
@@ -371,6 +408,21 @@ function toClassList(value: unknown): string[] {
   }
   if (typeof value === 'string') return value.split(/\s+/).filter(Boolean)
   return []
+}
+
+/**
+ * Add one declaration to a `style` attribute, keeping whatever was in it.
+ *
+ * The separator is only inserted when the existing text does not already end in
+ * one, so `color:red;` and `color:red` both become `color:red;<ours>` rather
+ * than the empty declaration a doubled semicolon would leave behind. Text that
+ * is not a string at all — a property list, which is what hast allows — is
+ * treated as absent, because there is nothing here that could read it.
+ */
+function appendDeclaration(existing: unknown, declaration: string): string {
+  const current = typeof existing === 'string' ? existing.trim() : ''
+  if (!current) return declaration
+  return current.endsWith(';') ? `${current}${declaration}` : `${current};${declaration}`
 }
 
 export type { ElementContent }

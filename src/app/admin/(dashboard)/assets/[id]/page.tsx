@@ -166,8 +166,9 @@ export default async function AssetPage({ params }: { params: Promise<{ id: stri
           {asset.blurDataUrl ? (
             <Section title="Placeholder">
               <p className="text-xs leading-relaxed text-ink-muted">
-                A {asset.blurDataUrl.length}-byte inline placeholder is stored for the image to fade
-                in from while it loads.
+                A {asset.blurDataUrl.length}-byte inline placeholder is stored, and is painted
+                behind the image while it loads: the reader sees the composition rather than an
+                empty box.
               </p>
             </Section>
           ) : null}

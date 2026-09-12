@@ -41,6 +41,7 @@ const STORED: DocumentImage = {
     { type: 'image/avif', url: '/uploads/ab/ab/hash.avif' },
     { type: 'image/webp', url: '/uploads/ab/ab/hash.webp' },
   ],
+  blurDataUrl: `data:image/webp;base64,${'A'.repeat(48)}`,
 }
 
 const href = '/uploads/ab/ab/hash.png'
@@ -108,7 +109,7 @@ describe('CoverImage', () => {
     // A half-known size is worse than an unknown one: the browser would reserve
     // a box of the right width and the wrong height, then shift the page when
     // the real one arrives.
-    const half = render({ width: 800, height: null, sources: [] })
+    const half = render({ width: 800, height: null, sources: [], blurDataUrl: null })
 
     expect(half).toContain('width="800"')
     expect(half).not.toContain('height=')
@@ -118,9 +119,61 @@ describe('CoverImage', () => {
     // A small image whose derivatives were all larger, which the store keeps
     // only when they are strictly smaller. An empty `<picture>` would be a
     // wrapper earning nothing.
-    const html = render({ width: 90, height: 90, sources: [] })
+    const html = render({ width: 90, height: 90, sources: [], blurDataUrl: null })
 
     expect(html).toContain(`src="${href}"`)
     expect(html).not.toContain('<picture>')
+  })
+
+  it('paints the stored placeholder into the box the row sized', () => {
+    const html = render(STORED)
+
+    // The same custom property the body's images carry, and the same rule in
+    // `globals.css` consuming it — the cover is the image that gains the most
+    // from it, since it is the largest thing on the page. It goes on the
+    // `<img>`, whose box `width`/`height` sized, rather than on the container:
+    // the container is as wide as the column, and a narrow cover would get a
+    // placeholder wider than the picture.
+    expect(html).toContain(`style="--md-blur:url(${STORED.blurDataUrl})"`)
+    // The container tag exactly as written, with nothing after the class — so
+    // the property is on the image and nowhere else.
+    expect(html).toContain(`<div class="md-cover mb-10">`)
+  })
+
+  it('paints nothing when the row holds no placeholder', () => {
+    // An SVG has none by construction, and neither has a row written before
+    // the placeholder existed. Absent has to mean the attribute is absent: an
+    // empty custom property is still a `style` attribute in the served HTML.
+    const html = render({ width: 90, height: 90, sources: [], blurDataUrl: null })
+
+    expect(html).not.toContain('--md-blur')
+    expect(html).not.toContain('style=')
+  })
+
+  it('refuses a placeholder that is not a data URI this site writes', () => {
+    // The column is a text field, so the guard runs here rather than trusting
+    // the row: a remote URL would be a request every reader's browser makes,
+    // and a `;` in the value would end the declaration and start another.
+    const hostile = render({
+      width: 1200,
+      height: 630,
+      sources: [],
+      blurDataUrl: 'data:image/webp;base64,AAAA;background-image:url(https://example.com/p.png)',
+    })
+    const remote = render({
+      width: 1200,
+      height: 630,
+      sources: [],
+      blurDataUrl: 'https://example.com/p.png',
+    })
+
+    for (const html of [hostile, remote]) {
+      expect(html).not.toContain('--md-blur')
+      expect(html).not.toContain('style=')
+      expect(html).not.toContain('example.com')
+      // The cover itself is unaffected — the placeholder is an improvement, and
+      // losing one is not a reason to render the image differently.
+      expect(html).toContain(`src="${href}"`)
+    }
   })
 })

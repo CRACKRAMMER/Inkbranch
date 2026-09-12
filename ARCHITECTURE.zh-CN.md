@@ -279,7 +279,7 @@ raw markdown
   → rehype-capture-code-meta   在 rehype-raw 之前把围栏 meta 移出节点（本项目）
   → rehype-raw
   → rehype-sanitize       显式白名单，为上面的节点做了扩展
-  → rehype-enhance        标题 id、表格包装、链接策略、<picture>（本项目）
+  → rehype-enhance        标题 id、表格包装、链接策略、<picture>、blur（本项目）
   → rehype-code           Shiki、双主题、diff 与行高亮（本项目）
   → rehype-katex
   → feature collection    页面需要知道的、关于自身标记的信息（本项目）

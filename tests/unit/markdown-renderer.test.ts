@@ -309,6 +309,9 @@ describe('renderMarkdown — structure', () => {
 describe('renderMarkdown — described images', () => {
   const PNG = '/api/assets/ab/cd/photo.png'
 
+  /** What the pipeline writes into `blur_data_url` for a stored raster. */
+  const BLUR = `data:image/webp;base64,${'A'.repeat(48)}`
+
   /** An asset stored in three formats, as `documentImages` would report it. */
   const described = new Map([
     [
@@ -320,6 +323,7 @@ describe('renderMarkdown — described images', () => {
           { type: 'image/avif', url: '/api/assets/ab/cd/photo.avif' },
           { type: 'image/webp', url: '/api/assets/ab/cd/photo.webp' },
         ],
+        blurDataUrl: BLUR,
       },
     ],
   ])
@@ -361,7 +365,7 @@ describe('renderMarkdown — described images', () => {
   })
 
   it('renders a known image with no other formats as a plain image', async () => {
-    const only = new Map([[PNG, { width: 64, height: 48, sources: [] }]])
+    const only = new Map([[PNG, { width: 64, height: 48, sources: [], blurDataUrl: null }]])
 
     const { html } = await renderMarkdown(`![A photo](${PNG})\n`, { images: only })
 
@@ -371,6 +375,68 @@ describe('renderMarkdown — described images', () => {
     expect(collapse(html)).toContain(`<span class="md-image"><img src="${PNG}"`)
     // The size is still applied — it comes from the row, not from the formats.
     expect(html).toContain('width="64"')
+  })
+
+  it('paints the stored placeholder as a custom property on the image', async () => {
+    const { html } = await renderMarkdown(`![A photo](${PNG})\n`, { images: described })
+
+    // The property, not the declarations: what `background-image` does with it
+    // is the stylesheet's business, the same division `--md-columns` uses.
+    expect(html).toContain(`style="--md-blur:url(${BLUR})"`)
+    // On the `<img>`, because that is the element whose box `width`/`height`
+    // reserved — a wrapper would be a second box to keep in step with it.
+    expect(collapse(html)).toContain(`<img src="${PNG}"`)
+    expect(collapse(html)).not.toContain('<span class="md-image" style=')
+  })
+
+  it('keeps a declaration the author wrote on the image', async () => {
+    // Raw HTML, because Markdown has no syntax for an attribute. `style` is on
+    // the sanitiser's global allow-list — `:::columns` and Shiki both rely on
+    // it — so this is an attribute an author really can set.
+    const { html } = await renderMarkdown(
+      `<img src="${PNG}" alt="A photo" style="border-radius: 0">\n`,
+      { images: described },
+    )
+
+    // Appended, not replaced: the placeholder is this pass's to add and not the
+    // author's declarations' to drop.
+    expect(html).toContain(`style="border-radius: 0;--md-blur:url(${BLUR})"`)
+    expect(html).toContain('border-radius: 0')
+  })
+
+  /*
+   * The column is a text field that anything with database access can write,
+   * and `style` is a declaration list — so the value is checked where it
+   * becomes markup rather than trusted because the pipeline wrote it at ingest.
+   * Each case below is one way a row could be wrong, and the answer to all of
+   * them is the same: the image renders, the placeholder does not.
+   */
+  it.each([
+    ['a remote URL, which would be a request every reader makes', 'https://example.com/pixel.png'],
+    [
+      'a value that ends the declaration and starts another',
+      `data:image/webp;base64,AAAA;background-image:url(https://example.com/pixel.png)`,
+    ],
+    ['a data URI that is not an image', 'data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg=='],
+    [
+      'a URI past the size a placeholder may cost',
+      `data:image/webp;base64,${'A'.repeat(2048)}`,
+    ],
+    ['nothing at all', null],
+  ])('does not paint %s', async (_case, value) => {
+    const map = new Map([[PNG, { width: 1200, height: 800, sources: [], blurDataUrl: value }]])
+
+    const { html } = await renderMarkdown(`![A photo](${PNG})\n`, { images: map })
+
+    // Not "no style attribute with a placeholder in it" — no style attribute at
+    // all, because an empty custom property would still be one.
+    expect(html).not.toContain('--md-blur')
+    expect(html).not.toContain('style=')
+    expect(html).not.toContain('example.com')
+    // The image itself is untouched: a placeholder is an improvement, and its
+    // absence is not a reason to render anything differently.
+    expect(html).toContain(`src="${PNG}"`)
+    expect(html).toContain('width="1200"')
   })
 
   it('renders an image it was not told about exactly as it was written', async () => {
