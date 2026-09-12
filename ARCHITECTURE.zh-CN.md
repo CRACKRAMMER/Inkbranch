@@ -312,7 +312,7 @@ raw markdown
 
 `rehype-sanitize` 很早就跑，带着一份显式白名单，覆盖作者写下的一切：原始 HTML 只有在标签位于白名单上、且只使用为该标签列出的属性时才能存活，所以 `script`、`style` 和事件处理器都活不下来。它之后运行的是本项目自己的代码，产出的标记中作者能施加影响的途径仅限于交给它的那些输入 —— 这就是下游不再消毒一次的原因。
 
-`iframe` 在白名单上，但必须同时满足两件事：消毒器以受限的属性集保留该元素，随后 `rehypeEnhance` 再把来源不在 `ALLOWED_EMBED_ORIGINS` 上的那些移除。之所以是两道检查而不是一道，是因为消毒器无从知道这个站点信任哪些来源。
+`iframe` 在白名单上，但必须同时满足三件事：消毒器以受限的属性集保留该元素，`rehypeEnhance` 把来源不在 `ALLOWED_EMBED_ORIGINS` 上的那些移除，最后浏览器还得真的加载那个活下来的 frame —— CSP 的 `frame-src` 就是第三件，而它由同一份清单生成。两道检查而不是一道，是因为消毒器无从知道这个站点信任哪些来源；第三道则是因为：管线留住了、浏览器却拒收的 frame，是一个没有任何东西会报告的空白矩形。两条指令都放在 `src/lib/security/embed-origins.ts` 里、由 `next.config.ts` 导入，所以新增一个来源只需要改一处，渲染器和浏览器也不可能对它各执一词。
 
 两者合起来堵住了 `dangerouslySetInnerHTML` 处的 Markdown-XSS 攻击面。
 
@@ -365,7 +365,7 @@ interface SearchProvider {
 | 限流 | 登录（`5 / 15 min / ip_hash`）与上传使用 Postgres 里的令牌桶。能扛住重启，在多副本下也有效。 |
 | 路径穿越 | 每个路径都用 `path.resolve` 构建，然后用 `isInside(root, p)`（内部走 `path.relative`）校验 —— 绝不用字符串 `startsWith`。适用于内容路径、上传路径和 ZIP 条目。 |
 | 上传 | MIME 从 magic bytes 嗅探（而不是 `Content-Type` 头），扩展名由嗅探结果推导。SVG 会被消毒（剥离脚本、`on*`、`foreignObject`、外部引用）或以下载方式提供。 |
-| Markdown XSS | `rehype-sanitize` 白名单、iframe 来源白名单。 |
+| Markdown XSS | `rehype-sanitize` 白名单、iframe 来源白名单 —— 同一份清单，`rehypeEnhance` 与 CSP 都读它（`src/lib/security/embed-origins.ts`）。 |
 | 授权 | 每个后台动作顶部都有一道 `requireAdmin()` guard；后台布局也会强制它，所以即使某个页面忘了，也不存在未受保护的面。 |
 | 审计 | 每次变更都往 `audit_logs` 写入操作者、动作、目标和一份脱敏后的 diff 摘要。 |
 
@@ -442,7 +442,7 @@ src/
     seo/               元数据、JSON-LD、订阅源、OG 图片
     jobs/              定时任务运行器 + 处理器
     git/               可选的 content 自动提交
-    security/          路径监狱、mime 嗅探、消毒器
+    security/          路径监狱、mime 嗅探、消毒器、嵌入来源白名单
     settings/          类型化的站点设置读取器
   env.ts               经过校验的环境变量
 scripts/               CLI（content:*、db:*、backup）

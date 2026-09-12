@@ -1,6 +1,7 @@
 import { toString as hastToString } from 'hast-util-to-string'
 import type { Element, ElementContent, Root } from 'hast'
 import { visit } from 'unist-util-visit'
+import { isAllowedEmbed } from '@/lib/security/embed-origins'
 import { isExternalWebHref } from '@/lib/utils/url'
 import { HeadingSlugger } from './slugger'
 
@@ -111,7 +112,8 @@ export function rehypeEnhance(options: EnhanceOptions) {
     }
 
     for (const iframe of iframes.reverse()) {
-      if (isAllowedEmbed(iframe.node, options.allowedEmbedOrigins)) continue
+      const src = typeof iframe.node.properties.src === 'string' ? iframe.node.properties.src : ''
+      if (isAllowedEmbed(src, options.allowedEmbedOrigins)) continue
       // Drop disallowed embeds entirely rather than rendering a dead frame.
       iframe.parent.children.splice(iframe.index, 1)
     }
@@ -358,24 +360,6 @@ function pictureFor(node: Element, described: DocumentImage): Element {
 /* -------------------------------------------------------------------------- */
 /*  Embeds                                                                     */
 /* -------------------------------------------------------------------------- */
-
-function isAllowedEmbed(node: Element, allowedOrigins: readonly string[]): boolean {
-  const src = typeof node.properties.src === 'string' ? node.properties.src : ''
-  if (!src) return false
-
-  let parsed: URL
-  try {
-    parsed = new URL(src)
-  } catch {
-    // A relative embed is same-origin by definition, so it is allowed.
-    return src.startsWith('/')
-  }
-
-  if (parsed.protocol !== 'https:') return false
-  return allowedOrigins.some(
-    (origin) => parsed.hostname === origin || parsed.hostname.endsWith(`.${origin}`),
-  )
-}
 
 /* -------------------------------------------------------------------------- */
 /*  Helpers                                                                    */

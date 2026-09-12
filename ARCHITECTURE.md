@@ -351,7 +351,7 @@ Headings · tables · blockquotes · task lists · footnotes · KaTeX · Mermaid
 
 `rehype-sanitize` runs early, with an explicit allow-list, over everything the author wrote: raw HTML survives only for tags on that list and only with the attributes listed for them, so `script`, `style` and event handlers do not. What runs after it is this project's own code, emitting markup the author influences only through the inputs it was handed — which is why nothing downstream is sanitised again.
 
-An `iframe` is on the allow-list, but two things have to be true at once: the sanitiser keeps the element with a restricted attribute set, and `rehypeEnhance` then removes any whose source is not on `ALLOWED_EMBED_ORIGINS`. Two checks rather than one, because the sanitiser cannot know which origins this site trusts.
+An `iframe` is on the allow-list, but three things have to be true at once: the sanitiser keeps the element with a restricted attribute set, `rehypeEnhance` removes any whose source is not on `ALLOWED_EMBED_ORIGINS`, and the browser loads the frame that survived — the CSP's `frame-src` is the third, and it is built from the same list. Two checks rather than one because the sanitiser cannot know which origins this site trusts; the third because a frame the pipeline keeps and the browser refuses is an empty rectangle that nothing reports. Both directives live in `src/lib/security/embed-origins.ts`, which `next.config.ts` imports, so adding an origin is one edit and the renderer and the browser cannot disagree about it.
 
 Together these close the Markdown-XSS vector at `dangerouslySetInnerHTML`.
 
@@ -404,7 +404,7 @@ Keeping the graph off the main bundle is a hard requirement: `/graph` is the onl
 | Rate limiting | Token bucket in Postgres for login (`5 / 15 min / ip_hash`) and uploads. Survives restarts, works across replicas. |
 | Path traversal | Every path is built with `path.resolve` then verified with `isInside(root, p)` using `path.relative` — never string `startsWith`. Applies to content paths, upload paths, and ZIP entries. |
 | Uploads | MIME sniffed from magic bytes (not the `Content-Type` header), extension derived from the sniff. SVG is sanitized (scripts, `on*`, `foreignObject`, external refs stripped) or served as a download. |
-| Markdown XSS | `rehype-sanitize` allow-list, iframe origin allow-list. |
+| Markdown XSS | `rehype-sanitize` allow-list, iframe origin allow-list — one list, read by `rehypeEnhance` and by the CSP (`src/lib/security/embed-origins.ts`). |
 | Authz | A single `requireAdmin()` guard at the top of every admin action; admin layout also enforces it, so there is no unprotected surface even if a page forgets. |
 | Audit | Every mutation writes `audit_logs` with actor, action, target, and a redacted diff summary. |
 
@@ -481,7 +481,7 @@ src/
     seo/               metadata, JSON-LD, feeds, OG images
     jobs/              scheduled job runner + handlers
     git/               optional content auto-commit
-    security/          path jail, mime sniffing, sanitizers
+    security/          path jail, mime sniffing, sanitizers, embed allow-list
     settings/          typed site settings accessors
   env.ts               validated environment
 scripts/               CLI (content:*, db:*, backup)

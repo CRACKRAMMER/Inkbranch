@@ -12,7 +12,6 @@ import {
   toPosix,
 } from '@/lib/security/paths'
 import {
-  isAllowedEmbed,
   isSafeHexColor,
   sanitizeSvg,
   sniffMime,
@@ -772,46 +771,6 @@ describe('isSafeHexColor', () => {
     expect(isSafeHexColor('#fff ')).toBe(false)
     expect(isSafeHexColor('#fff\n')).toBe(false)
     expect(isSafeHexColor('#fff;background:url(https://evil.test/x)')).toBe(false)
-  })
-})
-
-describe('isAllowedEmbed', () => {
-  const origins = ['youtube.com', 'player.bilibili.com']
-
-  it('accepts an allow-listed origin and its subdomains', () => {
-    expect(isAllowedEmbed('https://youtube.com/embed/abc', origins)).toBe(true)
-    expect(isAllowedEmbed('https://www.youtube.com/embed/abc', origins)).toBe(true)
-    expect(isAllowedEmbed('https://player.bilibili.com/player.html?bvid=1', origins)).toBe(true)
-    // Hostnames are compared case-insensitively by URL parsing.
-    expect(isAllowedEmbed('https://YOUTUBE.COM/embed/abc', origins)).toBe(true)
-  })
-
-  it('rejects a hostname that merely contains an allowed one', () => {
-    for (const url of [
-      'https://evil-youtube.com/embed/abc',
-      'https://youtube.com.evil.test/embed/abc',
-      'https://evil.test/https://youtube.com/embed/abc',
-      'https://notyoutube.com/embed/abc',
-    ]) {
-      expect(isAllowedEmbed(url, origins)).toBe(false)
-    }
-  })
-
-  it('rejects anything that is not https', () => {
-    expect(isAllowedEmbed('http://youtube.com/embed/abc', origins)).toBe(false)
-    expect(isAllowedEmbed('javascript:alert(1)', origins)).toBe(false)
-    expect(isAllowedEmbed('data:text/html,<script>alert(1)</script>', origins)).toBe(false)
-  })
-
-  it('rejects a source that is not an absolute URL', () => {
-    expect(isAllowedEmbed('/embed/abc', origins)).toBe(false)
-    expect(isAllowedEmbed('//youtube.com/embed/abc', origins)).toBe(false)
-    expect(isAllowedEmbed('not a url', origins)).toBe(false)
-    expect(isAllowedEmbed('', origins)).toBe(false)
-  })
-
-  it('rejects every host when the allow-list is empty', () => {
-    expect(isAllowedEmbed('https://youtube.com/embed/abc', [])).toBe(false)
   })
 })
 

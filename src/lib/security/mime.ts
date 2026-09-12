@@ -344,23 +344,3 @@ function stripBlocks(source: string, tag: string, removed: string[]): string {
 export function isSafeHexColor(value: string): boolean {
   return /^#(?:[0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(value)
 }
-
-/**
- * Check that an iframe source points at an allow-listed origin.
- * Used by the Markdown renderer for embedded video.
- */
-export function isAllowedEmbed(
-  url: string,
-  allowedOrigins: readonly string[],
-): boolean {
-  let parsed: URL
-  try {
-    parsed = new URL(url)
-  } catch {
-    return false
-  }
-  if (parsed.protocol !== 'https:') return false
-  return allowedOrigins.some(
-    (origin) => parsed.hostname === origin || parsed.hostname.endsWith(`.${origin}`),
-  )
-}

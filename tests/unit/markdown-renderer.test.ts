@@ -193,6 +193,28 @@ describe('renderMarkdown — features', () => {
     expect(denied.features.embeds).toBe(false)
     expect(denied.html).not.toContain('evil.example')
   })
+
+  it('keeps an embed the CSP will also let the browser load', async () => {
+    // The renderer and the CSP read one allow-list, so every origin that
+    // survives this pass is one the browser will frame. The list is checked
+    // against the header in `embed-origins.test.ts`; what this asserts is that
+    // the pipeline consults it at all — a code sandbox is not a video host and
+    // is on the list for its own reasons.
+    const embed = await renderMarkdown(
+      '::embed{src="https://codesandbox.io/embed/abc" title="Repro"}\n',
+    )
+    expect(embed.features.embeds).toBe(true)
+    expect(embed.html).toContain('codesandbox.io/embed/abc')
+  })
+
+  it('drops a protocol-relative embed, which is not a same-origin path', async () => {
+    // `//evil.example/x` is a URL against the page's own scheme pointing at
+    // another host. Read as a path it would be kept as "same-origin" and the
+    // same-origin allowance would be an open one.
+    const { html, features } = await renderMarkdown('::embed{src="//evil.example/x"}\n')
+    expect(features.embeds).toBe(false)
+    expect(html).not.toContain('evil.example')
+  })
 })
 
 describe('renderMarkdown — sanitisation', () => {

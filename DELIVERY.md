@@ -784,6 +784,38 @@ is a claim that nothing can go wrong" 的 note，两者并不是同一个字符�
 方括号。反向验证也做了：去掉围栏跟踪，只有"围栏里的示例"那条用例失败；把改写短路，只有"渲染成
 链接"那条失败——两条断言各自都是承重的。
 
+**再补一条，仍是查证时发现的：iframe 白名单有两份，而它们不一致。** 设定稿把 iframe 列为支持的
+语法，实现里也确实拦了：`rehypeEnhance` 按 `ALLOWED_EMBED_ORIGINS` 决定作者写的 `<iframe>` 是留
+还是删，CSP 的 `frame-src` 决定浏览器肯不肯加载留下来的那个。问题是这两份清单是各写各的：
+白名单十个来源，CSP 三个（`www.youtube.com`、`player.vimeo.com`、`www.bilibili.com`）。差的七个
+—— `codesandbox.io`、`stackblitz.com`、`observablehq.com`、`www.desmos.com`、`player.bilibili.com`、
+裸 `youtube.com`、`youtu.be` —— 于是走完了全程：渲染器认它、保留了元素，浏览器不认、拒绝加载，
+读者看到一个空白矩形。文档没被改动，日志没有一行，页面也没坏到让人去查——这正是这个缺陷安静的地方。
+
+修法是让一份清单供两处读：`src/lib/security/embed-origins.ts` 不 import 任何东西（`next.config.ts`
+在别的一切之前加载它，所以它不能依赖数据库、环境或 Markdown 包），`rehypeEnhance` 与
+`next.config.ts` 都从这里取。`frame-src` 与 `media-src` 因此由清单生成，新增一个来源只需改一处。
+顺带把 `ALLOWED_MEDIA_ORIGINS` 也接上：它此前是一句没人执行的声明（CSP 里根本没有 `media-src`，
+外部媒体一律落在 `default-src 'self'` 上），现在 CSP 明写 `media-src 'self' https://cdn.jsdelivr.net`。
+**这一条改宽了 CSP 两个方向**——frame 多了七个白名单内的来源，媒体从"全禁"变成"允许 jsdelivr"——
+这是把已经写下的策略落到部署上，不是新增信任：那七个来源本来就写在安全模块的白名单里，注释里也
+写明它是一道 CSP 的洞、所以每个都要单独决定。
+
+同一条路上还发现判定函数本身有两份。`src/lib/security/mime.ts` 里那份被 `security.test.ts` 用
+十几条断言测着（子域、`evil-youtube.com`、`youtube.com.evil.test`、协议、空清单……），而生产跑的
+是 `rehype-enhance.ts` 里那份私有副本——**被测的那份没人用，在用的那份没被测**。两份对相对路径
+的答案还不一样：副本认为 `//evil.test/x` 是"同源相对路径"因而保留（浏览器读作协议相对 URL，
+指向别的域），而被测的那份判它 false。现在只有一份，放在 `embed-origins.ts`，两个调用方共用；
+判定先按浏览器的读法归一化（`\` 视作 `/`，去掉 tab/换行，两端去空白），再把"单斜杠开头的相对路径"
+与"`//` 开头的协议相对 URL"分开。安全测试随之搬家并补了这几种写法。
+
+验证分三层：`tests/unit/embed-origins.test.ts` 把 CSP 从 `next.config.ts` 里**读回来**与白名单逐条
+比对（两个方向都比，所以是"相等"而不是"相容"），并且这些断言确认过是承重的——把 `frame-src` 换回
+手写那三个来源，恰好这两条失败、并点名缺了哪个来源；`markdown-renderer.test.ts` 断言渲染器确实用
+了这份清单（保留 codesandbox、丢弃 `//evil.test`）；`tests/e2e/security-headers.spec.ts` 问正在跑的
+服务器要响应头，因为"配置读到了但没生效"是单元测试看不见的另一半。回归数字：lint 干净、typecheck
+干净、1070 单元、1202 集成、42 e2e。
+
 ---
 
 ## 附录：`ARCHITECTURE.md` 的来历

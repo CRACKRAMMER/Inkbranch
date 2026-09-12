@@ -169,24 +169,3 @@ export const sanitizeSchema: SanitizeSchema = {
   strip: ['script', 'style'],
 }
 
-/**
- * Origins permitted in an `<iframe>`.
- *
- * Kept as an explicit list rather than "any https host": an embed is a hole
- * through the page's CSP and privacy, so each one is a decision.
- */
-export const ALLOWED_EMBED_ORIGINS = [
-  'www.youtube.com',
-  'youtube.com',
-  'youtu.be',
-  'player.vimeo.com',
-  'www.bilibili.com',
-  'player.bilibili.com',
-  'codesandbox.io',
-  'stackblitz.com',
-  'observablehq.com',
-  'www.desmos.com',
-] as const
-
-/** Origins allowed in `<video>`/`<audio>` sources. */
-export const ALLOWED_MEDIA_ORIGINS = ['cdn.jsdelivr.net'] as const

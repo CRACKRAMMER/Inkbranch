@@ -17,7 +17,8 @@ import { rehypeEnhance, type DocumentImage } from './rehype-enhance'
 import { remarkAlerts } from './remark-alerts'
 import { remarkBlocks } from './remark-blocks'
 import { remarkDisplayMath } from './remark-display-math'
-import { ALLOWED_EMBED_ORIGINS, sanitizeSchema } from './sanitize-schema'
+import { ALLOWED_EMBED_ORIGINS } from '@/lib/security/embed-origins'
+import { sanitizeSchema } from './sanitize-schema'
 
 /**
  * Markdown → HTML.

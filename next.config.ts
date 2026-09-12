@@ -1,5 +1,7 @@
 import type { NextConfig } from 'next'
 
+import { ALLOWED_EMBED_ORIGINS, ALLOWED_MEDIA_ORIGINS } from './src/lib/security/embed-origins'
+
 /**
  * Security headers applied to every response.
  *
@@ -54,7 +56,17 @@ const securityHeaders = [
       "img-src 'self' data: blob:",
       "font-src 'self' data:",
       "connect-src 'self'",
-      "frame-src 'self' https://www.youtube.com https://player.vimeo.com https://www.bilibili.com",
+      // Both directives are derived from the allow-list in
+      // `src/lib/security/embed-origins.ts` rather than written out here. The
+      // renderer consults the same list to decide which `<iframe>` elements
+      // survive the Markdown pipeline, and the two answers have to match: an
+      // origin this header permits but the renderer strips buys nothing, and
+      // one the renderer keeps but this header refuses is a frame the reader
+      // sees as an empty rectangle. They were written twice once, and drifted
+      // by seven origins — `tests/unit/embed-origins.test.ts` is what makes
+      // that a failing test now instead of a blank space on a page.
+      `frame-src 'self' ${ALLOWED_EMBED_ORIGINS.map((origin) => `https://${origin}`).join(' ')}`,
+      `media-src 'self' ${ALLOWED_MEDIA_ORIGINS.map((origin) => `https://${origin}`).join(' ')}`,
       "object-src 'none'",
       "base-uri 'self'",
       "form-action 'self'",
