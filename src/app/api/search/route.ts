@@ -1,5 +1,7 @@
 import { z } from 'zod'
 
+import { RATE_LIMITS, consumeRateLimit, retryAfterSeconds } from '@/lib/auth/rate-limit'
+import { getRequestContext } from '@/lib/auth/session'
 import type { ContentType } from '@/lib/content/schema'
 import { MAX_SEARCH_LIMIT, search } from '@/lib/search'
 
@@ -26,6 +28,26 @@ import { listParam } from '../_params'
  * the fields the result needed to match; the body is not in it, and it is not
  * added here. A search endpoint that returns full text is a mirror of the
  * archive behind a query string.
+ *
+ * ## Who is asking, and how often
+ *
+ * The query is answered from an index in this process and is never cached — see
+ * the `no-store` below — so every request costs a tokenise and a rank over the
+ * whole corpus. That is the one thing on this site whose price is set by the
+ * caller rather than by the content, which is what `RATE_LIMITS.search` is for.
+ *
+ * The key is the caller's address, **hashed before it is stored**: the same
+ * `rate_limits` table and the same `hashIp` the sign-in limiter uses, so no
+ * address is written anywhere. There is nothing else to key on. A reader here is
+ * anonymous, and every other value in the request is one the caller chose.
+ * Requests whose address the deployment does not report share one bucket, which
+ * is the shape the sign-in limiter already has.
+ *
+ * Consumed before the query is parsed, because what is being bounded is the
+ * caller and not the query — a request refused for its filter has still been
+ * admitted. The answer is a 429 carrying `Retry-After`, in the JSON shape this
+ * route uses throughout, and the palette shows the sentence that comes with it:
+ * "search is unavailable" is a different claim, and a false one.
  */
 
 /** Bounds the tokeniser's work. A longer input is truncated, not refused. */
@@ -64,6 +86,26 @@ function pageSize(limit: number): number | undefined {
 }
 
 export async function GET(request: Request): Promise<Response> {
+  const { ipHash } = await getRequestContext()
+
+  const limit = await consumeRateLimit(
+    `search:ip:${ipHash ?? 'unknown'}`,
+    RATE_LIMITS.search,
+  )
+
+  if (!limit.allowed) {
+    const seconds = retryAfterSeconds(limit)
+    return Response.json(
+      {
+        error: `Too many searches from this address. Try again in ${seconds} second(s).`,
+      },
+      {
+        status: 429,
+        headers: { 'cache-control': 'no-store', 'retry-after': String(seconds) },
+      },
+    )
+  }
+
   const params = new URL(request.url).searchParams
 
   const parsed = querySchema.safeParse({

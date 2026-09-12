@@ -1,7 +1,9 @@
 import { expect, test, type Page } from '@playwright/test'
 
+import { RATE_LIMITS } from '@/lib/auth/rate-limit'
+
 import { hasE2eDatabase } from './environment'
-import { showMetadata, signIn, typeBody, uniqueSlug } from './support'
+import { clearSearchLimits, showMetadata, signIn, typeBody, uniqueSlug } from './support'
 
 /**
  * Search, from the two places a reader meets it.
@@ -37,6 +39,15 @@ import { showMetadata, signIn, typeBody, uniqueSlug } from './support'
  * tree, so a document published seconds ago can be one request late. The wait is
  * against `/api/search` rather than against either page, because what is being
  * waited for is the server's view of the corpus, not the browser's.
+ *
+ * ## The endpoint's own limit
+ *
+ * The last test is about the route rather than about either surface: search is
+ * the one response on this site whose price is set by the caller, so the caller
+ * is what `RATE_LIMITS.search` bounds. It is asserted here because the limiter
+ * reads the request's address through the request context — which exists only
+ * inside a request — and because the bucket it spends lives in the database this
+ * suite already has.
  */
 
 test.skip(
@@ -263,4 +274,46 @@ test('search finds two kinds of document, and says which is which', async ({ pag
     await remove(page, article)
     await remove(page, note)
   })
+})
+
+test('stops answering a caller who has spent its searches, and says when to come back', async ({
+  request,
+}) => {
+  const url = '/api/search?q=e2elimit&limit=1'
+
+  await clearSearchLimits()
+
+  /*
+   * The whole allowance at once, and the capacity is imported rather than
+   * written here so the two cannot drift.
+   *
+   * Fired together rather than in a loop, which is not tidiness: the bucket
+   * refills at one token per second, and sixty sequential requests take about
+   * that long on a loaded machine — so a loop could hand back the token the
+   * next request needs and answer 200 where this asserts a refusal. In parallel
+   * the burst is over in well under the time one token takes to come back.
+   */
+  const burst = await Promise.all(
+    Array.from({ length: RATE_LIMITS.search.capacity }, () => request.get(url)),
+  )
+
+  for (const [index, response] of burst.entries()) {
+    expect(response.status(), `request ${index + 1} of the allowance`).toBe(200)
+  }
+
+  const refused = await request.get(url)
+  expect(refused.status()).toBe(429)
+
+  // What a client can act on, and what the palette shows the reader: a wait,
+  // named, rather than a search that is broken.
+  const seconds = Number(refused.headers()['retry-after'])
+  expect(seconds).toBeGreaterThan(0)
+  const body = (await refused.json()) as { error?: string }
+  expect(body.error).toContain('Too many searches')
+  expect(body.error).toContain(String(seconds))
+
+  // A refusal is about the bucket rather than about the caller: with the
+  // allowance back, the same request is answered again.
+  await clearSearchLimits()
+  expect((await request.get(url)).status()).toBe(200)
 })

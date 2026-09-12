@@ -287,11 +287,34 @@ export function CommandPaletteDialog({
         headers: { accept: 'application/json' },
       })
         .then(async (result) => {
-          if (!result.ok) throw new Error(`search responded ${result.status}`)
-          return (await result.json()) as { hits: Hit[]; notice?: string }
-        })
-        .then((data) => {
-          setResponse({ forQuery: trimmed, hits: data.hits ?? [], notice: data.notice ?? null })
+          const body = (await result.json().catch(() => null)) as
+            | { hits?: Hit[]; notice?: string; error?: string }
+            | null
+
+          if (result.ok && body) {
+            setResponse({
+              forQuery: trimmed,
+              hits: body.hits ?? [],
+              notice: body.notice ?? null,
+            })
+            return
+          }
+
+          // A non-ok answer that arrives after the reader has typed again is
+          // not this query's answer, and reporting it would replace the results
+          // of the query they are actually looking at.
+          controller.signal.throwIfAborted()
+
+          // The server's own sentence when it has one. It is the side that knows
+          // why it refused — a caller who has spent its search budget is being
+          // asked to wait a second, and "unavailable" is a different claim, and
+          // a false one. Only a failure with no sentence of its own, a browser
+          // that never reached the server, falls back to this one.
+          setResponse({
+            forQuery: trimmed,
+            hits: [],
+            notice: body?.error ?? 'Search is unavailable right now.',
+          })
         })
         .catch((error: unknown) => {
           // An abort is the expected outcome of typing another character, not a

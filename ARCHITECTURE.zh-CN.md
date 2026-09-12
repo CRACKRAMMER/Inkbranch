@@ -362,7 +362,7 @@ interface SearchProvider {
 | 密码 | Argon2id（`@node-rs/argon2`），每个密码独立 salt，调优过的内存开销。 |
 | 会话 | 32 字节随机数，在 `sessions` 里**以哈希形式**（SHA-256）存储。Cookie：`HttpOnly`、`Secure`（生产环境）、`SameSite=Lax`、`Path=/`，登录时轮换。绝对过期 + 空闲过期。会话是数据库里的行、而不是签名的 Cookie，这正是设备列表得以存在的前提：`/admin/settings` 读这个账户的行（一个带不出 `token_hash` 的投影）并按 id 删除其中一行，于是撤销在该设备的下一次请求上生效。`ip_hash` 每次登录都写，而唯一的读者就是那里。 |
 | CSRF | 与会话绑定的 double-submit token，外加对每个会改数据的请求做 `Origin`/`Sec-Fetch-Site` 校验。Server Action 在共享 guard 里得到一次显式检查。 |
-| 限流 | 登录（`5 / 15 min / ip_hash`）与上传使用 Postgres 里的令牌桶。能扛住重启，在多副本下也有效。 |
+| 限流 | Postgres 里的令牌桶（`RATE_LIMITS`，`src/lib/auth/rate-limit.ts`）：登录（`5 / 15 min / ip_hash`）、上传、搜索、导入，以及敏感的账户操作。表里每一条都写明了它的消费方；分析信标故意没有，因为桶需要一个主体，而那条路由不读读者的任何东西。能扛住重启，在多副本下也有效。 |
 | 路径穿越 | 每个路径都用 `path.resolve` 构建，然后用 `isInside(root, p)`（内部走 `path.relative`）校验 —— 绝不用字符串 `startsWith`。适用于内容路径、上传路径和 ZIP 条目。 |
 | 上传 | MIME 从 magic bytes 嗅探（而不是 `Content-Type` 头），扩展名由嗅探结果推导。SVG 会被消毒（剥离脚本、`on*`、`foreignObject`、外部引用）或以下载方式提供。 |
 | Markdown XSS | `rehype-sanitize` 白名单、iframe 来源白名单 —— 同一份清单，`rehypeEnhance` 与 CSP 都读它（`src/lib/security/embed-origins.ts`）。 |

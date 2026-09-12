@@ -33,6 +33,37 @@ import { analyticsEnabled, recordPageView, type VisitorCookie } from '@/lib/anal
  * route's own signal, and the only place an operator learns that collection is
  * broken rather than merely quiet. It carries no detail, because the body of a
  * public endpoint's error is not the place for one.
+ *
+ * ## Why there is no rate limit here
+ *
+ * A beacon writes a row per request and arrives from anyone, and `RATE_LIMITS`
+ * carried an entry for it long before this route existed — `analytics`, "beacons
+ * arrive in bursts as a reader scrolls". It is not wired, because a bucket needs
+ * a subject and this is the one endpoint in the product with none it may use:
+ * the product's other unauthenticated write, the sign-in action, is keyed on the
+ * address and on the account, and a beacon has no account to key on and must not
+ * read the address.
+ *
+ * - **The reader's address** is the subject every other limit keys on, and it is
+ *   the one thing this route refuses to read — see above, and the same promise
+ *   in `@/lib/analytics`.
+ * - **The visitor cookie** is the only other stable value, and it is minted by
+ *   the client's own response: a client that wants one more beacon sends no
+ *   cookie, gets a fresh identity and another full bucket. A limit that any
+ *   caller can lift is not a limit, so a policy here would be a promise this
+ *   route cannot keep — which is worse than no policy, because the next reader
+ *   of `RATE_LIMITS` would count the beacon as covered.
+ * - **The site as a whole**, one bucket for everyone, would bound the writes and
+ *   drop real readers' views at exactly the traffic this site would most want a
+ *   number for. The drop is invisible on purpose — 204 is what every other drop
+ *   looks like — so the dashboard would simply be low, and nothing would say so.
+ *
+ * What bounds the endpoint instead is what a request has to be before it is
+ * believed: a same-origin `Referer`, a user agent that is not a crawler, a
+ * payload this site's own client would have sent, one indexed lookup and one
+ * insert per accepted view, and on the rows themselves
+ * `ANALYTICS_RAW_RETENTION_DAYS`. A caller willing to forge all of that is
+ * writing rows that a job deletes.
  */
 
 /**

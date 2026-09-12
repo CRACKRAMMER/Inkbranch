@@ -128,7 +128,7 @@ Postgres + Drizzle ORM，SQL 迁移签入仓库（`src/lib/db/migrations/`，由
 | `analytics_events` | 原始事件，短期留存，**不含 IP** | `created_at`、`path`、`content_id`、`referrer_domain`、`device`、`visitor_hash` |
 | `audit_logs` | 所有后台写操作 | `user_id`、`action`、`target_type`、`target_id`、`metadata`、`ip_hash` |
 | `scheduled_jobs` | 持久化任务队列 | `type`、`run_at`、`status`、`attempts`、`locked_at`、`last_error` |
-| `rate_limits` | 限流令牌桶（登录、上传） | `key`、`tokens`、`last_refill_at`、`expires_at` |
+| `rate_limits` | 限流令牌桶（登录、上传、搜索） | `key`、`tokens`、`last_refill_at`、`expires_at` |
 
 对照设定稿第三十六节要求的最少表集合，全部具备；额外增加了 `content_links`、
 `content_revisions`、`analytics_events` 与 `rate_limits` 四张表。
@@ -410,7 +410,7 @@ backups/backup-2026-09-11.tar.zst
 | 密码 | Argon2id（`@node-rs/argon2`），每个密码独立盐，内存代价已调优；长度限制 12–1024 |
 | 会话 | 32 字节随机令牌，**以 SHA-256 哈希存库**；Cookie 为 `HttpOnly` + `Secure`（生产）+ `SameSite=Lax` + `Path=/`，登录时轮换；绝对过期与空闲过期双重限制；不开放注册 |
 | CSRF | 与会话绑定的双提交令牌，外加每个写请求上的 `Origin` / `Sec-Fetch-Site` 校验；Server Action 走同一套守卫 |
-| 限流 | Postgres 中的令牌桶（`rate_limits` 表），登录 `5 次 / 15 分钟 / ip_hash`，上传同样受限。存在数据库里意味着重启不丢、多副本共享 |
+| 限流 | Postgres 中的令牌桶（`rate_limits` 表），登录 `5 次 / 15 分钟 / ip_hash`，上传与搜索同样受限（搜索以 `ip_hash` 为键）。存在数据库里意味着重启不丢、多副本共享 |
 | 路径穿越 | 所有路径先 `path.resolve`，再用基于 `path.relative` 的 `isInside(root, p)` 判定，**从不使用字符串 `startsWith`**；内容路径、上传路径、ZIP 条目一律适用 |
 | 上传 | 从魔数字节嗅探 MIME（不看 `Content-Type` 头），扩展名由嗅探结果推导；SVG 经过消毒（剥离脚本、`on*`、`foreignObject`、外部引用），否则改为下载 |
 | Markdown XSS | `rehype-sanitize` 显式白名单收尾，`iframe` 仅限配置的来源白名单；这是关闭 `dangerouslySetInnerHTML` 这个攻击面的地方 |
@@ -420,7 +420,8 @@ backups/backup-2026-09-11.tar.zst
 | 响应头 | `next.config.ts` 下发 CSP、`X-Content-Type-Options`、`X-Frame-Options`、`Referrer-Policy`、`Permissions-Policy`；`/api/assets` 被显式排除在通用规则之外，因为它对用户上传的 SVG 使用更严格的 `default-src 'none'; sandbox`，被通用规则覆盖会等于没有保护 |
 
 `/api/analytics` 与 `/api/health` 是公开未鉴权端点：前者按设计如此（发起它的页面已经
-知道请求里的全部内容），且不读取任何携带 IP 的请求头、不记录 IP；后者只回布尔值与计数。
+知道请求里的全部内容），且不读取任何携带 IP 的请求头、不记录 IP——同一条约束也决定了
+它取不到限流主体，理由记在第十节；后者只回布尔值与计数。
 
 ---
 
@@ -991,6 +992,22 @@ e2e 测接线——发两篇带标签的文档，断言句子里是**并集**（
 一条查证时发现、值得单独记的事：后一条的响应头一开始是用 `page.request.get()` 读的，它稳定地失败，而原因不在路由，在 `APIRequestContext` 与浏览器的差别——`page.request` 严格按 RFC 6265 办事，**`Secure` cookie 不附加到 `http:` 请求上、不看主机**，而 Chromium 把 `127.0.0.1` 当安全上下文、肯在明文 HTTP 上收下并回送它。这一套 e2e 的服务端是照部署配的（`COOKIE_SECURE=1` 配明文 HTTP，理由见 `tests/e2e/environment.ts`），于是同一个地址经 `page.request` 发出去是**未登录**的，跟着重定向拿到的是登录页的 200，那几个头一个都不在上面。所以头是从**导航**的响应上读的（`page.goto` 的返回值），并把这条差别写进了 `environment.ts` 里那段 COOKIE_SECURE 的理由旁边——它属于那里而不是这个 spec：本套件其余每一处 `page.request` / `request` 打的都是"对陌生人也要回答"的路由（`/api/search`、`/api/graph`、feed、beacon、资源文件），从没有一处需要会话，所以这个坑此前没被踩到过。
 
 回归数字：lint 干净、typecheck 干净、1103 单元、1261 集成、60 e2e。
+
+**再补一条，这次的读物是一张"承诺表"：七条限流策略里有两条没有消费方，一条接上、一条删掉。** 前几轮扫的是导出、类型、常量，判据是"有没有读者"；`src/lib/auth/rate-limit.ts` 的 `RATE_LIMITS` 不一样，**表里的每一条都是一个承诺**——它说这条路由被限住了。核实下来七条里五条有真实调用点（login、loginAccount、upload、import、sensitiveAction），`search` 与 `analytics` 一条都没有。
+
+`search` 接上了。理由不只是"那条注释正好写着这个端点"，而是 `/api/search` 是这个站点上**唯一一处价格由调用方决定**的响应：它从进程内的索引作答，且按设计不缓存（`no-store`，按查询串建键的共享缓存是负债），所以每个请求都是一次分词加一次全库排序。键取调用方的地址、**按登录限流同一套 `hashIp` 先哈希再入库**（`rate_limits` 表里因此没有任何地址），因为这里的读者是匿名的、请求里其余每个值又都是调用方自己选的；部署不上报地址时全部落进 `unknown` 这一个桶，这也是登录限流已有的形状。扣减放在解析查询**之前**，因为被限的是调用方不是查询——一个因筛选项被拒的请求同样已经被受理了。答复是 429 配 `Retry-After`，正文沿用本路由的 JSON 形状。
+
+客户端那一半也跟着改了：调色板原先把任何非 2xx 都译成 "Search is unavailable right now."，现在有服务端句子的就用服务端那句——"用完了额度、请等一秒" 和 "搜索坏了" 是两个不同的判断，后一个是假的。同时补了一处并发语义：一个非 2xx 的答复如果在读者已经又敲了一个字之后才到，它就不再是当前这个查询的答复，丢弃它（`throwIfAborted`）而不是用它覆盖屏幕上那个查询的结果。
+
+`analytics` 删掉了，因为这条承诺**这条路由给不出**。一个桶需要一个主体，而这个端点恰好是产品里唯一一个以"不读读者的任何东西"为契约的端点（见 §9 与它自己的注释）。剩下的主体只有三种，逐一都不成立：**地址**（它不读，而且这正是它写在注释里的第一条）；**访客 cookie**（唯一另一个稳定值，可它是由响应发给客户端的——想要多一次信标的客户端不带 cookie 就行，换一个全新身份、换来一个满桶，任何调用方都能自己解除的限制不是限制）；**全站一个桶**（能拦住写入，代价是在这个站点最想要数字的那一天丢掉真实读者的浏览，而丢掉的样子和其它丢弃完全一样是 204，于是仪表盘只是偏低、而且不会有人知道）。所以它由别的东西约束：同源 `Referer`、非爬虫的 UA、本项目客户端才会发出的载荷、每次受理一次索引查询加一次插入，以及行本身的 `ANALYTICS_RAW_RETENTION_DAYS`（默认 30 天，由 worker 的任务裁剪）。判据与本节前面删掉 `peekRateLimit` 是同一条：**一条给不出承诺的规则比没有规则更糟**，因为下一个人会以为它挡住了什么。
+
+两处口径。
+
+其一，**没有为"每条策略都必须有消费方"补一个测试**，尽管这正是本次发现的缺陷。能写出来的版本是扫 `src/` 的源码文本、断言每个策略名都出现在某个文件里——而这个断言会被我刚写下的注释满足：路由的文档里就写着 `RATE_LIMITS.search`。一个把注释算作接线的测试，会在接线被删掉之后继续通过，那比没有测试更坏。真正的结构保证写在表自己的文档里：**一条策略与它的消费方一起加入，而不是先于消费方加入**，因为没人调用的策略比不存在的策略更坏——下一个读这张表的人会把那条路由算作已覆盖。
+
+其二，**这道限制对读者是可见的**，所以它的数字要与调用方一起看：调色板的防抖是 150 ms，容量 60、回填 1/秒，意味着连续快速输入会先花掉突发额度、再被按 1/秒放行；若干读者共用一个地址（NAT、公司出口）时共享同一个桶。这是策略表里原有的数字，不是这次改的，写在这里是为了下次有人问"搜索为什么会被限"时不必再去推一遍。
+
+测试放在 e2e 层，因为限流器要经请求上下文读地址（这只有在请求里才存在），桶又在这个套件本来就有的数据库里：`tests/e2e/search.spec.ts` 新增一条，先把桶清空、再**并发**打完整个额度（顺序打会随机器快慢耗时约一秒，而回填正好是 1/秒——那会把"第 61 个被拒"变成一条会飘的断言），断言额度内的每一个都是 200、接下来是 429、`Retry-After` 是正数、句子是"Too many searches"而不是"搜索不可用"，最后清空桶、断言同一个请求又被正常答复（拒绝是关于桶的，不是关于调用方的）。容量从策略里导入而不是抄一遍，两者因此不可能漂移；桶在测试前后各清一次，因为浏览器和这一套请求共用同一个 `unknown` 桶。回归数字：lint 干净、typecheck 干净、1103 单元、1261 集成、62 e2e。
 
 ---
 

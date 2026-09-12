@@ -72,6 +72,23 @@ async function clearLoginLimits(): Promise<void> {
 }
 
 /**
+ * Empty the search buckets.
+ *
+ * The mirror of the call above, and exported because it has a different caller:
+ * `search.spec.ts` spends the whole allowance on purpose, since the limiter is
+ * what it is testing rather than an obstacle it hit. Both the spec and the
+ * browser it drives reach `/api/search` from the same bucket — nothing in this
+ * deployment sets `x-forwarded-for`, so every request lands on the limiter's
+ * `unknown` subject — which is why the bucket has to be emptied on both sides of
+ * that test as well as before it.
+ */
+export async function clearSearchLimits(): Promise<void> {
+  await withE2eDatabase((client) =>
+    client.query("delete from rate_limits where key like 'search:%'"),
+  )
+}
+
+/**
  * Sign out every session the administrator has, without touching the account.
  *
  * For `password.spec.ts`, which asserts that a password change signs out
