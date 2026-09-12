@@ -38,12 +38,42 @@
  * `@/lib/jobs/embedded` for why a database that is not ready yet must not take
  * the server down with it. `WORKER_ENABLED=0` skips it, for an instance that
  * should serve requests and nothing else.
+ *
+ * ## Why the syntax highlighter is warmed here, and not awaited
+ *
+ * Shiki's grammars and themes are built on first use, and so are the scanners
+ * that turn each grammar's patterns into JavaScript regular expressions. That
+ * work lands on whichever request renders the first fenced code block after a
+ * restart: measured at 330 ms for that render against 34 ms for the same page
+ * immediately afterwards. Moving it here means the first reader is not the one
+ * who pays.
+ *
+ * It is started, not awaited, and it is not a close call. The warm-up runs for
+ * seconds rather than milliseconds, it deliberately yields to the event loop
+ * throughout (`warmHighlighter` says why), and nothing about serving a request
+ * depends on it. Awaiting it would delay the job worker below for a reason
+ * that has nothing to do with jobs — and would not make the first request any
+ * faster, because a request that arrives after startup is a request that
+ * arrives after startup.
+ *
+ * `warmHighlighter` catches its own errors and logs them: a grammar that will
+ * not load degrades one code block to plain text, and that must not be a reason
+ * to refuse to serve. Nothing it does can reject.
+ *
+ * The other half of the story is that this file's module registry is not the
+ * route handlers'. Warming a cache that lives in module scope here would fill a
+ * variable no render ever reads, which is exactly what a first attempt at this
+ * did. `@/lib/markdown/shiki` keeps its caches on `globalThis` for that reason,
+ * and says there how it was measured.
  */
 export async function register(): Promise<void> {
   if (process.env.NEXT_RUNTIME !== 'nodejs') return
 
   const { assertProductionPosture, env } = await import('@/env')
   assertProductionPosture()
+
+  const { warmHighlighter } = await import('@/lib/markdown/shiki')
+  void warmHighlighter()
 
   if (!env.WORKER_ENABLED) return
 
