@@ -10,6 +10,7 @@ import {
 } from '@/lib/analytics'
 import { isDay } from '@/lib/analytics/day'
 import { findUnusedAssets } from '@/lib/assets/manage'
+import { recordAudit } from '@/lib/audit'
 import { db } from '@/lib/db'
 import { contentIndex, type ScheduledJobRow } from '@/lib/db/schema'
 import { parseFrontmatter } from '@/lib/content/frontmatter'
@@ -22,6 +23,7 @@ import {
   syncOneDocument,
 } from '@/lib/content/sync'
 import type { ContentStatus } from '@/lib/content/schema'
+import { captureWithPolicy } from '@/lib/revision/policy'
 import { enqueue } from './queue'
 
 /**
@@ -353,9 +355,77 @@ export function isPublishDue(
   return document.scheduledAt.getTime() <= now.getTime()
 }
 
-/** Read the file, publish it, and refresh the index. Idempotent by construction. */
+/**
+ * The frontmatter a scheduled publish writes.
+ *
+ * One function, called twice: once inside the write's mutate callback, and once
+ * afterwards so the revision store can be told what the write produced. Two
+ * copies of this would be two answers to "what does publishing change", and the
+ * revision's line counts would eventually be computed against the wrong one.
+ *
+ * `publishAt` is when the document should go live; `date`/`publishedAt` is when
+ * it did. The frontmatter schema rejects `status: published` without one of the
+ * latter two on a post or a project, so a file carrying only `publishAt` would
+ * fail to parse the moment it was read back — and a document that cannot be
+ * parsed disappears from the index.
+ */
+function publishedFrontmatter(
+  source: Record<string, unknown>,
+  body: string,
+  scheduledAt: Date | null,
+  now: Date,
+): { data: Record<string, unknown>; body: string; comment: string } {
+  const data: Record<string, unknown> = { ...source, status: 'published' }
+  if (data.date == null && data.publishedAt == null) {
+    data.date = scheduledAt ?? now
+  }
+  return { data, body, comment: 'Published on schedule' }
+}
+
+/**
+ * Read the file, publish it, and refresh the index. Idempotent by construction.
+ *
+ * ## Why this records a revision and an audit row
+ *
+ * It is a save. Nobody pressed anything, but a scheduled publish is the moment a
+ * document stops being a draft and starts being public, and it rewrites the
+ * frontmatter to do it — so §19's rule that every formal save leaves a revision
+ * applies here or it does not apply at all. The state being replaced is the
+ * scheduled draft, which exists nowhere else once this returns; without the
+ * snapshot, "put it back the way it was until I check the date" is not something
+ * the operator can do.
+ *
+ * The audit row is the same argument on §34's side. The entry names no actor,
+ * because there is none: `recordAudit` writes a null `user_id` for the CLI, the
+ * importer and jobs, and the metadata says which of those this was rather than
+ * leaving a reader to infer it from a timestamp.
+ *
+ * ## Why the capture happens after the sync
+ *
+ * `captureRevision` needs the `content_index.id` the revision hangs off, and the
+ * row is derived from the file — so it has to be the row as it is *after* the
+ * status changed, which is the one the sync just wrote. `syncOneDocument`
+ * returns that row and the document it was built from, so this costs no extra
+ * query. A publish whose file has vanished by the time the sync runs records
+ * nothing, because there is then nothing to attach it to.
+ *
+ * ## How the capture knows what the write produced
+ *
+ * A revision stores the state a write *replaced*, but its line counts are the
+ * difference between that state and the one that replaced it — so the capture
+ * has to be told what the new frontmatter is. That value is produced inside the
+ * mutate callback, and lifting it out through a closure is the kind of capture
+ * that control-flow analysis cannot follow and a reader cannot check.
+ *
+ * So it is recomputed instead, from the text the callback was handed:
+ * `publishedFrontmatter` is pure and `previousContent` is those same bytes, so
+ * applying it to the same input yields the same result by construction. The one
+ * input that is not in the text alone is `scheduledAt`, which comes from the
+ * freshly synced document — where it is non-null, because `isPublishDue`
+ * refuses to publish a document that has no scheduled moment.
+ */
 async function publishDocument(relativePath: string, now: Date): Promise<void> {
-  await updateDocument(relativePath, (current) => {
+  const write = await updateDocument(relativePath, (current) => {
     // The row was read before the lock was taken; the file is the fresher of
     // the two and may have been edited, published or rescheduled since. Re-check
     // under the lock so an editor's change is never overwritten.
@@ -372,21 +442,54 @@ async function publishDocument(relativePath: string, now: Date): Promise<void> {
     }
 
     const parsed = parseFrontmatter(current.raw)
-    const data: Record<string, unknown> = { ...parsed.data, status: 'published' }
-
-    // `publishAt` is when the document should go live; `date`/`publishedAt` is
-    // when it did. The frontmatter schema rejects `status: published` without
-    // one of the latter two on a post or a project, so a file carrying only
-    // `publishAt` would fail to parse the moment it was read back — and a
-    // document that cannot be parsed disappears from the index.
-    if (data.date == null && data.publishedAt == null) {
-      data.date = current.scheduledAt ?? now
-    }
-
-    return { data, body: current.body, comment: 'Published on schedule' }
+    return publishedFrontmatter(
+      parsed.data,
+      current.body,
+      current.scheduledAt,
+      now,
+    )
   })
 
-  await syncOneDocument(relativePath)
+  const synced = await syncOneDocument(relativePath)
+  if (!synced || write.previousContent === null) return
+
+  // `previousContent` is the text the callback was handed, and `ContentDocument.body`
+  // is `parseFrontmatter(raw).content` — the reader's own derivation — so this is
+  // the same pair the writer was given, not a second reading of it.
+  const before = parseFrontmatter(write.previousContent)
+  const after = publishedFrontmatter(
+    before.data,
+    before.content,
+    synced.document.scheduledAt,
+    now,
+  )
+
+  await captureWithPolicy({
+    contentId: synced.row.id,
+    type: synced.document.type,
+    slug: synced.document.slug,
+    data: after.data,
+    body: after.body,
+    previousContent: write.previousContent,
+    reason: 'publish',
+    // No actor: a job is not a person, and naming one would make the log say
+    // somebody published this on purpose.
+    actorId: null,
+  })
+
+  await recordAudit({
+    action: 'post.publish',
+    actorId: null,
+    targetType: 'content',
+    targetId: relativePath,
+    metadata: {
+      // The same action the admin's publish button writes, distinguished by this
+      // field rather than by a second action meaning the same thing.
+      via: 'schedule',
+      type: synced.document.type,
+      slug: synced.document.slug,
+    },
+  })
 }
 
 /* -------------------------------------------------------------------------- */

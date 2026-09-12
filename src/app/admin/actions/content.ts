@@ -34,7 +34,7 @@ import {
 import {
   captureWithPolicy,
   type CaptureWithPolicyResult,
-} from '@/lib/admin/revisions'
+} from '@/lib/revision/policy'
 import { actionFailure, actionOk, type ActionResult } from '@/lib/admin/result'
 import { describeActionError, guardAction, parseActionInput } from '@/lib/admin/guard'
 import { revalidateContentChange } from '@/lib/admin/revalidate'

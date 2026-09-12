@@ -1,10 +1,24 @@
+import { gunzipSync } from 'node:zlib'
 import { afterAll, describe, expect, it } from 'vitest'
 import { and, eq, inArray, like, sql } from 'drizzle-orm'
 import { env } from '@/env'
 import { MAX_AGGREGATE_DAYS_PER_RUN } from '@/lib/analytics/aggregate'
 import { addDays, dayStart, utcDay } from '@/lib/analytics/day'
 import { db } from '@/lib/db'
-import { analyticsDaily, analyticsEvents, assets, scheduledJobs } from '@/lib/db/schema'
+import {
+  analyticsDaily,
+  analyticsEvents,
+  assets,
+  auditLogs,
+  contentIndex,
+  contentRevisions,
+  scheduledJobs,
+} from '@/lib/db/schema'
+import { buildRelativePath } from '@/lib/content/paths'
+import { parseFrontmatter, serializeFrontmatter } from '@/lib/content/frontmatter'
+import { readDocument } from '@/lib/content/reader'
+import { syncOneDocument } from '@/lib/content/sync'
+import { writeRawDocument } from '@/lib/content/writer'
 import {
   CLAIM_STALE_MS,
   DEFAULT_MAX_ATTEMPTS,
@@ -540,12 +554,25 @@ describe.runIf(hasTestDatabase)('queue against Postgres', () => {
  * well as the work — a handler registered under the wrong kind, or registered
  * nowhere, fails here rather than in production.
  */
-describe.runIf(hasTestDatabase)('housekeeping handlers', () => {
+describe.runIf(hasTestDatabase)('handlers against Postgres', () => {
   const marker = `housekeeping-${process.pid}-${Date.now().toString(36)}`
   /** Paths this suite created, so cleanup touches nothing else. */
   const PATH_PREFIX = `/__jobs_test__/${marker}/`
   /** Job rows this suite created, for the same reason. */
   const created = new Set<string>()
+
+  /**
+   * Content files and index rows these tests created.
+   *
+   * The content root is a temp directory the setup file makes per test file, so
+   * the files need no cleanup — but the index rows do not live there, and a
+   * document left in `content_index` would be visible to every other suite that
+   * queries it. The revisions cascade from the row; the audit rows do not,
+   * because they are deliberately independent of what they describe, so the
+   * publish test removes its own.
+   */
+  const createdPaths: string[] = []
+  const createdContentIds: string[] = []
 
   afterAll(async () => {
     if (created.size > 0) {
@@ -553,6 +580,14 @@ describe.runIf(hasTestDatabase)('housekeeping handlers', () => {
     }
     await db.delete(analyticsEvents).where(like(analyticsEvents.path, `${PATH_PREFIX}%`))
     await db.delete(analyticsDaily).where(like(analyticsDaily.path, `${PATH_PREFIX}%`))
+    if (createdPaths.length > 0) {
+      await db.delete(auditLogs).where(inArray(auditLogs.targetId, createdPaths))
+    }
+    if (createdContentIds.length > 0) {
+      await db
+        .delete(contentIndex)
+        .where(inArray(contentIndex.id, createdContentIds))
+    }
   })
 
   interface RecordedLog {
@@ -812,6 +847,141 @@ describe.runIf(hasTestDatabase)('housekeeping handlers', () => {
       expect(await db.select({ id: assets.id }).from(assets)).toHaveLength(before.length)
 
       expect(names(log.info)).toContain('job.assets-orphan-scan')
+    })
+  })
+
+  describe('content.publish-scheduled', () => {
+    /**
+     * A document whose moment has passed, on disk and in the index.
+     *
+     * Written as raw text through `writeRawDocument` rather than built by
+     * `createDocument`, because the point of the fixture is the frontmatter
+     * exactly as a file would carry it — a `publishAt` in the past and
+     * `status: scheduled` — and the sync is what has to read that back as a
+     * scheduled document.
+     */
+    async function scheduledDocument(slug: string, publishAt: string) {
+      const path = buildRelativePath('post', slug)
+      await writeRawDocument(
+        path,
+        serializeFrontmatter(
+          {
+            title: slug,
+            description: 'A scheduled fixture written by the job suite.',
+            date: publishAt,
+            status: 'scheduled',
+            publishAt,
+          },
+          'The body a scheduled publish leaves alone.',
+        ),
+      )
+
+      const synced = await syncOneDocument(path)
+      if (!synced) throw new Error(`The fixture at ${path} did not sync`)
+      // The precondition every assertion below depends on: a document the
+      // handler will consider due. Without this the suite would pass by
+      // publishing nothing.
+      expect(synced.row.status).toBe('scheduled')
+      expect(synced.row.scheduledAt).not.toBeNull()
+
+      createdPaths.push(path)
+      createdContentIds.push(synced.row.id)
+      return { path, row: synced.row }
+    }
+
+    it('publishes a due document, and keeps what it replaced', async () => {
+      const slug = `${marker}-due`
+      const publishAt = new Date(Date.now() - 60_000).toISOString()
+      const { path, row } = await scheduledDocument(slug, publishAt)
+
+      const { result } = await runJob('content.publish-scheduled')
+
+      expect(result.published).toContain(path)
+
+      // The file is what changed: `status` is a frontmatter key and the index
+      // is derived from it, so a row flipped on its own would be overwritten
+      // by the next sync.
+      const written = await readDocument(path)
+      expect(written?.status).toBe('published')
+
+      /*
+       * The revision. §19 says every formal save leaves one, and a scheduled
+       * publish is a save — the one nobody is watching. The state it replaced
+       * is the scheduled draft, which exists nowhere else once this returns.
+       */
+      const revisions = await db
+        .select()
+        .from(contentRevisions)
+        .where(eq(contentRevisions.contentId, row.id))
+
+      expect(revisions).toHaveLength(1)
+      expect(revisions[0]?.summary).toBe('Published')
+      expect(revisions[0]?.authorId).toBeNull()
+
+      // The snapshot is the scheduled state and not the published one: proving
+      // it round-trips is the whole point of storing it. Asserted on the parsed
+      // value rather than on the text, because the serialiser chooses the
+      // quoting and a test that pinned `status: scheduled` would fail the day it
+      // decided to quote the string.
+      const snapshot = parseFrontmatter(
+        gunzipSync(revisions[0]!.snapshot).toString('utf8'),
+      )
+      expect(snapshot.data.status).toBe('scheduled')
+      expect(snapshot.content).toContain('The body a scheduled publish leaves alone.')
+
+      /*
+       * And the stats are one line rewritten, nothing else — not
+       * `toBeGreaterThan(0)`, which a recompute that dropped the body would also
+       * satisfy while reporting a diff of the whole file. The failure pinned
+       * here is a capture describing a change other than the one that happened.
+       *
+       * The exact numbers are worth knowing: the write also adds a
+       * `# Published on schedule` comment line, which this does not count,
+       * because `captureRevision` reconstructs the written text from the
+       * frontmatter and never sees the comment. That is the "off by a line" its
+       * own doc comment warns about, and it is bounded — the fixture is written
+       * in the canonical serialisation, so nothing else can show up as churn.
+       */
+      expect(revisions[0]?.additions).toBe(1)
+      expect(revisions[0]?.deletions).toBe(1)
+
+      // §34: the operation is in the audit log, with no actor, because a job is
+      // not a person.
+      const audit = await db
+        .select()
+        .from(auditLogs)
+        .where(
+          and(
+            eq(auditLogs.action, 'post.publish'),
+            eq(auditLogs.targetId, path),
+          ),
+        )
+
+      expect(audit).toHaveLength(1)
+      expect(audit[0]?.userId).toBeNull()
+      expect(audit[0]?.meta).toMatchObject({ via: 'schedule', slug })
+    })
+
+    it('leaves a document whose moment has not arrived alone', async () => {
+      const slug = `${marker}-future`
+      const { path, row } = await scheduledDocument(
+        slug,
+        new Date(Date.now() + 86_400_000).toISOString(),
+      )
+
+      const { result } = await runJob('content.publish-scheduled')
+
+      expect(result.published).not.toContain(path)
+      expect((await readDocument(path))?.status).toBe('scheduled')
+
+      // Nothing happened, so nothing is recorded: a revision row or an audit
+      // row here would say a publish occurred that did not.
+      expect(
+        await db
+          .select()
+          .from(contentRevisions)
+          .where(eq(contentRevisions.contentId, row.id)),
+      ).toHaveLength(0)
     })
   })
 })

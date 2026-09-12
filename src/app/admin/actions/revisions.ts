@@ -11,7 +11,8 @@ import { actionFailure, actionOk, type ActionResult } from '@/lib/admin/result'
 import { describeActionError, guardAction, parseActionInput } from '@/lib/admin/guard'
 import { commitContentChange, commitTitle } from '@/lib/admin/git'
 import { revalidateContentChange } from '@/lib/admin/revalidate'
-import { pruneRevisions, revisionTarget } from '@/lib/admin/revisions'
+import { revisionTarget } from '@/lib/admin/revisions'
+import { pruneRevisions } from '@/lib/revision/policy'
 import type { GitCommitOutcome } from '@/lib/git'
 
 /**

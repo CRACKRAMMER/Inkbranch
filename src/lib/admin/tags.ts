@@ -10,7 +10,7 @@ import { db } from '@/lib/db'
 import { contentIndex, contentTags, tags, type ContentType, type ContentStatus } from '@/lib/db/schema'
 import { tagSlug } from '@/lib/utils/slug'
 import { normalizeTagName } from '@/lib/utils/text'
-import { captureWithPolicy } from './revisions'
+import { captureWithPolicy } from '@/lib/revision/policy'
 
 /**
  * Renaming, merging and deleting tags.
