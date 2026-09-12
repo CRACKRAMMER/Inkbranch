@@ -51,8 +51,22 @@ const nextConfig: NextConfig = {
    * config that builds differently depending on where it runs is a config
    * whose Docker build is not the build that was tested.
    *
-   * The consequence worth knowing: `public/` and `.next/static/` are *not*
-   * copied into `.next/standalone`, so the Dockerfile copies them by hand.
+   * `next start` does warn that it "does not work" with this output and points
+   * at `node .next/standalone/server.js`. The warning is worth reading as
+   * advisory: it is the same server either way, and `next start` serves this
+   * build correctly — verified, 200 with the page and its static assets. What
+   * it does *not* do is relax the app's own production posture, so on a machine
+   * whose `.env.local` still holds the development `SESSION_SECRET` it boots
+   * straight into `assertProductionPosture`'s refusal and answers 500 on every
+   * route. That failure looks like a broken build and is not one; it is the app
+   * declining to run with a published secret. `scripts/serve-standalone.ts`
+   * exists to remove that ambiguity locally.
+   *
+   * The consequences that are real: `public/` and `.next/static/` are *not*
+   * copied into `.next/standalone`, so the Dockerfile copies them by hand; and
+   * `server.js` calls `process.chdir(__dirname)`, so `.env.local` is not read
+   * from the project root and a relative path in the environment resolves under
+   * `.next/standalone` instead.
    */
   output: 'standalone',
 

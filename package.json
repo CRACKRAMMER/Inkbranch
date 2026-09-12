@@ -28,7 +28,9 @@
     "content:import": "tsx --conditions=react-server scripts/content/import.ts",
     "content:links": "tsx --conditions=react-server scripts/content/links.ts",
     "content:stats": "tsx --conditions=react-server scripts/content/stats.ts",
+    "brand:icons": "tsx scripts/brand/icons.ts",
     "check:font-preload": "tsx scripts/check/font-preload.ts",
+    "serve:standalone": "tsx scripts/serve-standalone.ts",
     "worker": "tsx --conditions=react-server scripts/worker.ts",
     "backup": "bash scripts/backup.sh",
     "restore": "bash scripts/restore.sh"
