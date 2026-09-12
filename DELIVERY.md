@@ -948,6 +948,14 @@ e2e 测接线——发两篇带标签的文档，断言句子里是**并集**（
 
 测试补在各自该在的层：单元测句子（两条通知各自说了什么、以及不说什么——`stale` 不许出现 "not serving it"，`unindexed` 不许出现 "still rendering"）；集成测状态判定与查找（真实文件、真实行：没有行的文件能打开、按标题给出的 slug 能找到、不会跨类型串到同名 slug、同步后为 `null`、外部改动后转为 `stale` 且表单取的是文件的值、再同步回到 `null`）；e2e 测接线，两个方向都走一遍——先 404 的未索引文件存一次就在公开站点上线，磁盘上被改过的文档在公开页上"旧标题 + 新正文"、存一次之后标题跟上。e2e 能构造出这两种状态靠的是环境本身：`CONTENT_SYNC_ON_BOOT=1` 配 `WORKER_ENABLED=0`，索引只在启动时与 admin 写入时产生，所以启动之后放进去的文件会一直是未索引的。回归数字：lint 干净、typecheck 干净、1100 单元、1258 集成、56 e2e。
 
+**顺着这条线把"没有读者的导出"清了一遍，三条结果，两条删、一条补。** 删的判据跟前文一致：能力不是项目要的（或它已经被另一条路完整覆盖），留着就只是下一次误用的入口；补的判据是能力要、只是缺了执行的那一半。
+
+先说删的两条。`src/lib/security/urls.ts` 里有四个导出**一个读者都没有**：两个布尔谓词（`isInternalPath`、`isLinkUrl`）和两个 Zod schema（`internalPathSchema`、`externalUrlSchema`）；另外 `MAX_URL_LENGTH` 只在本模块内用，`internalPathProblem` 的 `maxLength` 形参没有任何调用方传过。删的依据不是"没人用"，而是**这个模块自己文档里列的执行面已经全部走通了**——导航项、重定向、头像 URL、About 页链接，四个入口分别是 `hrefKindProblem`、`internalPathProblem`/`externalUrlProblem`、`internalOrExternalUrlSchema`、`linkHrefSchema`，各自都有真实调用方和测试。那四个是同一批规则的**另一种写法**，不是缺失的那一半，留着最坏的结果是以后有人挑中较窄的那个（比如给头像用了允许 mailto 的 `isLinkUrl`）。顺带核对了长度口径：确实是 `varchar(512)`，`content_links` 那两个 1024 的列走的是 Markdown 解析、不经过本模块——所以那个文档注释是准的，只是把"每个消费者一个上限"改成了"一个上限"并把理由写在常数上。`src/lib/db/migrate.ts` 里的 `waitForDatabase` 同理：注释写着"给 entrypoint 脚本用的就绪探测"，而这个项目没有 entrypoint 脚本——`Dockerfile` 的 CMD 是 `node server.js`，compose 里 `migrate` 服务靠 `depends_on: postgres: condition: service_healthy` 等就绪。删除（与本节早先删掉 `destroyAllUserSessions` 同一条判据）。
+
+再说补的那条，它是这次清扫里唯一一处**真的漂移**：`src/lib/db/schema.ts` 末尾那八个 `relations()`。项目里所有查询都是显式 `select` 配自己的 join，**没有任何代码读它们**——读它们的是 drizzle 自己的工具（`pnpm db:studio` 是 README 里记着的命令，它按这些对象搭关系视图）。问题在于：一个产品里没有读者的声明，不会有读者因为写错而报错。核对下来，**四个外键从来没被声明过**——`content_links.asset_id`、`assets.uploaded_by`、以及两张 analytics 表的 `content_id`——没有任何地方发现过，因为没有任何地方在读。所以补的是"执行的那一半"：把四个关系补齐，并让 schema **自己检查自己**——两半本来就都写在文件里（外键写在 `.references()`，关系写在 `relations()`），`tests/unit/schema-relations.test.ts` 断言两者说的是同一件事：每个外键在持有它的表上有一个 `one()` 关系、列名与顺序一致；反过来每个 `one()` 关系都有真实外键撑着，关系不能凭空声明一条数据库不保证的边。`many()` 是可选的（drizzle 靠对面的 `one()` 反推字段），但存在时必须有一条指回来的外键。三例都做了变异验证：删掉 `asset` 关系、给 `users` 加一条无外键支撑的 `many(rateLimits)`，两例都被抓住并打印出是哪张表、两份列表各是什么。
+
+回归数字：lint 干净、typecheck 干净、1103 单元、1261 集成、56 e2e。
+
 ---
 
 ## 附录：`ARCHITECTURE.md` 的来历

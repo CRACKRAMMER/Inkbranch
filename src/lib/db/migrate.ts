@@ -88,34 +88,3 @@ async function countApplied(db: Database): Promise<number> {
 
   return Number.parseInt(counted.rows[0]?.count ?? '0', 10)
 }
-
-/** Cheapest possible readiness probe for the entrypoint script. */
-export async function waitForDatabase(
-  connectionString: string,
-  options: { attempts?: number; delayMs?: number } = {},
-): Promise<void> {
-  const attempts = options.attempts ?? 30
-  const delayMs = options.delayMs ?? 1000
-
-  let lastError: unknown
-  for (let attempt = 1; attempt <= attempts; attempt += 1) {
-    const { db, close } = createDatabase(connectionString)
-    try {
-      await db.execute(sql`select 1`)
-      await close()
-      return
-    } catch (error) {
-      lastError = error
-      await close().catch(() => undefined)
-      if (attempt < attempts) {
-        await new Promise((resolve) => setTimeout(resolve, delayMs))
-      }
-    }
-  }
-
-  throw new Error(
-    `Database is not reachable after ${attempts} attempts: ${
-      lastError instanceof Error ? lastError.message : String(lastError)
-    }`,
-  )
-}

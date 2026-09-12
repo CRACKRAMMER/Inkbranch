@@ -716,6 +716,23 @@ export const rateLimits = pgTable('rate_limits', {
 /*  Relations                                                                  */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * The relationships, for the readers that reconstruct them from this file.
+ *
+ * Nothing in `src/` walks these: every query in the project is an explicit
+ * `select` with its own joins, which is the style the rest of the codebase is
+ * written in and the reason a query's cost is readable at the call site. They
+ * are read by drizzle's own tooling instead — `pnpm db:studio` is a documented
+ * command, and it builds its relationship view from these objects.
+ *
+ * Which is exactly why they need the test in `tests/unit/schema-relations.test.ts`:
+ * a declaration with no caller in the product cannot be caught by a caller
+ * being wrong. Four foreign keys had already gone undeclared — `content_links.asset_id`,
+ * `assets.uploaded_by` and both analytics tables' `content_id` — and nothing
+ * anywhere noticed. The rule the test enforces is one relation per foreign key,
+ * and no relation without one.
+ */
+
 export const usersRelations = relations(users, ({ many }) => ({
   sessions: many(sessions),
   revisions: many(contentRevisions),
@@ -767,7 +784,35 @@ export const contentLinksRelations = relations(contentLinks, ({ one }) => ({
     fields: [contentLinks.targetId],
     references: [contentIndex.id],
   }),
+  asset: one(assets, {
+    fields: [contentLinks.assetId],
+    references: [assets.id],
+  }),
 }))
+
+export const assetsRelations = relations(assets, ({ one }) => ({
+  uploadedBy: one(users, {
+    fields: [assets.uploadedBy],
+    references: [users.id],
+  }),
+}))
+
+export const analyticsDailyRelations = relations(analyticsDaily, ({ one }) => ({
+  content: one(contentIndex, {
+    fields: [analyticsDaily.contentId],
+    references: [contentIndex.id],
+  }),
+}))
+
+export const analyticsEventsRelations = relations(
+  analyticsEvents,
+  ({ one }) => ({
+    content: one(contentIndex, {
+      fields: [analyticsEvents.contentId],
+      references: [contentIndex.id],
+    }),
+  }),
+)
 
 export const auditLogsRelations = relations(auditLogs, ({ one }) => ({
   user: one(users, { fields: [auditLogs.userId], references: [users.id] }),

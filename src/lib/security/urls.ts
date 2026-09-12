@@ -15,8 +15,17 @@ import { z } from 'zod'
  * anything; it is compared, byte for byte, to a request path.
  */
 
-/** Longest href any of the consuming columns accepts (`varchar(512)`). */
-export const MAX_URL_LENGTH = 512
+/**
+ * Longest href any of the consuming columns accepts (`varchar(512)`).
+ *
+ * One limit for every consumer rather than one per caller. The columns that
+ * hold these values — `navigation.href`, `redirects.from_path` and `to_path`,
+ * `site_settings.avatar_url` — are all `varchar(512)`, and the two About-page
+ * links live in a jsonb column bounded by nothing but this. A caller passing a
+ * tighter limit would be enforcing a rule the database does not have, and the
+ * value it refused would have been storable.
+ */
+const MAX_URL_LENGTH = 512
 
 /** Whitespace, by the same definition `\s` uses in a regular expression. */
 const WHITESPACE = /\s/
@@ -43,13 +52,10 @@ function hasUnsafeChar(value: string): boolean {
  * it in a field error; a bare predicate would need the same rules written
  * twice, once as a check and once as prose.
  */
-export function internalPathProblem(
-  value: string,
-  maxLength = MAX_URL_LENGTH,
-): string | null {
+export function internalPathProblem(value: string): string | null {
   if (!value) return 'Path is empty'
-  if (value.length > maxLength) {
-    return `Path is longer than ${maxLength} characters`
+  if (value.length > MAX_URL_LENGTH) {
+    return `Path is longer than ${MAX_URL_LENGTH} characters`
   }
   if (hasUnsafeChar(value)) {
     return 'Path contains whitespace or control characters'
@@ -150,37 +156,21 @@ export function externalUrlProblem(
   return null
 }
 
-export const isInternalPath = (value: string): boolean =>
-  internalPathProblem(value) === null
-
-/** True only for http(s) — the strict reading, for a URL a browser fetches. */
+/**
+ * True only for http(s) — the strict reading, for a URL a browser fetches.
+ *
+ * The predicate form, for the one caller that needs to branch on the answer
+ * rather than to report it: `redirects.ts` reads `to_path` back out of the
+ * database and decides whether a stored target is a path to normalise or a URL
+ * to follow. Everywhere a value is being *accepted from a form*, the schemas
+ * below are the ones to use — they carry the reason into the field error.
+ */
 export const isExternalUrl = (value: string): boolean =>
   externalUrlProblem(value) === null
-
-/** True for anything a link may point at: a path, http(s), or a mailto. */
-export const isLinkUrl = (value: string): boolean =>
-  isInternalPath(value) || externalUrlProblem(value, { allowMailto: true }) === null
 
 /* -------------------------------------------------------------------------- */
 /*  Zod schemas                                                                */
 /* -------------------------------------------------------------------------- */
-
-/** A site-relative path: `/posts`, `/posts?tag=a`, `/about#contact`. */
-export const internalPathSchema = z
-  .string()
-  .trim()
-  .refine((value) => internalPathProblem(value) === null, {
-    error: (issue) =>
-      internalPathProblem(String(issue.input)) ?? 'Not a site-relative path',
-  })
-
-/** An absolute `http(s)` URL. */
-export const externalUrlSchema = z
-  .string()
-  .trim()
-  .refine((value) => externalUrlProblem(value) === null, {
-    error: (issue) => externalUrlProblem(String(issue.input)) ?? 'Not a valid URL',
-  })
 
 /**
  * A site-relative path or an absolute http(s) URL.
