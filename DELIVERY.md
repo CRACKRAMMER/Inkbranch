@@ -558,16 +558,24 @@ map 时输出**完全一致**）、`tests/integration/content-render.test.ts`（
 实际情况不一致，而不一致的原因指得出来**。测量对象是 Lighthouse 13.4.1、移动端形态、默认的
 `simulate` 节流；被测量的服务是 `scripts/serve-standalone.ts` 起的生产构建（`next start`
 在 `output: 'standalone'` 上会打印一条警告，但它服务这个构建是正确的——它不放松的是应用
-自己的生产姿态，见 `next.config.ts` 里那一段）。四类分数的结果是：accessibility、
-best-practices、seo 在每一条路由上都是 100；performance 在列表页、标签页、归档页、搜索页
-是 98–100，在两处最重的文档路由（`/posts/atomic-writes`、`/projects`）落在 90–95。同一份
-构建改用 `--throttling-method=devtools`（真实限速、指标是观测值而不是模拟值）之后是 **99**，
-LCP 1716 ms。
+自己的生产姿态，见 `next.config.ts` 里那一段）。在一台空闲的机器上，四类分数的结果是：
+accessibility、best-practices、seo 在每一条路由上都是 100；performance 在列表页、标签页、
+归档页、搜索页是 98–100，在两处最重的文档路由（`/posts/atomic-writes`、`/projects`）落在
+90–95。同一份构建改用 `--throttling-method=devtools`（真实限速、指标是观测值而不是模拟值）
+之后是 **99**，LCP 1716 ms。
 
 Lighthouse 13 起这个分数要按**边界**读，不能按单次结果读。在最重的那条文档路由上连续跑同一
 份构建、同一个已预热的服务进程，交替得到 95（LCP 2874 ms）与 92（LCP 3363 ms），两次之间
 没有任何代码或资源差异。也就是说这个模型输出的不是一个可比较的测量值，而是一段会随机器负载
 漂移的区间；把它当成回归信号会追到噪声上去。
+
+**而这个区间比"抖动几分"宽得多，它的下界是机器的属性，不是页面的属性。**同一条命令、同一份
+构建，机器空闲时是 95 / 95 / 95，机器上另外有进程吃 CPU 时（load average 7 左右，一个游戏与
+两个 Wine 进程在跑）变成 85 / 89 / 83，LCP 从 2.87 s 涨到 3.72–3.80 s，TBT 从 35–45 ms 涨到
+56–269 ms，而**页面总重一模一样（397–399 KB）**。同一条件下 devtools 那一组也从 99 掉到 90
+（LCP 1716 → 1950 ms）——那一个不是模拟器的毛病：devtools 模式下 TBT 是观测值，那台机器的主
+线程确实更慢（354 ms），一份 CPU 被抢走的测量本来就应该这样。所以上面每一个数字都附着一个
+条件：机器要空闲。
 
 **差在哪里，机制是清楚的**：`simulate` 先不限速地把页面跑一遍，记下每个请求的结束时刻与
 每个任务的耗时，然后拿"观测到的 LCP"当一个截止点，把结束在它之前的**每一个**网络节点都算进
@@ -622,19 +630,43 @@ Dialog、react-remove-scroll、sonner、lucide 图标、主题切换与搜索框
 两边的东西，任何这样的数字都会比它看起来更不可靠。能核对的是上面这句：最大的一块是 React DOM，
 而 CodeMirror、Shiki、drizzle 这些重东西一个都不在初次加载里。
 
-**结论要写清楚**：这一节的 >95 是在"网络被真正塑形"的测量下达成的（99），而在默认模拟器下
-两条最重的路由停在 95 的边界上，且如上所述那个模型对页面实际资源的增减并不单调响应。真正
-该做的测量是在真实部署上做一次。
+**结论要写清楚**：这一节的 >95 是在"网络被真正塑形"的测量下、在一台空闲机器上达成的（99）；
+在默认模拟器下，两条最重的路由停在 95 的边界上，机器一忙同一份构建就掉到 80 几，且如上所述
+那个模型对页面实际资源的增减并不单调响应。要判定这一节是否达成，该做的测量是在真实部署上
+做一次，而且要在不忙的机器上做。
+
+### 怎么复现上面这些数字
+
+```bash
+# 1. 被测量的服务：standalone 生产构建，端口 3200
+pnpm build
+pnpm serve:standalone
+
+# 2. 测量。Chrome 用 Playwright 已经装好的那个
+export CHROME_PATH=$(ls -d ~/.cache/ms-playwright/chromium-*/chrome-linux64/chrome | head -1)
+npx --yes lighthouse@13.4.1 http://127.0.0.1:3200/posts/atomic-writes \
+  --output=json --output-path=/tmp/lh.json \
+  --chrome-flags="--headless=new --no-sandbox --disable-dev-shm-usage" --quiet
+
+# 3. 换成观测值而不是模拟值的那一半对比
+npx --yes lighthouse@13.4.1 http://127.0.0.1:3200/posts/atomic-writes \
+  --throttling-method=devtools \
+  --chrome-flags="--headless=new --no-sandbox --disable-dev-shm-usage" --quiet
+```
+
+**跑之前先看 `uptime`**，这不是客套：上面那段 83–95 的区间就是这么来的，load average 高的时候
+测出来的数字没有比较价值。逐项阻塞那几张表用的是 `--blocked-url-patterns`，模式对着资源
+URL 写即可。
 
 **功能缺口**
 
-一项：**第三十二节的 Lighthouse performance 目标**。它在"网络被真正塑形"的测量下是达成的
-（99），但在默认模拟器下，两条最重的文档路由停在 95 的边界上，同一份构建在 92 与 95 之间
-漂移——列表页、标签页、归档页、搜索页则是 98–100（accessibility、best-practices、seo 在每一条
-路由上都是 100）。可走的路只有两条，都在上面写过：换掉 JetBrains Mono（实测约 +1 分，代价是
-本节的排版质量），或者接受那个模拟器测的不是这个页面的关键路径、并按真实部署的测量来判它。
-两条都不该由实现者单方面决定，所以这里记成一项目未完成，而不是算作已完成。**除这一项之外，
-没有别的未完成项**；下面剩下的是两类被明确接受的东西。
+一项：**第三十二节的 Lighthouse performance 目标**。在一台空闲机器上，它在"网络被真正塑形"的
+测量下是达成的（99），但在默认模拟器下，两条最重的文档路由停在 95 的边界上，同一份构建随机器
+负载在 83 与 95 之间漂移（见上）——列表页、标签页、归档页、搜索页则是 98–100（accessibility、
+best-practices、seo 在每一条路由上都是 100）。可走的路只有两条，都在上面写过：换掉
+JetBrains Mono（实测约 +1 分，代价是本节的排版质量），或者接受那个模拟器测的不是这个页面的
+关键路径、并按真实部署的测量来判它。两条都不该由实现者单方面决定，所以这里记成一项目未完成，
+而不是算作已完成。**除这一项之外，没有别的未完成项**；下面剩下的是两类被明确接受的东西。
 
 **架构性限制**（属于已知取舍，不是遗漏）
 
