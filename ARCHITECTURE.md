@@ -113,7 +113,7 @@ category: Technology
 cover: /uploads/2026/09/cover.webp
 featured: false
 toc: true
-summary: "..."             # optional, overrides auto-derived excerpt
+summary: "..."             # legacy alias of description, folded in when it is absent
 seo:
   title: "..."
   description: "..."
@@ -125,7 +125,7 @@ lang: zh
 ---
 ```
 
-Unknown keys are preserved on round-trip (`_extra`) so hand-written frontmatter is never destroyed by an admin save.
+Unknown keys are preserved on round-trip (`_extra`) so hand-written frontmatter is never destroyed by an admin save. Legacy spellings are folded rather than preserved: the alias table in `schema.ts` maps them onto the canonical key on read, and a save writes that spelling alone — a file using `pubDate` or `tech` comes back with `date` and `stack`.
 
 ### Notes are lighter
 
@@ -340,6 +340,8 @@ Plugin names in this list are the ones in `package.json`; the passes marked *(ou
 **An unresolved target is left exactly as written.** `[[nobody-wrote-this]]` reaches the reader as those characters — not as a link to a 404, and not as a backlink to nothing. It is the only signal the author gets, and it is the same one the editor's preview shows, because the preview renders through the same funnel.
 
 **Shiki runs at build/render time on the server.** The client receives pre-highlighted HTML with dual `--shiki-light` / `--shiki-dark` CSS variables. Theme switching is a CSS class change — no re-highlight, no highlighter bundle on the client.
+
+**Shiki's tokenisation budget is raised for this path.** Its default of 500 ms is not a soft target: the budget running out stops the scan mid-line and returns what it has, which under dual themes reaches the merge as a single token — the block renders in one colour rather than slowly. The first tokenisation in a process compiles the grammars and was measured at 216 ms idle and up to 638 ms under load, the wrong side of that default. `TOKENIZE_TIME_LIMIT` in `markdown/shiki.ts` carries the measurements and the value.
 
 Only `copy` buttons, Mermaid, and interactive tabs ship client JS, and Mermaid is dynamically imported only if the document actually contains a diagram.
 

@@ -56,7 +56,7 @@ export interface EditorDocument {
 function assemble(document: ContentDocument, row: ContentRow | null): EditorDocument {
   const parsed = parseFrontmatter(document.raw)
   const normalised = normaliseFrontmatterKeys(parsed.data)
-  const { known } = splitFrontmatterKeys(normalised)
+  const { known, extra } = splitFrontmatterKeys(normalised)
 
   return {
     type: document.type,
@@ -66,7 +66,13 @@ function assemble(document: ContentDocument, row: ContentRow | null): EditorDocu
     checksum: document.checksum,
     body: document.body,
     values: formValuesFromFrontmatter(normalised, { status: document.status }),
-    preserved: preservedKeys(known),
+    // Both halves of what the save writes back verbatim: the known keys the
+    // panel has no field for, and the keys nothing models at all. The section
+    // that lists them says "saving writes them back unchanged", which is just as
+    // true of the second half — and those are the keys an author is least
+    // likely to recognise, so leaving them out is the one omission the list
+    // cannot afford. The writer takes them from the same two buckets.
+    preserved: { ...preservedKeys(known), ...extra },
     dateKey: dateKeyOf(normalised),
     contentId: row?.id ?? null,
     wordCount: row?.wordCount ?? document.wordCount,

@@ -20,6 +20,41 @@ export const SHIKI_THEMES = {
   dark: 'vitesse-dark',
 } as const
 
+/**
+ * How long shiki may spend tokenising a single line, in milliseconds.
+ *
+ * Shiki's default is 500 ms, and it is not a soft target: when the budget runs
+ * out, vscode-textmate stops scanning mid-line and returns the tokens it has as
+ * though they were the whole line. Here that is not a slow render but a wrong
+ * one — the truncated line reaches the dual-theme merge as a single token, so
+ * the first token's colour is spread across the rest of it.
+ *
+ * The budget is spent by the *first* tokenisation in a process, which pays for
+ * compiling every grammar pattern to a JavaScript `RegExp`; the same line costs
+ * a few milliseconds from then on. Measured through the app's own path on one
+ * machine, a single TypeScript line in a cold process:
+ *
+ *   idle machine               216 ms
+ *   with the unit suite running 404 ms, 476 ms, 638 ms
+ *
+ * Against a 500 ms default that is not a margin. The 638 ms run is also the run
+ * in which `theme-contrast.test.ts` failed with the smeared palette, and the
+ * runs under 500 ms are the ones in which it passed — which is how this was
+ * found: a test failing at random once in every few runs on a tree where
+ * nothing was wrong. Under this limit, four further cold renders measured 543,
+ * 578, 665 and 800 ms — every one of them past the old cliff — and all four
+ * rendered correctly.
+ *
+ * Raised rather than removed. A fence that genuinely costs five seconds a line
+ * is pathological, and the honest answer to a pathological one is a slow render
+ * rather than an unbounded one; but the difference between the two is not a
+ * cliff a cold process falls off. The other way to spend this is to warm the
+ * first tokenisation at boot, which costs 4 s of CPU and a window of slow
+ * responses after every restart — `warmHighlighter` records that measurement
+ * and why it was not bought.
+ */
+export const TOKENIZE_TIME_LIMIT = 5_000
+
 type Themes = { light: ThemeRegistration; dark: ThemeRegistration }
 
 /**
@@ -81,12 +116,58 @@ async function loadThemes(): Promise<Themes> {
   }
 }
 
-export function getThemes(): Promise<Themes> {
+/**
+ * A theme with its own arrays and settings objects, for handing to a library
+ * that writes into them.
+ *
+ * Structural rather than `structuredClone`, because the two shapes shiki
+ * touches are known and a structural copy cannot throw on some future value the
+ * theme format is not supposed to carry. What it must cover is what was
+ * measured: the `tokenColors` array and the `settings` object of its entries.
+ */
+function copyTheme(theme: ThemeRegistration): ThemeRegistration {
+  return {
+    ...theme,
+    colors: theme.colors ? { ...theme.colors } : theme.colors,
+    tokenColors: theme.tokenColors?.map((token) => ({
+      ...token,
+      settings: token.settings ? { ...token.settings } : token.settings,
+    })),
+  }
+}
+
+/**
+ * The pair of themes the highlighter is built with — the cached pair, copied.
+ *
+ * The copy is not defensive habit; shiki writes into the object it is handed.
+ * One `createHighlighter` over `vitesse-light`, measured rather than assumed,
+ * takes `tokenColors` from 56 entries to 57 and rewrites the first: the entry
+ * scoped to `comment` comes back with no scope at all and carrying the editor's
+ * own colours. `normalizeTheme` is what does it — it renames `tokenColors` to
+ * `settings`, keeps the *same array*, and unshifts a default entry into it — and
+ * it runs again on every call, because the marker it leaves behind to make
+ * itself idempotent is non-enumerable and lands on a shallow copy rather than
+ * on the theme the caller passed.
+ *
+ * Every caller here hands the result straight to shiki, so without the copy the
+ * cache is a value that one consumer writes and the next one reads — in a
+ * process where `instrumentation.ts` warms a highlighter at boot while requests
+ * build another, and where the cache has to live on `globalThis` because two
+ * Next bundles share it.
+ *
+ * This is *not* why `theme-contrast.test.ts` used to fail at random; that was
+ * `TOKENIZE_TIME_LIMIT`, and it says what it was. This is the defect found while
+ * chasing it: the cache is shared mutable state, and shiki demonstrably edits
+ * it. Guarded by the test that asserts the pair comes back a copy.
+ */
+export async function getThemes(): Promise<Themes> {
   cache.themes ??= loadThemes().catch((error: unknown) => {
     cache.themes = null
     throw error
   })
-  return cache.themes
+
+  const themes = await cache.themes
+  return { light: copyTheme(themes.light), dark: copyTheme(themes.dark) }
 }
 
 /** Languages loaded eagerly. Everything else is loaded on demand. */

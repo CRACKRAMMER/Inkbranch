@@ -301,19 +301,72 @@ export function frontmatterSchemaFor(type: ContentType): z.ZodType {
 }
 
 /**
+ * Legacy or alternate key spellings, mapped onto the canonical ones. Keeps the
+ * importer forgiving without loosening the schema.
+ *
+ * Declared at module scope because two other lists have to agree with it:
+ * `KNOWN_FRONTMATTER_KEYS` below, and the panel's `FORM_OWNED_KEYS`. Both are
+ * wrong the moment they drift from this table, and in opposite directions —
+ * a spelling listed as known but never folded loses its value, and a spelling
+ * folded but not listed leaves the file with two spellings of one fact.
+ * Deriving both from the table is what makes that impossible rather than
+ * merely fixed: `ogImage` was the first of those, and the fourteen spellings
+ * that were folded but never retired were the second.
+ */
+export const FRONTMATTER_ALIASES: Record<string, string> = {
+  summary: 'description',
+  excerpt: 'description',
+  tags_string: 'tags',
+  pubDate: 'date',
+  publish_date: 'date',
+  created: 'date',
+  modified: 'updated',
+  image: 'cover',
+  thumbnail: 'cover',
+  categories: 'category',
+  project_status: 'projectStatus',
+  github: 'repo',
+  homepage: 'website',
+  tech: 'stack',
+  techStack: 'stack',
+}
+
+/**
+ * The legacy SEO spellings older posts carry at the top level.
+ *
+ * Not in `FRONTMATTER_ALIASES`: each lands on a sub-key of `seo` rather than on
+ * a key of its own, so `normaliseFrontmatterKeys` lifts them in a block of its
+ * own, where the value can be type-checked first.
+ */
+export const LEGACY_SEO_KEYS = [
+  'canonical',
+  'ogImage',
+  'noindex',
+  'seoTitle',
+  'seoDescription',
+] as const
+
+/**
  * Keys we handle ourselves. Anything else found in the frontmatter is kept in
  * `extra` and written back verbatim, so hand-authored metadata the app does not
  * understand is never silently deleted by an admin save.
+ *
+ * An alias has to be listed here to be retired on rewrite: the schema strips a
+ * key of `known` it does not recognise, while `extra` is the channel that
+ * preserves keys on purpose. That is why the alias half is derived from the
+ * table above rather than repeated.
  */
 export const KNOWN_FRONTMATTER_KEYS = new Set([
   // shared
-  'title', 'slug', 'description', 'summary', 'date', 'publishedAt', 'updated',
+  'title', 'slug', 'description', 'date', 'publishedAt', 'updated',
   'category', 'tags', 'cover', 'featured', 'toc', 'lang', 'series', 'seo',
   'status', 'draft', 'publishAt',
   // project
   'projectStatus', 'started', 'repo', 'website', 'stack',
+  // every spelling the normaliser folds — see FRONTMATTER_ALIASES
+  ...Object.keys(FRONTMATTER_ALIASES),
   // seo sub-keys surfaced at the top level by older posts
-  'canonical', 'ogImage', 'noindex', 'seoTitle', 'seoDescription',
+  ...LEGACY_SEO_KEYS,
   // importer bookkeeping — meaningless downstream, dropped on rewrite
   'importedFrom', 'originalPath',
 ])
@@ -339,28 +392,6 @@ export function normaliseFrontmatterKeys(
 ): Record<string, unknown> {
   const out: Record<string, unknown> = { ...raw }
 
-  const aliases: Record<string, string> = {
-    summary: 'description',
-    excerpt: 'description',
-    tags_string: 'tags',
-    pubDate: 'date',
-    publish_date: 'date',
-    created: 'date',
-    modified: 'updated',
-    image: 'cover',
-    thumbnail: 'cover',
-    category: 'category',
-    categories: 'category',
-    project_status: 'projectStatus',
-    github: 'repo',
-    homepage: 'website',
-    tech: 'stack',
-    techStack: 'stack',
-    canonical: 'seo',
-    seoTitle: 'seo',
-    seoDescription: 'seo',
-  }
-
   // `summary` and `excerpt` only become `description` when nothing better is
   // present. Both spellings are common in hand-written and imported files.
   if (out.description === undefined) {
@@ -368,17 +399,11 @@ export function normaliseFrontmatterKeys(
     if (typeof alias === 'string') out.description = alias
   }
 
-  for (const [from, to] of Object.entries(aliases)) {
+  for (const [from, to] of Object.entries(FRONTMATTER_ALIASES)) {
     if (from === 'summary' || from === 'excerpt') continue
     if (out[from] === undefined || out[to] !== undefined) continue
 
-    if (from === 'categories') {
-      out[to] = Array.isArray(out[from]) ? out[from][0] : out[from]
-    } else if (from === 'canonical' || from === 'seoTitle' || from === 'seoDescription') {
-      continue
-    } else {
-      out[to] = out[from]
-    }
+    out[to] = from === 'categories' && Array.isArray(out[from]) ? out[from][0] : out[from]
   }
 
   // `draft: true` is a common convention; map it onto status. Only the `true`
@@ -389,7 +414,20 @@ export function normaliseFrontmatterKeys(
     if (isDraft) out.status = 'draft'
   }
 
-  // Lift legacy top-level SEO keys into the nested object.
+  // Lift legacy top-level SEO keys into the nested object. These are the five
+  // spelling variants `LEGACY_SEO_KEYS` lists, and every one of them has to be
+  // here: the list puts them in `known`, and the schema strips a key of `known`
+  // it does not recognise — so a spelling that is listed but not lifted is a
+  // key nothing downstream can read. The reader takes its SEO fields from the
+  // nested object alone (`seo.ogImage`), which is how `ogImage` — the one
+  // missing from this block — came to be written in a file and yet leave every
+  // page without an OG image.
+  //
+  // The nested spelling always wins, and the top-level one is left in place to
+  // be dropped by the schema, so the file is rewritten with one spelling.
+  // The guards are per key rather than shared: `noindex` is a boolean, and a
+  // value of the wrong type has to be dropped here rather than handed to the
+  // schema, which would refuse to load a document that loads today.
   const seo = (out.seo && typeof out.seo === 'object' ? out.seo : {}) as Record<
     string,
     unknown
@@ -397,6 +435,9 @@ export function normaliseFrontmatterKeys(
   const liftedSeo: Record<string, unknown> = { ...seo }
   if (typeof out.canonical === 'string' && liftedSeo.canonical === undefined) {
     liftedSeo.canonical = out.canonical
+  }
+  if (typeof out.ogImage === 'string' && liftedSeo.ogImage === undefined) {
+    liftedSeo.ogImage = out.ogImage
   }
   if (typeof out.seoTitle === 'string' && liftedSeo.title === undefined) {
     liftedSeo.title = out.seoTitle

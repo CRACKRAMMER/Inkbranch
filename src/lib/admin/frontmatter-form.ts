@@ -2,6 +2,8 @@ import { z } from 'zod'
 
 import {
   CONTENT_STATUSES,
+  FRONTMATTER_ALIASES,
+  LEGACY_SEO_KEYS,
   PROJECT_STATUSES,
   type ContentStatus,
   type ContentType,
@@ -31,6 +33,12 @@ import {
  * understands (`summary`, `pubDate`, `github`, …) because the panel now holds
  * the canonical value for each of them — leaving an alias behind would give the
  * file two contradictory spellings of the same field.
+ *
+ * That ownership only bites for a spelling `KNOWN_FRONTMATTER_KEYS` also lists:
+ * `preservedKeys` filters the keys the schema was handed, and an unlisted
+ * spelling travels in `extra` instead, which the writer puts back verbatim. So
+ * the alias half below is derived from the table that folds them, and the whole
+ * list moves with it.
  */
 const FORM_OWNED_KEYS = new Set([
   'title',
@@ -54,27 +62,11 @@ const FORM_OWNED_KEYS = new Set([
   'website',
   'stack',
   // aliases superseded by a canonical key above
-  'summary',
-  'excerpt',
+  ...Object.keys(FRONTMATTER_ALIASES),
+  // folded onto `status` by its own block in the normaliser, not by the table
   'draft',
-  'pubDate',
-  'publish_date',
-  'created',
-  'modified',
-  'image',
-  'thumbnail',
-  'categories',
-  'project_status',
-  'github',
-  'homepage',
-  'tech',
-  'techStack',
-  'tags_string',
   // legacy top-level SEO, folded into `seo`
-  'canonical',
-  'seoTitle',
-  'seoDescription',
-  'noindex',
+  ...LEGACY_SEO_KEYS,
 ])
 
 const commaList = z.preprocess(
@@ -312,7 +304,7 @@ export function formValuesFromFrontmatter(
     seoTitle: stringOf(seo.title ?? normalised.seoTitle),
     seoDescription: stringOf(seo.description ?? normalised.seoDescription),
     seoCanonical: stringOf(seo.canonical ?? normalised.canonical),
-    seoOgImage: stringOf(seo.ogImage),
+    seoOgImage: stringOf(seo.ogImage ?? normalised.ogImage),
     seoNoindex: seo.noindex === true || seo.noindex === 'true' || normalised.noindex === true,
     projectStatus,
     started: toDateInput(normalised.started),

@@ -5,6 +5,8 @@ import {
   serializeFrontmatter,
 } from '@/lib/content/frontmatter'
 import {
+  FRONTMATTER_ALIASES,
+  LEGACY_SEO_KEYS,
   flexibleDate,
   normaliseFrontmatterKeys,
   noteFrontmatterSchema,
@@ -518,6 +520,38 @@ describe('normaliseFrontmatterKeys', () => {
     expect(normaliseFrontmatterKeys({ tech: ['go'], stack: ['ts'] }).stack).toEqual(['ts'])
   })
 
+  it('folds every spelling the alias table declares', () => {
+    // The table is the single source for two other lists — this module's
+    // `KNOWN_FRONTMATTER_KEYS` and the panel's `FORM_OWNED_KEYS` — and both of
+    // those retire a spelling on the strength of this loop having folded it.
+    // So every row has to fold, and only when the canonical key is absent: a
+    // save that dropped the alias without folding it would take the author's
+    // value with it, not merely the spelling.
+    const SAMPLE: Record<string, unknown> = {
+      description: 'Short version',
+      tags: 'linux, zsh',
+      date: '2020-01-01',
+      updated: '2021-02-02',
+      cover: '/c.png',
+      category: 'Tech',
+      projectStatus: 'active',
+      repo: 'https://github.com/x/y',
+      website: 'https://x.example',
+      stack: ['typescript'],
+    }
+
+    for (const [from, to] of Object.entries(FRONTMATTER_ALIASES)) {
+      // Fails loudly on a row whose target has no sample yet, rather than
+      // comparing `undefined` to `undefined` and passing.
+      expect(SAMPLE).toHaveProperty(to)
+
+      expect(normaliseFrontmatterKeys({ [from]: SAMPLE[to] })[to]).toEqual(SAMPLE[to])
+      expect(
+        normaliseFrontmatterKeys({ [from]: 'from the alias', [to]: 'from the canonical' })[to],
+      ).toBe('from the canonical')
+    }
+  })
+
   it('turns draft: true into a draft status', () => {
     for (const draft of [true, 'true', 1]) {
       expect(normaliseFrontmatterKeys({ draft }).status).toBe('draft')
@@ -550,6 +584,48 @@ describe('normaliseFrontmatterKeys', () => {
     })
   })
 
+  it('lifts every legacy SEO spelling into the seo object', () => {
+    // `LEGACY_SEO_KEYS` is the list `KNOWN_FRONTMATTER_KEYS` takes its
+    // "surfaced at the top level by older posts" group from — and a listed key
+    // goes into `known`, where the schema strips it. So each member needs a
+    // lift here or its value reaches nothing. `ogImage` was the one without
+    // one, which is how a file could carry an OG image while every page
+    // rendered without it. The length check is the half that matters: a
+    // seventh spelling added to the list fails this test until it has a lift.
+    const LIFTS = [
+      ['canonical', 'canonical', 'https://x.example/a'],
+      ['ogImage', 'ogImage', '/og/legacy.png'],
+      ['seoTitle', 'title', 'Search title'],
+      ['seoDescription', 'description', 'Search description'],
+      ['noindex', 'noindex', true],
+    ] as const
+
+    expect(LIFTS.map(([spelling]) => spelling).sort()).toEqual(
+      [...LEGACY_SEO_KEYS].sort(),
+    )
+
+    for (const [spelling, nested, value] of LIFTS) {
+      const seo = normaliseFrontmatterKeys({ [spelling]: value }).seo
+      expect((seo as Record<string, unknown>)[nested]).toBe(value)
+    }
+  })
+
+  it('drops a legacy SEO spelling of the wrong type instead of passing it on', () => {
+    // Caught here rather than by the schema below, because a document that
+    // loads today must not stop loading over a malformed legacy key.
+    expect(normaliseFrontmatterKeys({ canonical: 42 }).seo).toBeUndefined()
+    expect(normaliseFrontmatterKeys({ ogImage: ['/a.png'] }).seo).toBeUndefined()
+  })
+
+  it('keeps the nested spelling when a file carries both', () => {
+    expect(
+      normaliseFrontmatterKeys({
+        ogImage: '/og/top.png',
+        seo: { ogImage: '/og/nested.png' },
+      }).seo,
+    ).toEqual({ ogImage: '/og/nested.png' })
+  })
+
   it('passes the keys it has never heard of straight through', () => {
     expect(normaliseFrontmatterKeys({ mood: 'calm', rating: 5 })).toMatchObject({
       mood: 'calm',
@@ -578,6 +654,34 @@ describe('splitFrontmatterKeys', () => {
     const written = serializeFrontmatter(known, 'Body.', { extra })
 
     expect(parseFrontmatter(written).data).toEqual(raw)
+  })
+
+  it('carries a legacy top-level ogImage into the document the reader builds', () => {
+    // The read half of the seam, and the one no rewrite involved: the reader
+    // takes its SEO fields from the nested object alone (`asString(seo.ogImage)`),
+    // so a top-level spelling that is never lifted is a value nothing can see —
+    // the page renders without an OG image while the file plainly has one.
+    const source = [
+      '---',
+      'title: A post',
+      'date: 2026-01-01',
+      'ogImage: /og/legacy.png',
+      '---',
+      'Body.',
+      '',
+    ].join('\n')
+
+    const parsed = parseFrontmatter(source)
+    const { known } = splitFrontmatterKeys(normaliseFrontmatterKeys(parsed.data))
+    const validated = postFrontmatterSchema.safeParse(known)
+    expect(validated.success).toBe(true)
+    if (!validated.success) return
+
+    const data = validated.data as Record<string, unknown>
+    expect((data.seo as Record<string, unknown>).ogImage).toBe('/og/legacy.png')
+    // The schema strips the top-level spelling, so a rewrite driven by this
+    // document writes one spelling and not two.
+    expect(data.ogImage).toBeUndefined()
   })
 })
 

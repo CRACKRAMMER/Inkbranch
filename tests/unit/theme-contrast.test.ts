@@ -12,7 +12,7 @@ import {
   parseHex,
   type Rgba,
 } from '@/lib/markdown/theme-contrast'
-import { SHIKI_THEMES, getThemes } from '@/lib/markdown/shiki'
+import { SHIKI_THEMES, TOKENIZE_TIME_LIMIT, getThemes } from '@/lib/markdown/shiki'
 
 /**
  * The syntax palettes, checked against WCAG AA.
@@ -207,12 +207,42 @@ describe('the highlighter’s themes', () => {
     }
   })
 
+  it('arrive as a copy, so that building a highlighter cannot rewrite the cache', async () => {
+    /*
+     * Shiki normalises a theme in place — `createHighlighter` rewrites the
+     * `tokenColors` of the object it is handed. Every caller here hands it the
+     * pair from `getThemes()`, so if that pair were the cached objects
+     * themselves, a highlighter would be editing what the next reader gets.
+     *
+     * The assertion is on the *serialised* palette, because that is what shiki
+     * changes — an in-place rewrite keeps the object identity, so only the
+     * contents can tell the two apart. `getThemes` records what was measured.
+     */
+    const before = JSON.stringify((await getThemes()).light.tokenColors)
+
+    const { createHighlighter, createJavaScriptRegexEngine } = await import('shiki')
+    const handed = await getThemes()
+    await createHighlighter({
+      themes: [handed.light],
+      langs: ['typescript'],
+      engine: createJavaScriptRegexEngine({ forgiving: true }),
+    })
+
+    expect(JSON.stringify((await getThemes()).light.tokenColors)).toBe(before)
+  })
+
   it('still emit both palettes as CSS variables', async () => {
     // The whole theming strategy is that shiki writes `--shiki-light` and
     // `--shiki-dark` and the stylesheet picks between them. Passing theme
     // *objects* instead of names is what makes this worth asserting: if shiki
     // ever keyed those variables off something else, every code block on the
     // site would silently lose one of its two palettes.
+    //
+    // The budget is the app's, not shiki's default, so that this renders under
+    // the settings production renders under — see `TOKENIZE_TIME_LIMIT`. With
+    // the default, this assertion failed at random once in every few runs on a
+    // loaded machine, because the tokenisation of one of the two palettes was
+    // being cut off mid-line and the other one's colours filled in.
     const { createHighlighter, createJavaScriptRegexEngine } = await import('shiki')
     const themes = await getThemes()
 
@@ -226,6 +256,7 @@ describe('the highlighter’s themes', () => {
       lang: 'typescript',
       themes,
       defaultColor: false,
+      tokenizeTimeLimit: TOKENIZE_TIME_LIMIT,
     })
 
     // Shiki writes the style attribute in uppercase hex, so the comparison is
@@ -239,5 +270,26 @@ describe('the highlighter’s themes', () => {
     // The comment is the token that failed hardest, so it is the one to check
     // came through rewritten.
     expect(html).toContain(contrastSafeHex('#a0ada0', '#ffffff'))
+  })
+})
+
+describe('the code render path', () => {
+  it('gives tokenisation a budget a cold process can afford', () => {
+    /*
+     * The failure this guards against is not "highlighting is slow" but
+     * "highlighting is wrong": when shiki's time limit runs out it stops
+     * mid-line and hands back the tokens it has, so a truncated line reaches
+     * the dual-theme merge as a single token and its first colour is spread
+     * over the rest. The first tokenisation in a process — the one that
+     * compiles the grammars — was measured at 216 ms idle and up to 638 ms
+     * with the suite running, against a 500 ms default. The 638 ms run is the
+     * one the palette assertion above failed in.
+     *
+     * Asserted as a floor rather than as the literal, because the property
+     * worth failing on is "far enough above the cold cost that the race is not
+     * close", not one particular number. `TOKENIZE_TIME_LIMIT` carries the
+     * measurements and the reasoning for the value it holds.
+     */
+    expect(TOKENIZE_TIME_LIMIT).toBeGreaterThanOrEqual(5_000)
   })
 })

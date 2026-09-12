@@ -701,5 +701,32 @@ describe.skipIf(!hasTestDatabase)('authoring lifecycle', () => {
       expect(repaired?.indexDrift).toBeNull()
       expect(repaired?.values.description).toBe('Changed outside the admin.')
     })
+
+    it('lists every key a save writes back, known to the app or not', async () => {
+      // The editor's list is labelled "keys kept as written / saving writes them
+      // back unchanged", and the writer takes them from two buckets: the keys
+      // the panel has no field for, and the keys nothing models at all. Reading
+      // only the first left the second — the ones an author is least likely to
+      // recognise — out of the one place the editor mentions them.
+      const slug = 'keys-the-panel-does-not-own'
+      await writeUnindexed(
+        `posts/${slug}.md`,
+        frontmatter({
+          title: 'Keys The Panel Does Not Own',
+          slug,
+          lang: 'zh',
+          mood: 'calm',
+        }),
+      )
+
+      const document = await loadEditorDocument('post', slug)
+
+      // `lang` is in the schema and has no field in the panel; `mood` is in the
+      // schema nowhere at all.
+      expect(document?.preserved).toMatchObject({ lang: 'zh', mood: 'calm' })
+      // And neither is a panel value: a key listed as kept must not also be a
+      // field the editor would write from.
+      expect(document?.values).not.toHaveProperty('mood')
+    })
   })
 })

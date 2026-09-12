@@ -3,7 +3,12 @@ import type { Element, ElementContent, Parent, Root, RootContent } from 'hast'
 import type { ShikiTransformer } from 'shiki'
 import { visit } from 'unist-util-visit'
 import { parseCodeFenceMeta } from './code-meta'
-import { getHighlighter, getThemes, resolveLanguage } from './shiki'
+import {
+  TOKENIZE_TIME_LIMIT,
+  getHighlighter,
+  getThemes,
+  resolveLanguage,
+} from './shiki'
 
 /**
  * Rehype plugin: render every fenced code block with Shiki on the server.
@@ -167,6 +172,10 @@ async function buildCodeFigure(input: BuildCodeInput): Promise<Element> {
         // Emit only the CSS variables; the palette is chosen in CSS so that
         // theme switching costs nothing.
         defaultColor: false,
+        // Shiki's 500 ms default is a cliff, not a margin, for the first
+        // tokenisation after a restart — and the render that falls off it is
+        // wrong rather than slow. `TOKENIZE_TIME_LIMIT` has the measurements.
+        tokenizeTimeLimit: TOKENIZE_TIME_LIMIT,
         transformers: [transformer],
       })
     : plainTextHast(source, meta)

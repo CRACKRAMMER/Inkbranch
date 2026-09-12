@@ -106,7 +106,7 @@ category: Technology
 cover: /uploads/2026/09/cover.webp
 featured: false
 toc: true
-summary: "..."             # optional, overrides auto-derived excerpt
+summary: "..."             # legacy alias of description, folded in when it is absent
 seo:
   title: "..."
   description: "..."
@@ -118,7 +118,7 @@ lang: zh
 ---
 ```
 
-未知键在往返过程中会被保留（`_extra`），所以手写的 frontmatter 永远不会被后台的一次保存毁掉。
+未知键在往返过程中会被保留（`_extra`），所以手写的 frontmatter 永远不会被后台的一次保存毁掉。旧拼写走的是另一条路：`schema.ts` 里的别名表在读取时把它们折到规范键上，保存时只写规范拼写——用 `pubDate` 或 `tech` 写的文件，回来时是 `date` 和 `stack`。
 
 ### Note 更轻
 
@@ -301,6 +301,8 @@ raw markdown
 **解析不到的目标原样留下。** `[[nobody-wrote-this]]` 到达读者眼前的就是这几个字符 —— 不是指向 404 的链接，也不是指向空处的反链。这是作者唯一能得到的信号，而它与编辑器预览里看到的是同一个，因为预览走的是同一条管线。
 
 **Shiki 在服务端的构建 / 渲染期运行。** 客户端收到的是预先高亮好的 HTML，带成对的 `--shiki-light` / `--shiki-dark` CSS 变量。切换主题只是改一个 CSS class —— 不重新高亮，客户端也没有 highlighter 包。
+
+**这条路径把 Shiki 的 tokenisation 预算抬高了。** 它默认的 500 毫秒不是软目标：预算用尽会停在行中间、把已经扫出来的部分当整行返回，而在双主题下这一段会被合并成单个 token —— 于是代码块不是渲染得慢，而是整块一个颜色。一个进程里的第一遍 tokenisation 要编译 grammar，实测空闲 216 毫秒、有负载时最高 638 毫秒，正落在那个默认值的另一侧。测量数据与取值记在 `markdown/shiki.ts` 的 `TOKENIZE_TIME_LIMIT`。
 
 只有 `copy` 按钮、Mermaid 和交互式 tabs 会带上客户端 JS，而且只有当文档里真的有图时才会动态 import Mermaid。
 
