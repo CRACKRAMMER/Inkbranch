@@ -543,9 +543,12 @@ export async function recordPageView(
       contentId,
       referrerDomain: collected.view.referrerDomain,
       device: collected.view.device,
-      // Left empty. Filling it means reading the reader's address, which this
-      // project does not do, and `project.md` lists the field as optional — an
-      // empty column is the honest value, not a missing feature.
+      // Written out rather than left to the column's default, because it is a
+      // decision and not an omission. Filling it means reading the reader's
+      // address, which this project does not do, and `project.md` lists the
+      // field as optional — an empty column is the honest value, not a missing
+      // feature. Nothing else inserts into this table, so every row is empty.
+      country: '',
       navigationType: collected.view.navigationType,
       durationMs: collected.view.durationMs,
       visitorHash: hashVisitor(value, day),

@@ -572,6 +572,7 @@ export const analyticsDaily = pgTable(
       .notNull()
       .default(''),
     device: deviceTypeEnum('device').notNull().default('other'),
+    /** Carried through from the event; see `analyticsEvents.country`. */
     country: varchar('country', { length: 2 }).notNull().default(''),
   },
   (t) => [
@@ -614,6 +615,21 @@ export const analyticsEvents = pgTable(
       .notNull()
       .default(''),
     device: deviceTypeEnum('device').notNull().default('other'),
+    /**
+     * `''` on every row, by design rather than for want of a producer.
+     *
+     * A country is derived from the reader's address, and this project reads no
+     * header carrying one — see the collection rules in `collect.ts`, where the
+     * empty value is written out with the same reasoning. `project.md` lists the
+     * field as optional, so the empty string is the value that answers the
+     * specification.
+     *
+     * The column stays, and stays in `analytics_daily`'s uniqueness key, because
+     * a deployment can fill it without this code ever reading an address: a
+     * proxy that resolves the country itself (Cloudflare's `CF-IPCountry` is one)
+     * hands over the answer, not the address. That is a change to a header read,
+     * not to a table.
+     */
     country: varchar('country', { length: 2 }).notNull().default(''),
     visitorHash: varchar('visitor_hash', { length: 64 }).notNull().default(''),
     /** Nav type: `navigate`, `reload`, `back_forward`, `prerender`. */

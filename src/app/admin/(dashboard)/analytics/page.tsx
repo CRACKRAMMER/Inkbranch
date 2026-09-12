@@ -35,13 +35,15 @@ const DEVICE_LABELS: Record<DeviceType, string> = {
  * What the site recorded, and nothing it did not.
  *
  * Every number on this page is a roll-up of `analytics_daily`: a day, a path, a
- * referrer host, a device class and a country column, summed. There is no
- * address and no user agent anywhere behind it — `collect.ts` never reads a
- * header that carries one — so there is nothing here to redact and no "IP" field
- * to show. What is deliberately missing is as much the subject of this page as
- * what is present: referrers lose their query strings, the visitor cookie dies
- * at midnight, and no per-reader record exists to drill into. A reader who wants
- * a session view of their traffic wants a different tool than this one.
+ * referrer host and a device class, summed. There is no address and no user
+ * agent anywhere behind it — `collect.ts` never reads a header that carries one
+ * — so there is nothing here to redact and no "IP" field to show. The table
+ * carries a country dimension too, and it is `''` on every row: filling it means
+ * reading the reader's address, so no number here uses it. What is deliberately
+ * missing is as much the subject of this page as what is present: referrers lose
+ * their query strings, the visitor cookie dies at midnight, and no per-reader
+ * record exists to drill into. A reader who wants a session view of their
+ * traffic wants a different tool than this one.
  *
  * `visitors` is the one number here that needs a caveat every time it is shown:
  * it is the sum of per-dimension uniques, so a reader who came twice by two
