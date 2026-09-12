@@ -256,7 +256,14 @@ export default async function HomePage() {
                     <span className="text-ink-subtle">{event.verb}</span>{' '}
                     <Link
                       href={event.href}
-                      className="text-ink-muted transition-colors duration-150 hover:text-ink"
+                      // Underlined because this one is a link inside a sentence
+                      // rather than a line of its own: the verb before it and the
+                      // date after it are plain text, and the title is the only
+                      // word that goes anywhere. Colour alone does not say so —
+                      // `text-ink-muted` against the surrounding `text-ink` is
+                      // 2.65:1, under the 3:1 that WCAG asks for when a link is
+                      // told apart by nothing else.
+                      className="link-underline text-ink-muted transition-colors duration-150 hover:text-ink"
                     >
                       {event.title}
                     </Link>
@@ -281,9 +288,13 @@ export default async function HomePage() {
                   key={`${item.type}:${item.slug}`}
                   // The first featured item spans the full width, so the choice
                   // reads as ranked rather than as an arbitrary first cell.
-                  className={index === 0 ? 'bg-canvas sm:col-span-2' : 'bg-canvas'}
+                  className={
+                    index === 0
+                      ? 'group relative bg-canvas sm:col-span-2'
+                      : 'group relative bg-canvas'
+                  }
                 >
-                  <Link href={item.url} className="group flex h-full flex-col p-6 sm:p-7">
+                  <div className="flex h-full flex-col p-6 sm:p-7">
                     <div className="flex items-center gap-2.5 text-xs text-ink-subtle">
                       <time dateTime={toIsoDate(item.publishedAt ?? item.updatedAt)}>
                         {formatDate(item.publishedAt ?? item.updatedAt, dateContext, 'medium')}
@@ -299,7 +310,31 @@ export default async function HomePage() {
                           : 'mt-3 text-lg leading-snug tracking-tight text-ink transition-colors duration-150 group-hover:text-brand'
                       }
                     >
-                      {item.title}
+                      {/*
+                       * The card reads as one link and is one click target, but
+                       * the anchor is the title alone, stretched over the whole
+                       * cell by its own `::after`. Wrapping the card in the `<a>`
+                       * instead — which is what this was — puts the tag links
+                       * inside it, and an anchor inside an anchor is not a
+                       * nesting HTML has: the parser closes the outer one at the
+                       * first inner one and relocates the tag row outside the
+                       * card. The client, which builds the tree React asked for,
+                       * disagreed, and every load with a tagged featured post
+                       * logged a hydration mismatch. It needed content to show
+                       * because `TagList` renders nothing for a post with no
+                       * tags.
+                       *
+                       * `after:content-['']` is spelled out rather than left to
+                       * the variant: Tailwind's `after:` injects the declaration
+                       * itself, but the overlay is load-bearing here and this
+                       * makes the rule readable from the class list.
+                       */}
+                      <Link
+                        href={item.url}
+                        className="after:absolute after:inset-0 after:content-['']"
+                      >
+                        {item.title}
+                      </Link>
                     </h3>
 
                     {item.description ? (
@@ -308,10 +343,15 @@ export default async function HomePage() {
                       </p>
                     ) : null}
 
+                    {/*
+                     * Lifted above the stretched link's overlay so each tag is
+                     * still its own target. Underneath it they look like links
+                     * and behave like the title.
+                     */}
                     {item.tags.length > 0 ? (
-                      <TagList tags={item.tags} className="mt-5" />
+                      <TagList tags={item.tags} className="relative z-10 mt-5" />
                     ) : null}
-                  </Link>
+                  </div>
                 </li>
               ))}
             </ul>

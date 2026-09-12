@@ -36,7 +36,14 @@ export function TagList({
           <TagDot slug={tag.slug} color={tag.color} />
           <Link
             href={`/tags/${encodeURIComponent(tag.slug)}`}
-            className="text-xs text-ink-muted transition-colors duration-150 hover:text-ink"
+            // `text-xs` alone gives a 18px-tall box, which is under the 24px a
+            // touch target needs — these are tapped with a thumb, not pointed at
+            // with a cursor, and the row is dense enough that the miss is
+            // habitual rather than occasional. `py-1` is the smallest step on
+            // the spacing scale that clears 24px; it costs 8px of card height
+            // and nothing else, since the box is transparent either way and
+            // these are deliberately not chips.
+            className="py-1 text-xs text-ink-muted transition-colors duration-150 hover:text-ink"
           >
             {showHash ? <span className="text-ink-subtle">#</span> : null}
             {tag.name}
