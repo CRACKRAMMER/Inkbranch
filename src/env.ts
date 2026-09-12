@@ -174,8 +174,6 @@ export function assertProductionPosture(): void {
 }
 
 export const isProd = env.NODE_ENV === 'production'
-export const isDev = env.NODE_ENV === 'development'
-export const isTest = env.NODE_ENV === 'test'
 
 /** Absolute site origin without a trailing slash. */
 export const siteOrigin = env.SITE_URL.replace(/\/+$/, '')

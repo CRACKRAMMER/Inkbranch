@@ -286,10 +286,6 @@ export const projectFrontmatterSchema = baseFrontmatter
 export type PostFrontmatter = z.output<typeof postFrontmatterSchema>
 export type NoteFrontmatter = z.output<typeof noteFrontmatterSchema>
 export type ProjectFrontmatter = z.output<typeof projectFrontmatterSchema>
-export type AnyFrontmatter =
-  | PostFrontmatter
-  | NoteFrontmatter
-  | ProjectFrontmatter
 
 export function frontmatterSchemaFor(type: 'post'): typeof postFrontmatterSchema
 export function frontmatterSchemaFor(type: 'note'): typeof noteFrontmatterSchema

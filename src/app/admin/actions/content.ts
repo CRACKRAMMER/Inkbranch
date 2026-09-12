@@ -27,6 +27,7 @@ import type { GitCommitOutcome } from '@/lib/git'
 import {
   contentFormSchema,
   dateKeyOf,
+  emptyFormValues,
   frontmatterFromForm,
   preservedKeys,
   validateFrontmatter,
@@ -556,31 +557,11 @@ export async function createContentAction(
     // today rather than being left blank.
     const date = parsed.value.date || todayIso()
 
+    // The form's own empty values, with what the create form collected laid over
+    // them: one vocabulary for "what a document starts as", so a field added to
+    // the panel is a field a new document has.
     const built = frontmatterFromForm(
-      {
-        title,
-        slug,
-        description: '',
-        status,
-        date,
-        publishAt: '',
-        tags: [],
-        category: '',
-        series: '',
-        cover: '',
-        featured: false,
-        toc: true,
-        seoTitle: '',
-        seoDescription: '',
-        seoCanonical: '',
-        seoOgImage: '',
-        seoNoindex: false,
-        projectStatus: 'active',
-        started: '',
-        repo: '',
-        website: '',
-        stack: [],
-      },
+      { ...emptyFormValues(), title, slug, status, date },
       {},
       { dateKey: 'date', type },
     )

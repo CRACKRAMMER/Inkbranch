@@ -556,11 +556,6 @@ export async function importDocument(
   }
 }
 
-/** Directory a document lives in, relative to CONTENT_ROOT. */
-export function documentDirectory(relativePath: string): string {
-  return toPosix(path.dirname(relativePath))
-}
-
 export { typeDirectory }
 
 function sleep(ms: number): Promise<void> {

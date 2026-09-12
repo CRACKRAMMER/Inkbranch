@@ -62,11 +62,6 @@ export function typeDirectory(type: ContentType): string {
   return CONTENT_TYPE_DIRS[type]
 }
 
-/** Absolute path of the directory holding a content type. */
-export function typeDirPath(type: ContentType): string {
-  return assertInside(CONTENT_ROOT, joinRuntimePath(CONTENT_ROOT, typeDirectory(type)))
-}
-
 /**
  * Absolute path of a document, from its POSIX path relative to CONTENT_ROOT.
  *

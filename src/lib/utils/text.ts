@@ -185,13 +185,3 @@ export function truncate(input: string, maxLength: number): string {
 export function normalizeTagName(name: string): string {
   return name.normalize('NFKC').trim().replace(/\s+/g, ' ')
 }
-
-/** Stable hash of a string, used for cache keys and visitor salts. */
-export function fnv1a(input: string): string {
-  let hash = 0x811c9dc5
-  for (let i = 0; i < input.length; i += 1) {
-    hash ^= input.charCodeAt(i)
-    hash = Math.imul(hash, 0x01000193) >>> 0
-  }
-  return hash.toString(36)
-}

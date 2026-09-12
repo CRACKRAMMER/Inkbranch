@@ -9,7 +9,6 @@ import {
   contentTags,
   tags,
   type ContentRow,
-  type ContentStatus,
   type ContentType,
 } from '@/lib/db/schema'
 import { documentUrl } from './paths'
@@ -546,20 +545,3 @@ export const countByType = cache(
     return result
   },
 )
-
-/** Distinct statuses present, for the admin dashboard. Never used publicly. */
-export async function countByStatus(): Promise<Record<ContentStatus, number>> {
-  const rows = await db
-    .select({ status: contentIndex.status, value: count() })
-    .from(contentIndex)
-    .groupBy(contentIndex.status)
-
-  const result: Record<ContentStatus, number> = {
-    draft: 0,
-    scheduled: 0,
-    published: 0,
-    archived: 0,
-  }
-  for (const row of rows) result[row.status] = row.value
-  return result
-}

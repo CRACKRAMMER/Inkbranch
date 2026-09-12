@@ -45,8 +45,6 @@ export const RATE_LIMITS = {
   sensitiveAction: { capacity: 10, refillPerSecond: 10 / 3600, cost: 1 },
 } as const satisfies Record<string, RateLimitPolicy>
 
-export type RateLimitName = keyof typeof RATE_LIMITS
-
 /**
  * Consume tokens from the bucket identified by `key`.
  *
@@ -108,38 +106,6 @@ export async function consumeRateLimit(
     remaining: 0,
     retryAfterMs,
     limit: capacity,
-  }
-}
-
-/** Check without consuming. Useful for pre-flight checks. */
-export async function peekRateLimit(
-  key: string,
-  policy: RateLimitPolicy,
-): Promise<RateLimitResult> {
-  const result = await db.execute(sql`
-    select tokens from rate_limits where key = ${key} limit 1
-  `)
-  const row = (result.rows[0] ?? null) as { tokens?: number | string } | null
-
-  if (!row || row.tokens === undefined) {
-    return { allowed: true, remaining: policy.capacity, retryAfterMs: 0, limit: policy.capacity }
-  }
-
-  const tokens = Number(row.tokens)
-  if (tokens >= 0) {
-    return {
-      allowed: true,
-      remaining: Math.floor(tokens),
-      retryAfterMs: 0,
-      limit: policy.capacity,
-    }
-  }
-
-  return {
-    allowed: false,
-    remaining: 0,
-    retryAfterMs: Math.ceil((Math.abs(tokens) / policy.refillPerSecond) * 1000),
-    limit: policy.capacity,
   }
 }
 

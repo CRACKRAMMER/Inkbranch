@@ -2,7 +2,7 @@ import type { Metadata } from 'next'
 import { notFound } from 'next/navigation'
 
 import { CoverImage } from '@/components/content/cover-image'
-import { DocumentFacts, DocumentView } from '@/components/content/document-view'
+import { DocumentFacts, DocumentView, startedLabel } from '@/components/content/document-view'
 import { getContent, getAdjacent } from '@/lib/content/queries'
 import { readDocument } from '@/lib/content/reader'
 import { describeImage, renderDocument } from '@/lib/content/render'
@@ -16,7 +16,6 @@ import {
 } from '@/lib/seo/jsonld'
 import { buildContentMetadata, siteIdentityFromSettings } from '@/lib/seo/metadata'
 import { getSettings } from '@/lib/settings'
-import { formatDate } from '@/lib/utils/date'
 
 /**
  * A project.
@@ -110,11 +109,11 @@ export default async function ProjectPage({
           <DocumentFacts
             facts={[
               { label: 'Status', value: status },
+              // `null` when the project has no start date, which `DocumentFacts`
+              // drops — the fact is simply absent rather than shown blank.
               {
                 label: 'Started',
-                value: doc.startedAt
-                  ? formatDate(doc.startedAt, context, 'medium')
-                  : null,
+                value: startedLabel(doc.startedAt, context.locale, context.timeZone),
               },
               {
                 label: 'Built with',

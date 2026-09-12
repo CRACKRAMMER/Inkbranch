@@ -18,7 +18,6 @@ import {
   scanContentFiles,
   type ContentFileStat,
 } from './reader'
-import { documentUrl } from './paths'
 import { incomingKeys, pickTarget, resolveTargetKeys } from './resolve'
 import type { ContentType } from './schema'
 
@@ -800,9 +799,4 @@ function placeholderDocument(file: ContentFileStat): ContentDocument {
 function sameInstant(a: Date | null | undefined, b: Date | null | undefined): boolean {
   if (!a || !b) return a === b
   return Math.abs(a.getTime() - b.getTime()) < 1000
-}
-
-/** Human-readable URL for a row, used by CLI output. */
-export function rowUrl(row: Pick<ContentRow, 'type' | 'slug'>): string {
-  return documentUrl(row.type, row.slug)
 }

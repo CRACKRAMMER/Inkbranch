@@ -956,6 +956,28 @@ e2e 测接线——发两篇带标签的文档，断言句子里是**并集**（
 
 回归数字：lint 干净、typecheck 干净、1103 单元、1261 集成、56 e2e。
 
+**第二批：十二个没有读者的导出、七个没有读者的类型别名，以及两处"同一条规则写了两遍"。** 判据与上文一致。这一批里唯一可能被看出来的是那两处接线，而它的效果不在行为上——旧的写法与新的写法逐字等价，见下。类型别名与常量跟函数不同：`eslint` 的 `no-unused-vars` 只管模块内的名字，一旦 `export` 就算"被使用"，所以这一类不会自己冒出来，只能靠一次人工清点。
+
+十二个导出按理由分四类，没有一类是"没人用"这么一句话：
+
+1. **同一条规则的第二种写法。**`countByStatus`（`content/queries.ts`）的注释写"给管理后台的状态计数"，而后台读的是 `contentCounts()`（`lib/admin/queries.ts`）——同一批行、同一种分组，两处各写一遍；`AnyFrontmatter`（`content/schema.ts`）是三个 frontmatter 类型的联合，而"按类型取 schema"已经有 `frontmatterSchemaFor(type)` 的三个重载，读者要的从来不是那个联合；`isDev` / `isTest`（`env.ts`）与 `isProd` 是同一判断的三种写法，全项目只用 `isProd`；`rowUrl`（`content/sync.ts`）是 `documentUrl` 的一行包装，注释说"给 CLI 输出用"，而 CLI 用的就是 `documentUrl`。
+2. **文档在描述一个不存在的调用方——这一类最该删。**`fnv1a`（`utils/text.ts`）的注释写"用于缓存键与访客盐"，而访客哈希是 `analytics/collect.ts` 里 `hashVisitor` 的 `createHmac('sha256', secret)`，缓存键一处都不用它；`typeDirPath`（`content/paths.ts`）自称"某类型的目录绝对路径"，而唯一需要目录的地方是 `requiredContentDirs()`、它自己拼，其余代码拿到的都是文档的完整路径；`documentDirectory`（`content/writer.ts`）取一个相对路径的目录名，没有任何代码想知道文档在哪个目录里。留着的代价不是那几行，是**注释本身成了误导**：下一个人按它去找那条路，只会找到它。
+3. **check-then-act 的预检，在限流这件事上给不出承诺。**`peekRateLimit`（`auth/rate-limit.ts`）的注释写"用于预检"，而限流的预检天生是竞态——查完到这请求真正扣令牌之间，别的请求已经扣过了，所以它返回的"允许"不是承诺；所有真实调用点都在放行的那一刻用 `consumeRateLimit` 原子扣减。`RateLimitName`（同文件）是 `keyof typeof RATE_LIMITS` 的别名：没有读者的类型别名等于没有约束。
+4. **一条绕过所有权判定的入口。**`destroySessionByToken`（`auth/session-store.ts`）按令牌哈希直接删行；活着的两条路各有分工——`destroySession(id)` 用于请求内的登出（id 来自已解析的会话），`revokeSession(userId, sessionId)` 把所有权检查与删除写成同一条语句，按令牌删会绕开后者那道作用域。删除（与本节早先删掉 `destroyAllUserSessions` 同一条判据）。
+
+另有一个不归上面四类、证据最直白的：`CONTENT_FORM_FIELD_NAMES` 是一份手写的字段名清单，写的时候是 19 个，而 `contentFormSchema` 有 22 个——**它已经漂了**，漏掉的正是 `featured`、`toc`、`seoNoindex` 三个布尔。字段名的权威只能是 schema。那七个类型别名（`NewUser`、`NewContentRow`、`RevisionRow`、`TagRow`、`SiteSettingsRow`、`AnalyticsDailyRow`、`ContentLinkRow`）在同一个文件的同一段里，旁边十一个 `$inferSelect` 别名都有读者，这七个没有：项目里所有读路径都在自己的查询里 `select` 出确切的列（`listUserSessions` 返回的甚至是比 `Session` 更窄的 `SessionSummary`），写路径用的是 `db.insert(x).values({...})` 的对象字面量并当场被 `$inferInsert` 检查，多一个 `NewXxx` 别名只让"这个字段能不能插"多一种说法。
+
+两处接线都不是新能力，而是**把已经写好的那一半接上**，且行为逐字等价：
+
+1. `createContentAction` 曾经把 22 个字段的初始值**手抄一遍**（`frontmatterFromForm` 的第一个实参），而 `emptyFormValues()` 就是那份对象、只是没有任何调用方。两处当时逐个相同——包括那个 `type === 'project' ? 'active' : 'active'` 的三元（两条分支一样，那个因此从没起过作用的 `type` 形参也一并去掉，并在文档里写明为什么不需要它）。现在新文档的初始值只有一处可改。
+2. 项目页的 Started 事实曾经内联 `formatDate(doc.startedAt, context, 'medium')`，而 `document-view.tsx` 里 `startedLabel()` 的函数体就是这一行、也只是这一行，同样没有调用方。
+
+因为逐字等价，这里没有新增测试——能抓住这类漂移的测试，只能是"断言产品里只有一份定义"的结构性检查，而这正是删除与接线本身完成的：第二份副本现在不存在了。所以给的是一条口径而不是一条测试：**再看到同一份规则被抄第二遍，处置是删掉其中一份，不是补一个断言让两份暂时相等。**（本节前面为 tag 合并写过同一句话：一条规则两个实现就是两个答案。）
+
+**一处保留，写在这里以免下次被当成漏网。**`src/components/ui/` 整棵子树里有十二个模块一个导入者都没有（avatar、card、collapsible、dropdown-menu、empty-state、popover、progress、scroll-area、select、separator、table、tooltip），连 `index.ts` 那个 barrel 也没有人 import——`src/lib/*` 的 barrel 各有几十个读者，只有它没有。保留的理由是它**不是应用代码，是库表面**：应用代码的读者是产品，没有读者就是死的；库的读者是下一个页面，而这一份是 shadcn 风格的原语集合（`ARCHITECTURE.md` 自己就是这么写的），删掉一半之后要用回来是重新生成，不是取消注释。
+
+回归数字：lint 干净、typecheck 干净、1103 单元、1261 集成、56 e2e。
+
 ---
 
 ## 附录：`ARCHITECTURE.md` 的来历

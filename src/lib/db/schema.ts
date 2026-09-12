@@ -823,20 +823,13 @@ export const auditLogsRelations = relations(auditLogs, ({ one }) => ({
 /* -------------------------------------------------------------------------- */
 
 export type User = typeof users.$inferSelect
-export type NewUser = typeof users.$inferInsert
 export type Session = typeof sessions.$inferSelect
 export type ContentRow = typeof contentIndex.$inferSelect
-export type NewContentRow = typeof contentIndex.$inferInsert
-export type RevisionRow = typeof contentRevisions.$inferSelect
-export type TagRow = typeof tags.$inferSelect
 export type AssetRow = typeof assets.$inferSelect
 export type RedirectRow = typeof redirects.$inferSelect
 export type NavigationRow = typeof navigation.$inferSelect
-export type SiteSettingsRow = typeof siteSettings.$inferSelect
 export type AuditLogRow = typeof auditLogs.$inferSelect
 export type ScheduledJobRow = typeof scheduledJobs.$inferSelect
-export type AnalyticsDailyRow = typeof analyticsDaily.$inferSelect
-export type ContentLinkRow = typeof contentLinks.$inferSelect
 
 export type ContentType = (typeof contentTypeEnum.enumValues)[number]
 export type ContentStatus = (typeof contentStatusEnum.enumValues)[number]

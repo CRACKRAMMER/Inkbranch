@@ -136,10 +136,6 @@ export async function destroySession(sessionId: string): Promise<void> {
   await db.delete(sessions).where(eq(sessions.id, sessionId))
 }
 
-export async function destroySessionByToken(rawToken: string): Promise<void> {
-  await db.delete(sessions).where(eq(sessions.tokenHash, hashToken(rawToken)))
-}
-
 /**
  * One session, as the settings page is allowed to see it.
  *

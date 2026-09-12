@@ -167,29 +167,20 @@ export const contentFormSchema = z.object({
 
 export type ContentFormValues = z.infer<typeof contentFormSchema>
 
-export const CONTENT_FORM_FIELD_NAMES = [
-  'title',
-  'slug',
-  'description',
-  'status',
-  'date',
-  'publishAt',
-  'tags',
-  'category',
-  'series',
-  'cover',
-  'seoTitle',
-  'seoDescription',
-  'seoCanonical',
-  'seoOgImage',
-  'projectStatus',
-  'started',
-  'repo',
-  'website',
-  'stack',
-] as const
-
-export function emptyFormValues(type: ContentType): ContentFormValues {
+/**
+ * The values a document starts with, before anyone has typed.
+ *
+ * The create action builds a new document from this, so a field added to the
+ * form is a field a new document gets; the action used to spell the same object
+ * out by hand, which is one edit away from a new document whose frontmatter
+ * differs from what the panel shows for it.
+ *
+ * No `type` parameter: it used to pick the project status with a ternary whose
+ * two arms were both `active`, and the key means the same thing on the other
+ * types — a project's status is a property of the document, and `active` is
+ * where one starts.
+ */
+export function emptyFormValues(): ContentFormValues {
   return {
     title: '',
     slug: '',
@@ -208,7 +199,7 @@ export function emptyFormValues(type: ContentType): ContentFormValues {
     seoCanonical: '',
     seoOgImage: '',
     seoNoindex: false,
-    projectStatus: type === 'project' ? 'active' : 'active',
+    projectStatus: 'active',
     started: '',
     repo: '',
     website: '',
