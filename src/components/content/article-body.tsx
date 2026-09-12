@@ -1,4 +1,7 @@
+import { PROSE_FONT } from '@/lib/fonts'
+
 import { CodeEnhancer } from './code-enhancer'
+import { FontPreloadLink } from './font-preload'
 
 /**
  * The rendered document body.
@@ -24,6 +27,13 @@ export function ArticleBody({
 }) {
   return (
     <CodeEnhancer contentKey={contentKey}>
+      {/*
+       * This component is the only place article prose is rendered, and every
+       * page that has prose renders it, so it is the exact scope for the
+       * article face's preload — see `src/lib/fonts.ts` for why the hint is
+       * written by hand and why it belongs here rather than in the layout.
+       */}
+      <FontPreloadLink font={PROSE_FONT} />
       <div
         className="prose"
         data-article-body=""

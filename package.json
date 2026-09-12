@@ -10,7 +10,7 @@
   "packageManager": "pnpm@12.3.4",
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "build": "next build && tsx scripts/check/font-preload.ts",
     "start": "next start",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
@@ -28,6 +28,7 @@
     "content:import": "tsx --conditions=react-server scripts/content/import.ts",
     "content:links": "tsx --conditions=react-server scripts/content/links.ts",
     "content:stats": "tsx --conditions=react-server scripts/content/stats.ts",
+    "check:font-preload": "tsx scripts/check/font-preload.ts",
     "worker": "tsx --conditions=react-server scripts/worker.ts",
     "backup": "bash scripts/backup.sh",
     "restore": "bash scripts/restore.sh"
