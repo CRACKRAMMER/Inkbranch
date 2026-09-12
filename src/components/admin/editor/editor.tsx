@@ -96,11 +96,22 @@ export function Editor({
   doc,
   locale,
   listHref,
+  previewHref,
   segment,
 }: {
   doc: EditorDocumentPayload
   locale: string
   listHref: string
+  /**
+   * The draft reading surface, built by the page from the file's name.
+   *
+   * Built on the server because it is the *filename* that goes in it, and the
+   * client has no business deriving one: a document's slug may differ from its
+   * file's name, since a slug rename is a frontmatter change rather than a file
+   * rename. `null` only when the path did not parse, which is a file that is not
+   * a document.
+   */
+  previewHref: string | null
   segment: string
 }) {
   const router = useRouter()
@@ -374,6 +385,32 @@ export function Editor({
         <StatusBadge status={values.status} />
 
         <div className="flex items-center gap-2">
+          {/* The preview reads the *file*, and the buffer above is not the file
+              — autosave records a draft revision and writes nothing — so this is
+              a link only while the two agree. While they do not, the slot says
+              what the preview would show instead of opening a page older than
+              the screen; the unsaved-changes line under the header already says
+              the same thing about the file, which is why this needs no sentence
+              of its own. It is offered even for a file the index has no row for:
+              the route reads the disk, and an unindexed draft is exactly a
+              document its author still wants to read. */}
+          {previewHref === null ? null : dirty ? (
+            <span
+              className="text-sm text-ink-subtle"
+              title="The preview reads the file. Autosave records a draft revision and does not write it."
+            >
+              Preview after saving
+            </span>
+          ) : (
+            <a
+              href={previewHref}
+              target="_blank"
+              rel="noreferrer"
+              className="text-sm text-ink-muted hover:text-brand"
+            >
+              Preview
+            </a>
+          )}
           {/* A file the index has no row for has no revisions either — they
               attach to the row's id — and the page that lists them can only
               answer with a 404. The notice above says why there are none. */}

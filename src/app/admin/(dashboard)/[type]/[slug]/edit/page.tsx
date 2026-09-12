@@ -2,6 +2,7 @@ import type { Metadata } from 'next'
 import { notFound } from 'next/navigation'
 
 import { requireUser } from '@/lib/auth/session'
+import { parseRelativePath } from '@/lib/content/paths'
 import { getSettings } from '@/lib/settings'
 import { loadEditorDocument } from '@/lib/admin/documents'
 import { typeFromSegment } from '@/lib/admin/routes'
@@ -47,8 +48,21 @@ export default async function EditDocumentPage({
 
   if (!document) notFound()
 
+  // The preview names a *file*: the route validates a slug and builds the path
+  // from it, so what belongs in the URL is the filename stem and not the
+  // document's slug. The two are different by design — a slug rename is a
+  // frontmatter change, not a file rename, because a URL someone has already
+  // shared must keep working — so `values.slug` here would ask the route for a
+  // file that was never written, and the author would get a 404 from the one
+  // page that exists to show them their own draft.
+  const file = parseRelativePath(document.path)
+  const previewHref = file
+    ? `/api/preview?type=${file.type}&slug=${encodeURIComponent(file.slug)}`
+    : null
+
   return (
     <Editor
+      previewHref={previewHref}
       doc={{
         type: document.type,
         slug: document.slug,

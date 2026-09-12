@@ -145,6 +145,14 @@ export const E2E_BASE_URL = process.env.E2E_BASE_URL ?? `http://127.0.0.1:${E2E_
  * over plain HTTP. The alternative — setting `COOKIE_SECURE=0` — does not start
  * the server at all.
  *
+ * That exemption belongs to the browser and not to the suite. An
+ * `APIRequestContext` — `request`, `page.request`, `context.request` — applies
+ * RFC 6265 literally and withholds a `Secure` cookie from an `http:` request
+ * whatever the host, so one of those arrives signed out and is redirected to the
+ * sign-in page. A test that needs the session *and the response* has to navigate
+ * for it; `page.request` is for the routes that answer a stranger, which is what
+ * every other use of it in this suite is.
+ *
  * ## Why the embedded worker is switched off
  *
  * `WORKER_ENABLED=0` turns off the loop the server starts for itself, and it is

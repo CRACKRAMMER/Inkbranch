@@ -978,6 +978,20 @@ e2e 测接线——发两篇带标签的文档，断言句子里是**并集**（
 
 回归数字：lint 干净、typecheck 干净、1103 单元、1261 集成、56 e2e。
 
+**再补一条，方向与前面几条正好相反：这次缺的不是"执行的那一半"，是"入口的那一半"。** 前面几条都是"规则/策略在、没有执行方"，`/api/preview` 反过来——一条写完了、有文档、有安全推理的路由，产品里没有任何地方指向它。它是 `GET /api/preview?type=&slug=`，`requireUser` 是函数体的第一句（在任何参数被读、任何文件被碰之前），渲染磁盘上的文档而**不看 status**。它自己的注释解释了为什么不做成 `/posts/x?preview=1`：公开路由上的一个查询参数等于给草稿留一个常开的泄漏面（一处忘掉的 status 检查、一条 CDN 规则、一层缓存中间件都足够），而 `/api/` 本来就被 `robots.txt` 整体 disallow。也就是说这不是一个顺手写的工具，是带着理由写好的——只是没有入口。
+
+而产品里确实没有：后台列表的 View 只在 `row.status === 'published'` 时出现（`src/components/admin/content-list.tsx:261`），公开页按 status 过滤，所以一份草稿**一个能读它的地址都没有——连作者自己也没有**。而设定稿开头那份要求清单里就写着"支持后台直接创建、编辑、预览、发布 Markdown"（`project.md` 第 11 行，正文第一节之前），DELIVERY 到此为止一次都没提过这条路由。判据因此是"接上"而不是"删掉"，与前文接上 wiki 链接、接上漂移横幅同一条。
+
+接线要解决的真问题是命名：这条路由要的是**文件名**，不是文档的 slug。两个参数喂给 `buildRelativePath`——那正是"查询串不会以路径的身份到达文件系统"的那道保证——而 slug 重命名改的是 frontmatter、不动文件，因为**已经分享出去的 URL 必须继续能用**。所以拿 `values.slug` 拼出来的地址会去要一个从来没有写过的文件，作者会从**唯一一个为看他自己的草稿而存在的页面**上拿到 404 `No document at posts/new.md`。接线因此落在服务端：编辑页用 `parseRelativePath(document.path)` 取文件名，客户端只收到一个已经拼好的 href。
+
+第二个判断是不许撒谎。编辑器里"文件 / 缓冲区 / 草稿修订"是三件事，autosave 记的是修订、**不写文件**，所以缓冲区领先时那个位置显示 "Preview after saving" 而不是一个链接——一个链接会打开比屏幕上更旧的版本，而那正是预览最不该做的事。这句话不另加解释，因为表头下面那行 "Unsaved changes — not yet written to the file" 已经在说同一件事。入口对**未索引**的草稿也给：路由读的是盘，而一份还没进索引的草稿恰恰是作者想看的。文档随之改了两处：路由新增 `## What slug means here` 一节把这个词在这里的含义写死（文件名的主干，不是文档的 slug，以及为什么），400 的那句话从 "a valid slug" 改成 "the file's name as a slug"。
+
+测试补在 e2e 层，两条，两个 project 都跑，因为这里新增的是一处**接线**：权限与渲染分别由 `requireUser`、`renderDocument` 自己的测试守着，而"入口对不对"只有浏览器能回答。第一条走完整的一遍——新建草稿、打字（断言此刻是 "Preview after saving" 且没有链接）、保存（链接出现）、**改 slug**、断言 href 里是**旧**名字（也就是文件名）、断言公开站点在新旧两个地址上都是 404、再从链接打开预览读到自己刚写的那段话。第二条问的是"别人能不能看"：同一个地址在没有会话时被带到登录页、`next` 原样带着这个地址、被拒的响应体里没有那段话、登录之后落回草稿，最后断言响应头上的 `x-robots-tag: noindex` 与 `cache-control: private, no-store`。
+
+一条查证时发现、值得单独记的事：后一条的响应头一开始是用 `page.request.get()` 读的，它稳定地失败，而原因不在路由，在 `APIRequestContext` 与浏览器的差别——`page.request` 严格按 RFC 6265 办事，**`Secure` cookie 不附加到 `http:` 请求上、不看主机**，而 Chromium 把 `127.0.0.1` 当安全上下文、肯在明文 HTTP 上收下并回送它。这一套 e2e 的服务端是照部署配的（`COOKIE_SECURE=1` 配明文 HTTP，理由见 `tests/e2e/environment.ts`），于是同一个地址经 `page.request` 发出去是**未登录**的，跟着重定向拿到的是登录页的 200，那几个头一个都不在上面。所以头是从**导航**的响应上读的（`page.goto` 的返回值），并把这条差别写进了 `environment.ts` 里那段 COOKIE_SECURE 的理由旁边——它属于那里而不是这个 spec：本套件其余每一处 `page.request` / `request` 打的都是"对陌生人也要回答"的路由（`/api/search`、`/api/graph`、feed、beacon、资源文件），从没有一处需要会话，所以这个坑此前没被踩到过。
+
+回归数字：lint 干净、typecheck 干净、1103 单元、1261 集成、60 e2e。
+
 ---
 
 ## 附录：`ARCHITECTURE.md` 的来历

@@ -26,6 +26,17 @@ import { isValidSlug } from '@/lib/utils/slug'
  * an unpublished document served to a stranger. A separate path under `/api/`,
  * which `robots.txt` already disallows wholesale, has no such surface.
  *
+ * ## What `slug` means here
+ *
+ * The filename stem, not the document's slug. This route names a *file*: the
+ * pair is fed to `buildRelativePath`, which is what keeps a query string from
+ * reaching the filesystem as a path. A document's slug is its identity and its
+ * file's name is not — a slug rename edits the frontmatter and leaves the file
+ * where it is, because a URL someone already shared has to keep working — so an
+ * author whose document was renamed would get "No document at posts/new.md" for
+ * a draft sitting right there. The editor builds this URL from the file it is
+ * editing for that reason, and nothing else should build it at all.
+ *
  * The cost is the styling: Next emits the site's stylesheet at build time under
  * a hashed name that a route handler cannot know, so the shell below carries a
  * few rules of its own instead of pretending to be the published page. It is a
@@ -141,7 +152,7 @@ export async function GET(request: Request): Promise<Response> {
 
   if (!isContentType(type) || !isValidSlug(slug)) {
     return failure(
-      `A preview needs a valid type (${CONTENT_TYPES.join(', ')}) and a slug.`,
+      `A preview needs a valid type (${CONTENT_TYPES.join(', ')}) and the file's name as a slug.`,
       400,
     )
   }
