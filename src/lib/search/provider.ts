@@ -1,4 +1,4 @@
-import type { ContentStatus, ContentType } from '@/lib/content/schema'
+import type { ContentStatus, ContentType } from '@/lib/content/kinds'
 
 /**
  * The search boundary.

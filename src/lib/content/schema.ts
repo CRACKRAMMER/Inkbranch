@@ -1,5 +1,12 @@
 import { z } from 'zod'
 
+import {
+  CONTENT_STATUSES,
+  PROJECT_STATUSES,
+  type ContentStatus,
+  type ContentType,
+} from './kinds'
+
 /**
  * Frontmatter schemas.
  *
@@ -9,25 +16,16 @@ import { z } from 'zod'
  *
  * The shapes differ per content type: a Note may omit almost everything, while
  * a Post must have a title and a date.
+ *
+ * The vocabulary the schemas are built from — which types exist, which statuses
+ * each can take — is declared in `./kinds`, which imports nothing, and is
+ * re-exported here so that server code has one place to reach for. Client code
+ * should import from `./kinds` directly: see the note at the top of that file
+ * for what it costs when it does not.
  */
 
-export const CONTENT_TYPES = ['post', 'note', 'project'] as const
-export const CONTENT_STATUSES = [
-  'draft',
-  'scheduled',
-  'published',
-  'archived',
-] as const
-export const PROJECT_STATUSES = [
-  'active',
-  'maintained',
-  'experiment',
-  'archived',
-] as const
-
-export type ContentType = (typeof CONTENT_TYPES)[number]
-export type ContentStatus = (typeof CONTENT_STATUSES)[number]
-export type ProjectStatus = (typeof PROJECT_STATUSES)[number]
+export { CONTENT_STATUSES, CONTENT_TYPES, PROJECT_STATUSES } from './kinds'
+export type { ContentStatus, ContentType, ProjectStatus } from './kinds'
 
 /* -------------------------------------------------------------------------- */
 /*  Primitives                                                                 */

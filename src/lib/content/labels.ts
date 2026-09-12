@@ -1,4 +1,4 @@
-import type { ContentType } from '@/lib/content/schema'
+import type { ContentType } from '@/lib/content/kinds'
 
 /**
  * How a content type is named in front of a reader.

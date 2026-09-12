@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { CONTENT_TYPES, type ContentType } from '@/lib/content/schema'
+import { CONTENT_TYPES, type ContentType } from '@/lib/content/kinds'
 import { importAction, type ImportState } from './actions'
 
 /**

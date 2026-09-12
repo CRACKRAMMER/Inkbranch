@@ -1,5 +1,5 @@
+import { CONTENT_TYPES, type ContentType } from '@/lib/content/kinds'
 import { TYPE_GROUP_LABELS } from '@/lib/content/labels'
-import { CONTENT_TYPES, type ContentType } from '@/lib/content/schema'
 
 /**
  * Search results, gathered under the kind of thing they are.

@@ -2,7 +2,11 @@
 
 import { useState } from 'react'
 
-import { CONTENT_STATUSES, PROJECT_STATUSES, type ContentType } from '@/lib/content/schema'
+import {
+  CONTENT_STATUSES,
+  PROJECT_STATUSES,
+  type ContentType,
+} from '@/lib/content/kinds'
 import type { ContentFormValues } from '@/lib/admin/frontmatter-form'
 import { Field, FieldError, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
