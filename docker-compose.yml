@@ -1,27 +1,45 @@
-# A single-host deployment: the app, its database, and the volumes that hold
-# everything the app is not.
+# A single-host deployment: the application, its database, and the two
+# directories that hold everything the application is not.
 #
 # ## The shape
 #
-# One `app` service and one `postgres`, plus a `migrate` service that runs once
-# and exits. There is no cache, no queue and no reverse proxy here, because the
-# application needs none of them: search is local, sessions are in Postgres, and
-# scheduled work is a worker loop inside the app. A compose file that provisioned
-# Redis and Meilisearch for a personal blog would be provisioning for an
-# architecture this site does not have.
+# `web` and `postgres` always; `migrate` runs once and exits; `reverse-proxy` is
+# behind a profile and off unless asked for. There is no cache and no queue,
+# because the application needs neither: search is local, sessions are in
+# Postgres, and scheduled work is a worker loop inside the app. A compose file
+# that provisioned Redis and Meilisearch for a personal blog would be
+# provisioning for an architecture this site does not have.
 #
-# ## Why the content is a bind mount
+#   docker compose up -d                          # web + postgres
+#   docker compose --profile proxy up -d          # the same, behind Caddy
 #
-# `./content` is a bind mount rather than a named volume, and it is read-write.
-# Markdown is the source of truth and the author edits it — in an editor, in
-# git, on the host — so it has to be a directory you can open, not a blob Docker
-# manages. `./public/uploads` is the same: the files are meant to be reachable
-# and copyable.
+# ## Why the data is bind-mounted
+#
+# `./content` and `./uploads` are bind mounts rather than named volumes, and both
+# are read-write. Markdown is the source of truth and the author edits it — in an
+# editor, in git, on the host — so it has to be a directory you can open, not a
+# blob Docker manages. Uploaded media is the same: the files are meant to be
+# reachable, copyable, and backed up by the same script that copies the Markdown.
+#
+# The host names are `./content` and `./uploads` while the container paths are
+# `/app/content` and `/app/public/uploads`. The asymmetry is deliberate: `web`
+# serves uploads through Next's static handler at `/uploads/**`, so in the
+# container they must sit under `public/`, and the host directory should not.
+#
+# **On a fresh Linux host, make both directories writable by uid 1001 before the
+# first `up`.** A bind mount keeps the host's ownership and the container runs as
+# `nextjs` (1001), so a directory owned by anyone else fails every save with
+# `EACCES`:
+#
+#   mkdir -p content uploads && sudo chown -R 1001:1001 content uploads
+#
+# Docker creates a missing bind-mount source as **root**, which is why the
+# `mkdir` is part of that line rather than something to discover afterwards.
 #
 # ## Why the migration is its own service
 #
 # `migrate` builds the same source at the `build` stage, which has `tsx` and the
-# dev dependencies the migrator needs. `app` waits for it to exit successfully
+# dev dependencies the migrator needs. `web` waits for it to exit successfully
 # before starting, so a deploy can never serve a schema it does not match.
 
 name: myblog
@@ -72,7 +90,7 @@ services:
     command: ['pnpm', 'db:migrate']
     restart: 'no'
 
-  app:
+  web:
     build:
       context: .
       target: runner
@@ -115,14 +133,55 @@ services:
       JOB_RETENTION_DAYS: ${JOB_RETENTION_DAYS:-7}
     volumes:
       - ./content:/app/content
-      - ./public/uploads:/app/public/uploads
+      - ./uploads:/app/public/uploads
+    # Loopback only, in both deployment shapes. Production requires TLS
+    # (`SITE_URL` must be `https://` and `COOKIE_SECURE=1`), so the port exists
+    # for the proxy on this host and for `curl` from a shell on it — publishing
+    # it on every interface would put an HTTP origin in front of a site that is
+    # only safe over HTTPS. Change it to `'${PORT:-3000}:3000'` if a TLS
+    # terminator elsewhere on the network is the arrangement.
     ports:
-      - '${PORT:-3000}:3000'
+      - '127.0.0.1:${PORT:-3000}:3000'
     depends_on:
       postgres:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
 
+  # Optional: `docker compose --profile proxy up -d`.
+  #
+  # Caddy rather than nginx because the whole configuration is the three lines in
+  # `proxy/Caddyfile` and certificates are obtained and renewed without a
+  # certbot timer to forget about. It exists because `web` binds to loopback: a
+  # host with this profile running has no other way in, and a host without it is
+  # serving plain HTTP to whoever asks.
+  #
+  # `SITE_URL` and `DOMAIN` must be the same hostname. Caddy asks for a
+  # certificate for `DOMAIN`; the application refuses admin writes whose `Origin`
+  # is not in `SITE_URL` plus `TRUSTED_ORIGINS`, so a mismatch is a site that
+  # loads and cannot be logged into.
+  reverse-proxy:
+    image: caddy:2-alpine
+    profiles: ['proxy']
+    restart: unless-stopped
+    environment:
+      # The default is `localhost`, which Caddy serves over its own internal CA —
+      # right for a first run on a laptop, and the reason a real deploy has to set
+      # this rather than relying on a default that would look like it worked.
+      DOMAIN: ${DOMAIN:-localhost}
+    volumes:
+      - ./proxy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    ports:
+      - '80:80'
+      - '443:443'
+      - '443:443/udp' # HTTP/3
+    depends_on:
+      web:
+        condition: service_started
+
 volumes:
   postgres-data:
+  caddy-data:
+  caddy-config:

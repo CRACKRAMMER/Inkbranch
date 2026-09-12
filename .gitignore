@@ -21,9 +21,19 @@ logs/
 content/.locks/
 content/.tmp/
 
-# uploads are user data, but not source
+# uploads are user data, but not source.
+#
+# Two directories, and they are not duplicates. `public/uploads` is where a
+# local `pnpm dev` writes: Next serves that path statically with no extra
+# machinery. `uploads/` is the host side of the compose bind mount — the
+# container sees it at `/app/public/uploads`, which is what lets the same static
+# handler serve it there. Both are ignored; the `.gitkeep` files exist so a
+# clone has the directories, because Docker creates a missing bind-mount source
+# as root and the container could not then write to it.
 public/uploads/*
 !public/uploads/.gitkeep
+uploads/*
+!uploads/.gitkeep
 
 # test artifacts
 coverage/

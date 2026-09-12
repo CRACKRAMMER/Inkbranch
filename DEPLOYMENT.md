@@ -16,6 +16,7 @@ system is shaped this way; this document is the runbook.
 git clone <repo> myblog && cd myblog
 cp .env.example .env             # compose reads .env, not .env.local
 $EDITOR .env                     # POSTGRES_PASSWORD, SESSION_SECRET, SITE_URL, COOKIE_SECURE
+sudo chown -R 1001:1001 content uploads   # see §6 — a bind mount keeps host ownership
 docker compose up -d
 ```
 
@@ -25,7 +26,18 @@ docker compose up -d
 |---------|-------|------|
 | `postgres` | `postgres:17-alpine` | The database. Pinned to 17; the schema needs nothing newer than 16. |
 | `migrate` | this repo, `build` stage | Applies pending migrations and exits. |
-| `app` | this repo, `runner` stage | The site. Starts only after `migrate` exits 0. |
+| `web` | this repo, `runner` stage | The site. Starts only after `migrate` exits 0. |
+
+A fourth service, `reverse-proxy`, is behind a compose profile and does not start
+unless it is asked for:
+
+```bash
+echo 'DOMAIN=blog.example.com' >> .env    # the hostname readers use
+docker compose --profile proxy up -d
+```
+
+That puts Caddy in front, which obtains and renews a certificate for `DOMAIN` and
+is then the only way into `web` — see §9.
 
 Compose reads these from `.env` (the file compose loads, which is *not*
 `.env.local` — that is the one the application and the CLI scripts load):
@@ -33,9 +45,10 @@ Compose reads these from `.env` (the file compose loads, which is *not*
 | Variable | Required | Notes |
 |----------|----------|-------|
 | `POSTGRES_PASSWORD` | yes | Compose refuses to start without it (`:?` in `docker-compose.yml`). |
-| `SESSION_SECRET` | yes | Passed to both `migrate` and `app`. |
+| `SESSION_SECRET` | yes | Passed to both `migrate` and `web`. |
 | `SITE_URL` | yes in production | Must be `https://…`; see §5. |
 | `COOKIE_SECURE` | yes in production | Must be `1`; see §5. |
+| `DOMAIN` | yes with the `proxy` profile | Must be the hostname in `SITE_URL`, or sign-in and saves are refused as cross-origin. Defaults to `localhost`, which Caddy serves with its own internal CA. |
 | `POSTGRES_USER` / `POSTGRES_DB` / `PORT` | no | Default to `myblog`, `myblog`, `3000`. |
 
 Then seed the owner account — once, by hand, because it needs a password from a
@@ -50,17 +63,23 @@ docker compose run --rm \
 
 `migrate` is the service built at the `build` stage, so it is the one that can
 run `pnpm db:seed` — `docker compose run` overrides its command while keeping its
-environment and its `depends_on`. The `app` container cannot: the runtime image
+environment and its `depends_on`. The `web` container cannot: the runtime image
 has no `tsx` and no `scripts/` (§2). Running the seed from a checkout against the
 same database works identically.
 
 ### What is not in the compose file, and why
 
-No Redis, no Meilisearch, no reverse proxy, no separate worker container. Search
-is an in-process index and sessions are in Postgres, so a cache service would
-have nothing to cache that is not already local. A reverse proxy is left out
-because TLS termination is a decision about *your* host, not about this
-application — §9 shows what it has to do.
+No Redis, no Meilisearch, no separate worker container. Search is an in-process
+index and sessions are in Postgres, so a cache service would have nothing to
+cache that is not already local, and scheduled work is a worker loop inside
+`web` (`WORKER_ENABLED`, §10).
+
+The `reverse-proxy` service is a profile rather than a given because TLS
+termination is a decision about *your* host. If you already run nginx or Caddy on
+the host, leave the profile off and point that proxy at `127.0.0.1:3000` — §9
+lists what it has to do. If you do not have one, the profile is a complete
+answer: `docker compose --profile proxy up -d` obtains a certificate for
+`DOMAIN` and renews it without a certbot timer to forget.
 
 The database port is **not** published to the host by default. Uncomment the
 `ports:` block in `docker-compose.yml` if you want `psql` from the host; leaving
@@ -117,7 +136,7 @@ migrate:
   restart: 'no'
 ```
 
-and `app` waits on `service_completed_successfully`, so a deploy can never serve
+and `web` waits on `service_completed_successfully`, so a deploy can never serve
 a schema it does not match.
 
 **Why migrations do not run in the runtime image.** The migrator is TypeScript
@@ -164,7 +183,7 @@ validated at import. `.env.example` documents the same set with commentary.
 | `CONTENT_MAX_FILES` | `5000` | no | Guards against a mis-mounted volume turning boot into a filesystem walk of `/`. |
 | `CONTENT_SYNC_ON_BOOT` | `1` | no | Reconciles the index with the files at startup. Set to `0` for a read-only deployment. The Docker **build** sets it to 0. |
 | `SEARCH_PROVIDER` | `local` | no | An enum with one value today; the seam Meilisearch would slot into. Not in `.env.example`. |
-| `UPLOAD_DIR` | `./public/uploads` | no | `/app/public/uploads` in the image. |
+| `UPLOAD_DIR` | `./public/uploads` | no | `/app/public/uploads` in the image, which is where the `./uploads` bind mount lands. |
 | `UPLOAD_URL_PREFIX` | `/uploads` | no | Public URL prefix that maps to `UPLOAD_DIR`. Must start with `/`. |
 | `MAX_UPLOAD_SIZE` | `20971520` (20 MiB) | no | Per-file upload ceiling. Your reverse proxy needs its own limit set at least this high (§9). |
 | `ANALYTICS_ENABLED` | `1` | no | `0` disables collection entirely (the collector stops writing). |
@@ -179,7 +198,7 @@ validated at import. `.env.example` documents the same set with commentary.
 |----------|---------|-------|
 | `ADMIN_EMAIL`, `ADMIN_NAME`, `ADMIN_PASSWORD` | `pnpm db:seed` only | The app never holds the owner's password. `ADMIN_PASSWORD` is 12–1024 characters and is **never generated** — the seed exits non-zero rather than inventing one. |
 | `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` | `docker-compose.yml` | `POSTGRES_PASSWORD` is mandatory; the others default. |
-| `PORT` | compose, image | Host port for the `app` service; `3000` inside the container. |
+| `PORT` | compose, image | Host port for the `web` service, published on loopback only; `3000` inside the container. |
 | `BACKUP_KEEP` | `scripts/backup.sh` | Backups to retain. Default 14; `0` disables pruning. |
 | `E2E_PORT`, `E2E_BASE_URL` | `playwright.config.ts` | Only for the test suite. |
 | `NEXT_TELEMETRY_DISABLED` | set to `1` in the image | Standard Next.js flag. |
@@ -234,19 +253,33 @@ exactly as designed.
 | Host path | Container path | Mode | Contents |
 |-----------|----------------|------|----------|
 | `./content` | `/app/content` | read-write | The Markdown — the source of truth. |
-| `./public/uploads` | `/app/public/uploads` | read-write | Uploaded media. |
+| `./uploads` | `/app/public/uploads` | read-write | Uploaded media. |
 | `postgres-data` (named) | `/var/lib/postgresql/data` | — | The database. |
+| `caddy-data`, `caddy-config` (named) | `/data`, `/config` | — | Certificates, with the `proxy` profile. |
 
 Both application volumes are **bind mounts, not named volumes**, and that is the
 point: Markdown is meant to be edited on the host — in an editor, in git, over
 SSH — so it has to be a directory you can open rather than a blob Docker manages.
-Uploads are the same: the files are meant to be reachable and copyable.
+Uploads are the same: the files are meant to be reachable, copyable, and picked
+up by the same backup script that picks up the Markdown.
+
+The host name and the container name differ on purpose. `web` serves uploads
+through Next's static handler at `/uploads/**`, so inside the container they have
+to sit under `public/`; the host directory should not, because it is data rather
+than an asset of the source tree. A local `pnpm dev` writes to
+`public/uploads/` instead, which is the path Next serves without any configuration
+— the two do not collide because they belong to different ways of running the
+site.
 
 Consequences worth knowing:
 
 - **A bind mount keeps the host's ownership.** The container runs as uid 1001
   (`nextjs`), so both directories must be writable by that uid or admin saves and
-  uploads fail with `EACCES`. On a fresh host: `sudo chown -R 1001:1001 content public/uploads`.
+  uploads fail with `EACCES`. On a fresh host:
+  `sudo chown -R 1001:1001 content uploads`. Docker creates a *missing*
+  bind-mount source as `root`, which is why both directories are in the
+  repository (with a `.gitkeep`) and why the `chown` belongs before the first
+  `up` rather than after the first failure.
 - **Editing on the host needs a sync.** The app reconciles at boot and after
   every admin save. If you edit files while it is running and do not want to
   restart, run `pnpm content:sync` (§11).
@@ -260,30 +293,51 @@ Consequences worth knowing:
 ### Backup
 
 ```bash
-bash scripts/backup.sh                    # → ./backups/<UTC timestamp>/
+bash scripts/backup.sh                    # → ./backups/backup-2026-09-11.tar.zst
 bash scripts/backup.sh /mnt/backups       # elsewhere
 BACKUP_KEEP=30 bash scripts/backup.sh     # retain 30 (default 14; 0 disables pruning)
+BACKUP_LABEL=pre-upgrade bash scripts/backup.sh   # → backup-2026-09-11-pre-upgrade.tar.zst
 # `pnpm backup` is the alias, and behaves identically with no arguments.
 ```
 
-A backup contains the three things that cannot be regenerated: the database
-(index, sessions, tags, revisions, audit log, analytics), `content/` (the
-Markdown), and `public/uploads/` (the media). `.next/`, `node_modules/` and the
-image are reproducible and are not included.
+One file, not a directory of them:
 
 ```
-backups/2026-09-11T10-30-00Z/
-  database.dump     pg_dump, custom format — compressed and restorable in parts
-  content.tar.gz    the Markdown tree
-  uploads.tar.gz    the media tree
-  *.toc             table-of-contents listings, written by the verification step
-  MANIFEST          what this is, from where, and whether it verified
+backups/backup-2026-09-11.tar.zst
+  database.dump        pg_dump, custom format — compressed and restorable in parts
+  content/             the Markdown tree
+  uploads/             the media tree
+  config/              the environment files (.env, .env.local), verbatim
+  MANIFEST             what this is, from where, and whether it verified
 ```
 
-Every archive is read back before the script reports success: `pg_restore --list`
-for the dump, `tar --list` for the trees. A backup nobody has read back is a
-hope, not a backup. The manifest records the database URL **with its password
-redacted**, because a manifest is a file that gets copied around.
+A backup that is a *directory* is a backup that gets half copied — `scp`,
+`rsync`, a USB stick and an object store all have a way to leave a directory
+incomplete, and none of them has a way to leave a single file incomplete without
+saying so. So the pieces are assembled in a staging directory next to the
+destination, compressed once with `zstd`, and the result is only moved to its
+final name after it verifies. A failed run leaves the previous backup untouched,
+and never lands on top of it.
+
+The contents are secret-bearing: `config/` holds `SESSION_SECRET` and the
+database password verbatim, and `database.dump` already held every password hash,
+live session token and audit entry. **Treat the archive the way you treat the
+`.env`** — it is not something to mail. The manifest records the database URL
+with its password redacted, because a manifest is a file that gets copied around.
+
+**A same-day backup is never overwritten.** Two runs on one day is the normal
+case — a nightly job and a manual one before an upgrade — so a taken name gets
+the next free suffix (`backup-2026-09-11-2.tar.zst`). Refusing the second would
+make you choose; overwriting would destroy the first.
+
+Verification happens before the archive takes its final name: `zstd --test` for
+the frame checksum, `tar --list` for the members, and `pg_restore --list` on the
+dump *read back out of the archive*. A backup nobody has read back is a hope,
+not a backup.
+
+`UPLOAD_DIR` defaults to `uploads/` when that directory exists and
+`public/uploads/` otherwise, matching the two ways of running the site (§6) —
+set it explicitly in a deployment that has both.
 
 The script needs `pg_dump` on the host. Without it, dump from inside the compose
 network instead:
@@ -291,11 +345,11 @@ network instead:
 ```bash
 mkdir -p backups
 docker compose exec -T postgres pg_dump -U myblog -d myblog --format=custom --compress=6 \
-  > backups/$(date -u +%Y-%m-%dT%H-%M-%SZ).dump
+  > backups/database-$(date -u +%Y-%m-%dT%H-%M-%SZ).dump
 ```
 
-That covers the database only — `content/` and `public/uploads/` are already on
-the host, so tar them yourself, or install `postgresql-client` and use the script.
+That covers the database only — `content/` and `uploads/` are already on the
+host, so tar them yourself, or install `postgresql-client` and use the script.
 
 `DATABASE_URL` is read from the environment, falling back to `.env.local`, and
 `CONTENT_DIR` / `UPLOAD_DIR` are honoured if set (set them to the *host* paths,
@@ -304,17 +358,23 @@ not the container paths).
 ### Restore
 
 ```bash
-bash scripts/restore.sh backups/2026-09-11T10-30-00Z             # asks you to type "restore"
-bash scripts/restore.sh backups/2026-09-11T10-30-00Z --yes
-bash scripts/restore.sh <dir> --database-only
-bash scripts/restore.sh <dir> --files-only
+bash scripts/restore.sh backups/backup-2026-09-11.tar.zst        # asks you to type "restore"
+bash scripts/restore.sh backups/backup-2026-09-11.tar.zst --yes
+bash scripts/restore.sh <archive> --database-only
+bash scripts/restore.sh <archive> --files-only
 ```
 
-Invoke the scripts directly when passing arguments; `pnpm restore` is the no-argument
-alias (`bash scripts/restore.sh` reads its own flags from `$@`).
+Invoke the scripts directly when passing arguments; `pnpm restore` is the
+no-argument alias (`bash scripts/restore.sh` reads its own flags from `$@`).
 
 Stop the application first — a running server holds sessions and may write while
 the database is being restored.
+
+The confirmation names the database it is about to replace **and where that
+answer came from**, because `DATABASE_URL` in the environment beats `.env.local`
+and the two are indistinguishable by eye. If they disagree, the script says so
+even under `--yes`: a `DATABASE_URL` left over in a shell from a deploy, or
+exported for a test, would otherwise silently pick the target.
 
 What it does and does not do:
 
@@ -322,22 +382,30 @@ What it does and does not do:
   `pg_restore --clean --if-exists --single-transaction --exit-on-error`, so the
   objects it recreates are dropped and recreated inside one transaction that
   either commits or rolls back. Ownership, extensions and other databases on the
-  server are untouched.
+  server are untouched. The dump is streamed straight out of the archive into
+  `pg_restore` — it is the largest member by far and never needs to touch disk.
+- **It does not overwrite your `.env`.** The archive's copies land in
+  `config.restored/` and the script prints the file names. A session secret that
+  comes back from a backup is a secret you may have rotated on purpose.
 - **The content and uploads trees are replaced, not merged**, and the previous
-  trees are moved aside to `*.before-<timestamp>` rather than deleted — a restore
-  of the wrong backup is recoverable. A merge would leave a site that is neither
-  the backup nor what was there before, which is the hardest state to reason
-  about.
-- **Everything that can fail is checked before anything destructive runs**: the
-  dump is parsed, both archives are listed, and the manifest is printed. A
-  truncated backup fails before the current state is touched.
+  trees are moved aside to `*.before-<UTC timestamp>` rather than deleted — a
+  restore of the wrong backup is recoverable. A merge would leave a site that is
+  neither the backup nor what was there before, which is the hardest state to
+  reason about.
+- **Every check that can fail runs before the first destructive command**, and in
+  an order that keeps the *reason* right: the zstd checksum first (so a truncated
+  file is reported as damaged rather than as "not a backup"), then the manifest,
+  then `pg_restore --list` on the dump. A damaged archive fails before the
+  current state is touched.
 
-Afterwards, two steps the script prints and neither of which it can do for you:
+Afterwards, three steps the script prints and none of which it can do for you:
 
 1. `pnpm content:sync` — the database and the content tree were restored
    separately, so reconcile them.
 2. Restart the application if the content tree was replaced while it was
-   running; the search index is built in-process and is now stale.
+   running; the search index and the relations index are built in-process and
+   are now stale.
+3. Check `config.restored/` against your live environment files.
 
 ---
 
@@ -526,10 +594,10 @@ and commits nothing, which is what the suite's repository is a check on.
 pnpm backup                       # always; migrations are forward-only
 git pull
 docker compose build
-docker compose up -d              # migrate runs first, then app
+docker compose up -d              # migrate runs first, then web
 ```
 
-`docker compose up -d` recreates only what changed, and `app` waits for `migrate`
+`docker compose up -d` recreates only what changed, and `web` waits for `migrate`
 to exit successfully. The content tree is a volume and is untouched by a deploy,
 so a rollback is: check out the previous commit, `docker compose build`,
 `docker compose up -d`. Take the backup anyway — a migration that drops a column
@@ -574,7 +642,7 @@ process including `pnpm db:migrate`. The variable is missing or is not a
 `.env`, in that order, and does not expand `${VAR}`.
 
 **`/api/health` reports `unavailable` (503).** The database is not answering.
-Check `docker compose ps` — if `postgres` is unhealthy, `app` never started.
+Check `docker compose ps` — if `postgres` is unhealthy, `web` never started.
 `docker compose logs postgres`. The health endpoint deliberately does not tell
 you *why*; the reason is in the app's log line (`[health] database check failed`).
 
@@ -595,13 +663,13 @@ production — it is refused at startup, and overriding it means session cookies
 travel in clear text.
 
 **Admin saves or uploads fail with `EACCES` / a permission error.** The bind
-mounted directories are not writable by uid 1001. `sudo chown -R 1001:1001 content public/uploads`.
+mounted directories are not writable by uid 1001. `sudo chown -R 1001:1001 content uploads`.
 
 **Uploads fail with 413 and nothing appears in the application log.** The reverse
 proxy's request body limit. Raise `client_max_body_size` to at least
 `MAX_UPLOAD_SIZE` (§9).
 
-**`migrate` exits non-zero and `app` never starts.** The migration failed; the
+**`migrate` exits non-zero and `web` never starts.** The migration failed; the
 database URL is assembled from `POSTGRES_*` in `docker-compose.yml`, and the
 error is in `docker compose logs migrate`. Common causes: the role lacks
 `CREATE`/`ALTER`, or a migration was hand-edited after being applied.

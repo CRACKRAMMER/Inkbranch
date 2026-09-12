@@ -139,13 +139,14 @@ wrapper.
 | `pnpm content:links` | Prints the links that point at nothing, grouped by the document containing them. |
 | `pnpm content:stats` | Counts per type, tag and year, plus orphans, word counts and reading time — read from the index, not the files. |
 | `pnpm worker` | Runs the scheduled-job loop in the foreground: `content.publish-scheduled`, `content.sync`, `content.drift-check`, `search.reindex`. Nothing starts it for you. |
-| `pnpm backup` | `scripts/backup.sh` — database dump plus `content/` and `public/uploads/` archives, verified and manifested. |
-| `pnpm restore` | `scripts/restore.sh` — restores a backup directory. Destructive; asks for confirmation. |
+| `pnpm backup` | `scripts/backup.sh` — writes one `backup-<date>.tar.zst` holding a `pg_dump`, `content/`, `uploads/` and the environment files, verified and manifested before it takes its final name. |
+| `pnpm restore` | `scripts/restore.sh` — restores that archive over the database and the two trees. Destructive; asks you to type `restore`. |
 
 The backup and restore scripts take arguments and environment variables of their
-own (`BACKUP_KEEP`, `--yes`, `--database-only`, `--files-only`); invoke them as
-`bash scripts/backup.sh [dir]` and `bash scripts/restore.sh <dir> [flags]` when
-you need to pass any. Both are documented in [DEPLOYMENT.md](./DEPLOYMENT.md).
+own (`BACKUP_KEEP`, `BACKUP_LABEL`, `--yes`, `--database-only`, `--files-only`);
+invoke them as `bash scripts/backup.sh [backup-dir]` and
+`bash scripts/restore.sh <backup-file.tar.zst> [flags]` when you need to pass
+any. Both are documented in [DEPLOYMENT.md](./DEPLOYMENT.md).
 
 ---
 
@@ -291,7 +292,9 @@ src/
 scripts/              CLI entry points (content:*, db:*, worker) + backup/restore
 tests/                unit · integration · e2e
 content/              Markdown — the source of truth
-public/uploads/       uploaded media
+public/uploads/       uploaded media, for a local `pnpm dev`
+uploads/              uploaded media, bind-mounted over the container's
+                      public/uploads by docker-compose.yml
 ```
 
 ---

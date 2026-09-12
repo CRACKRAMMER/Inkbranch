@@ -41,7 +41,7 @@ These five rules decide every trade-off in the codebase. When in doubt, re-read 
                        │                │  analytics, jobs       │
               ┌────────▼───────────┐    └────────────────────────┘
               │  content/*.md      │
-              │  public/uploads/   │    ┌────────────────────────┐
+              │  uploads/          │    ┌────────────────────────┐
               └────────────────────┘    │  Search Index (local)  │
                                         │  inverted, BM25, CJK   │
                                         └────────────────────────┘
@@ -449,7 +449,7 @@ src/
 scripts/               CLI (content:*, db:*, backup)
 tests/                 unit + integration + e2e
 content/               Markdown source of truth
-public/uploads/        media
+uploads/               media (public/uploads/ when running `pnpm dev`)
 ```
 
 ---

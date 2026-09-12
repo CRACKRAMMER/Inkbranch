@@ -92,7 +92,8 @@ src/
 scripts/               CLI（content:*、db:*、worker）与 backup/restore 脚本
 tests/                 unit（17 个文件）、integration（3 个）、e2e（2 个 spec）
 content/               Markdown 内容源（posts / notes / projects）
-public/uploads/        上传的媒体
+uploads/               上传的媒体（compose 把它挂到容器的 /app/public/uploads；
+                       本地 `pnpm dev` 则写 public/uploads/）
 ```
 
 **与设定稿的差异**
@@ -266,7 +267,7 @@ pnpm dev                        # http://localhost:3000 · /admin/login
 
 ```bash
 cp .env.example .env      # compose 读 .env
-docker compose up -d      # 启动 postgres → migrate（跑完退出）→ app
+docker compose up -d      # 启动 postgres → migrate（跑完退出）→ web
 ```
 
 - **三阶段镜像**（`Dockerfile`，`deps` / `build` / `runner` 三个工作阶段共用一个 `base`）。
@@ -276,12 +277,14 @@ docker compose up -d      # 启动 postgres → migrate（跑完退出）→ app
 - **迁移单独一个服务**，构建在同一提交的 `build` 阶段。运行时镜像**不能**跑迁移：迁移器
   是 TypeScript、要靠 devDependency `tsx` 执行，而 standalone 产物是按应用入口追踪出来
   的，两者都不在里面——把 `src/`、`scripts/`、`drizzle/` 拷进去会"看起来能跑"然后第一次
-  使用就失败。`app` 用 `service_completed_successfully` 等 `migrate` 退出，因此一次部署
+  使用就失败。`web` 用 `service_completed_successfully` 等 `migrate` 退出，因此一次部署
   不可能服务于一个与代码不匹配的 schema。
-- **卷**：`./content:/app/content` 与 `./public/uploads:/app/public/uploads` 都是**读写
+- **卷**：`./content:/app/content` 与 `./uploads:/app/public/uploads` 都是**读写
   bind mount**，不是命名卷。Markdown 就是要能在宿主机上用编辑器、用 git、用 SSH 直接改
   的目录，而不是 Docker 管理的一坨数据。镜像里不含任何内容，所以回滚是换 tag，不是恢复
-  备份。注意容器以 uid 1001 运行，bind mount 保留宿主机的属主，两个目录必须对该 uid 可写。
+  备份。注意容器以 uid 1001 运行，bind mount 保留宿主机的属主，两个目录必须对该 uid 可写，
+  且必须在第一次 `up` **之前** `sudo chown -R 1001:1001 content uploads`：宿主目录缺失时
+  Docker 会以 root 创建它，那时容器已经写不进去了。
 - **生产姿态检查**（`src/env.ts` 的 `assertProductionPosture`，由 `src/instrumentation.ts`
   在服务器进程启动时调用一次、构建期不调用）：在生产环境下，`SESSION_SECRET` 仍是开发
   默认值、`COOKIE_SECURE` 不为 1、`SITE_URL` 是 `http://` 三者任意一条都会让进程直接
@@ -294,7 +297,10 @@ docker compose up -d      # 启动 postgres → migrate（跑完退出）→ app
   重启循环）。不吐环境变量、版本、连接信息、文件路径，也不回显驱动的报错原文。
 - **反向代理与 TLS**：容器内部是明文 HTTP，生产必须由代理终止 TLS（因为 `SITE_URL` 必须
   是 https 且 Cookie 带 Secure）。`SITE_URL` 必须是读者实际访问的主机名——站点的来源
-  校验拿它和 `TRUSTED_ORIGINS` 比对。
+  校验拿它和 `TRUSTED_ORIGINS` 比对。compose 里带一个 `reverse-proxy` 服务（Caddy，
+  `profiles: ['proxy']`，默认不启动），`DOMAIN=blog.example.com docker compose --profile
+  proxy up -d` 即可自动签发与续期证书；不启用它时 `web` 只监听 `127.0.0.1:${PORT}`，
+  由宿主机上你自己已有的代理转发。
 
 完整命令、环境变量全表（含哪些在生产必填）、升级步骤与故障排查见
 [DEPLOYMENT.md](./DEPLOYMENT.md)。
@@ -336,43 +342,64 @@ ZIP 处理是自写的中央目录解析，全程在内存中，拒绝 ZIP64 与
 ## 8. Backup / Restore（备份与恢复）
 
 ```bash
-pnpm backup                                          # → ./backups/<UTC 时间戳>/
-bash scripts/backup.sh /mnt/backups                  # 备份到别处
-BACKUP_KEEP=30 bash scripts/backup.sh                # 保留 30 份（默认 14，0 表示不清理）
-bash scripts/restore.sh backups/2026-09-11T10-30-00Z # 需要手输 restore 确认
-bash scripts/restore.sh <dir> --yes                  # 或 --database-only / --files-only
+pnpm backup                                                # → ./backups/backup-2026-09-11.tar.zst
+bash scripts/backup.sh /mnt/backups                        # 备份到别处
+BACKUP_KEEP=30 bash scripts/backup.sh                      # 保留 30 份（默认 14，0 表示不清理）
+bash scripts/restore.sh backups/backup-2026-09-11.tar.zst  # 需要手输 restore 确认
+bash scripts/restore.sh <archive> --yes                    # 或 --database-only / --files-only
 ```
 
 （`pnpm backup` / `pnpm restore` 是不带参数时的别名；需要传参数时直接调用脚本。）
 
-一份备份包含三样无法再生的东西：数据库（索引、会话、标签、修订、审计日志、统计）、
-`content/`（Markdown，内容真源）、`public/uploads/`（媒体）。`.next/`、`node_modules/`
-与镜像都不包含——它们可以从源码重建，放进去只会让每份备份膨胀一百倍。
+一份备份包含四样无法再生的东西：数据库（索引、会话、标签、修订、审计日志、统计）、
+`content/`（Markdown，内容真源）、`uploads/`（媒体），以及环境文件（没有它，恢复出来的
+站点无法给任何人签发会话）。`.next/`、`node_modules/` 与镜像都不包含——它们可以从源码
+重建，放进去只会让每份备份膨胀一百倍。
 
 ```
-backups/2026-09-11T10-30-00Z/
+backups/backup-2026-09-11.tar.zst
   database.dump     pg_dump custom 格式（压缩、可部分恢复）
-  content.tar.gz    Markdown 树
-  uploads.tar.gz    媒体树
-  *.toc             校验步骤写出的目录清单
+  content/          Markdown 树
+  uploads/          媒体树
+  config/           环境文件（.env、.env.local）原样
   MANIFEST          这是什么、来自哪里、是否校验通过
 ```
 
-**每一份归档都会被读回验证**：`pg_restore --list` 解析 dump 的目录，`tar --list` 验证两棵
-树。没人读回过的备份只是希望，不是备份。`MANIFEST` 里的数据库 URL 会去掉密码。
+**是一份备份文件，不是一个备份目录**。目录形态的备份就是会被拷一半的备份：`scp`、
+`rsync`、U 盘、对象存储都有办法让一个目录不完整，而没有一种能让单个文件不完整却不说。
+所以所有成员先在目标旁边的 staging 目录里组装、整体压一次 zstd、**校验通过之后**才改成
+最终文件名——失败的运行不会碰到上一份备份，也不会盖在它上面。同一天第二次备份不会被
+拒绝也不会覆盖第一次，而是拿到下一个后缀（`backup-2026-09-11-2.tar.zst`）：夜里的定时
+任务和升级前手敲的那一次都是要留的。
+
+**归档本身是带密钥的**：`config/` 里是 `SESSION_SECRET` 与数据库口令的原样副本，而
+`database.dump` 本来就含全部口令哈希、活跃会话令牌与审计日志。按对待 `.env` 的方式对待
+整份归档。`MANIFEST` 里的数据库 URL 会去掉密码。
+
+**每一份归档都会被读回验证**：`zstd --test` 校验帧校验和，`tar --list` 列出成员，再从
+归档里把 dump 读出来交给 `pg_restore --list` 解析。没人读回过的备份只是希望，不是备份。
 
 **恢复的语义**（`scripts/restore.sh`）：
 
 - 不 drop 数据库。它恢复到既有库中，用 `pg_restore --clean --if-exists
   --single-transaction --exit-on-error` 重建对象：要么整体提交，要么整体回滚。这样同一台
-  服务器上的属主、扩展与其他数据库都不受影响。
-- 内容树与上传目录是**替换**而非合并，被替换的目录会被移到 `*.before-<时间戳>` 而不是
+  服务器上的属主、扩展与其他数据库都不受影响。dump 直接从归档流进 `pg_restore`，它是
+  最大的一员，根本不需要落盘。
+- **不覆盖你的 `.env`**。归档里的环境文件落在 `config.restored/`，脚本会列出文件名。
+  从备份里回来的会话密钥，可能正是你当初有意轮换掉的那一个。
+- 内容树与上传目录是**替换**而非合并，被替换的目录会被移到 `*.before-<UTC 时间戳>` 而不是
   删除——恢复错了备份是可以回退的。合并会留下一个"既不是备份也不是恢复前"的状态，那是
   最难推理的状态。
-- 所有可能失败的检查都在第一条破坏性命令之前完成。
+- **所有可能失败的检查都在第一条破坏性命令之前完成**，且顺序保证"报出来的原因是原因"：
+  先校验 zstd 校验和（截断的文件会被说成"损坏"，而不是被误报成"这不是一份备份"），再读
+  MANIFEST，最后 `pg_restore --list`。损坏的归档在现状被触及之前就失败。
+- 确认提示会说出**要替换哪个数据库、以及这个答案从哪来**。环境里的 `DATABASE_URL` 优先于
+  `.env.local`，两者肉眼无法区分；不一致时脚本在 `--yes` 下也会明说——否则一个为测试或者
+  上一次部署留在 shell 里的 `DATABASE_URL` 会静默决定目标。
 
-恢复之后有两件事脚本会打印出来但无法替你做：`pnpm content:sync`（数据库与内容树是分别
-恢复的，需要重新对账），以及重启应用（搜索索引与关系索引是进程内构建的，此时已经过期）。
+恢复之后有三件事脚本会打印出来但无法替你做：`pnpm content:sync`（数据库与内容树是分别
+恢复的，需要重新对账）、重启应用（搜索索引与关系索引是进程内构建的，此时已经过期），
+以及核对 `config.restored/` 与你当前的环境文件。
 
 ---
 
@@ -495,8 +522,10 @@ URL 算进引用键（有人把缩略图 URL 贴进文档时，"未使用"视图
 `/api/assets/[...path]` 刻意不按 `Accept` 协商（它按魔数嗅探后自己声明类型，并带 `sandbox`
 CSP），所以格式协商只能发生在 HTML 里。把它放进 HTML 的代价是一次按存储路径的索引查询，且只
 对**含图**的文档发生——提取器先跑，正文里没有图片引用就一次库都不查。这份"提取 + 查库 + 渲染"
-的接口只有一处，在 `src/lib/content/render.ts`（`renderDocument` / `documentImages`），三个
-详情页、预览与修订预览都走它；`renderMarkdown` 本身仍是纯函数（`images` 是它的一个可选参数），
+的接口只有一处，在 `src/lib/content/render.ts`（`renderDocument` / `documentImages` /
+`describeImage`），三个详情页、预览与修订预览都走它——正文里的引用由 `documentImages` 扫出，
+而封面是 frontmatter 里的一个字段、不在正文里，所以由 `describeImage` 单独回答，两者共用同一
+个 `normalizeImageKey` 与同一次查询的形状；`renderMarkdown` 本身仍是纯函数（`images` 是它的一个可选参数），
 因此搜索索引、feed、OG 图与单元测试都不需要数据库。查询的键是**文档里的写法**而不是存储路径：
 同一张图在一篇文档里可能有两种写法（`/api/assets/` 与旧的 `uploads/` 前缀都被接受），两种写法
 映射到同一份描述；没被描述到的图片（外链、data URI、行已被删的资源）按原样渲染——缺失等于

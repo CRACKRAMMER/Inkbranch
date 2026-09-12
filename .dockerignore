@@ -13,9 +13,12 @@
 
 # The author's content and media. Mounted as volumes at run time, never baked
 # into an image — the image is the application, and the application is the same
-# whatever is published with it.
+# whatever is published with it. `uploads/` is the host side of the compose bind
+# mount and `public/uploads/` is where a local dev server writes; neither is
+# source.
 content/
 public/uploads/
+uploads/
 
 # Dependencies and build output: reinstalled inside the build stage, where the
 # platform and the lockfile are the ones that matter.
