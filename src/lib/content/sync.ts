@@ -416,6 +416,18 @@ async function syncTags(
     }
   }
 
+  // Clear this batch's links before the early return below, not after it. The
+  // document that has just dropped its last tag is exactly the one whose stale
+  // links need removing, and when no document in the batch has a tag left,
+  // `wanted` is empty — so a return here would skip the delete and leave the
+  // old links in place. The tag would go on being counted against a document
+  // that no longer names it, and the admin list would show it carried by a
+  // document that does not carry it.
+  const contentIds = documents.map(({ row }) => row.id)
+  if (contentIds.length > 0) {
+    await db.delete(contentTags).where(inArray(contentTags.contentId, contentIds))
+  }
+
   if (wanted.size === 0) return { created: 0 }
 
   const slugs = [...wanted.keys()]
@@ -451,11 +463,6 @@ async function syncTags(
         .where(inArray(tagsTable.slug, stillMissing))
       for (const row of fetched) idBySlug.set(row.slug, row.id)
     }
-  }
-
-  const contentIds = documents.map(({ row }) => row.id)
-  if (contentIds.length > 0) {
-    await db.delete(contentTags).where(inArray(contentTags.contentId, contentIds))
   }
 
   const rows: { contentId: string; tagId: string }[] = []

@@ -2,7 +2,7 @@ import 'server-only'
 
 import { asc, eq, inArray } from 'drizzle-orm'
 
-import { recordAudit } from '@/lib/audit'
+import { recordAudit, type AuditAction } from '@/lib/audit'
 import { parseFrontmatter } from '@/lib/content/frontmatter'
 import { pruneOrphanTags, syncContent } from '@/lib/content/sync'
 import { updateDocument } from '@/lib/content/writer'
@@ -25,6 +25,10 @@ import type { TagChangeImpact } from './tag-impact'
  * come back the way it was. Every operation here therefore rewrites the
  * documents and lets the sync rebuild the row, which is why a "rename" is a
  * multi-file edit rather than a one-row update.
+ *
+ * The rule has one exception, where it cannot apply because there is nothing to
+ * derive from: a tag no document carries. Its row is then the only copy of the
+ * tag, so a rename renames the row — see the branch in `rewriteTag`.
  *
  * Two consequences the UI has to state plainly, and this module cannot hide:
  *
@@ -91,6 +95,25 @@ async function documentsWithAnyTag(slugs: string[]): Promise<TaggedDocument[]> {
 
 export type TagRewriteMode = 'rename' | 'merge' | 'delete'
 
+/**
+ * The three operations, as the audit actions that name them.
+ *
+ * A template — `tag.${mode}` — would produce the same strings in less space,
+ * and it is what this file used until the vocabulary scan caught it: that scan
+ * is a grep for the literal `'tag.merge'`, so an interpolated name is an action
+ * no source file appears to write. It reported the two actions reachable only
+ * through the template, and a reader grepping the log's vocabulary would have
+ * found nothing to read. Spelled out, both the scan and the reader find them.
+ *
+ * `Record<TagRewriteMode, AuditAction>` rather than three constants, so adding
+ * a fourth mode is a type error here rather than a silently unwritten action.
+ */
+const TAG_ACTIONS: Record<TagRewriteMode, AuditAction> = {
+  rename: 'tag.rename',
+  merge: 'tag.merge',
+  delete: 'tag.delete',
+}
+
 export interface TagRewriteReport {
   mode: TagRewriteMode
   /** The tag as it was, so a failure message can name what was being changed. */
@@ -108,6 +131,12 @@ export interface TagRewriteReport {
   unchanged: number
   /** `tags` rows the sync no longer finds in any document, and their removal. */
   prunedTags: number
+  /**
+   * The `tags` row itself was renamed, rather than rebuilt from rewritten
+   * documents. True only when no document carried the tag, which is the one
+   * case where the row is the tag rather than a projection of the files.
+   */
+  renamedRow: boolean
   /**
    * The reconciliation that follows the writes. `ok: false` means the files are
    * correct but the index still describes the old tags.
@@ -153,10 +182,47 @@ export async function rewriteTag(options: TagRewriteOptions): Promise<TagRewrite
     failed: [],
     unchanged: 0,
     prunedTags: 0,
+    renamedRow: false,
     sync: { ok: true, errors: 0 },
   }
 
   const replacement = to ? to.name : null
+
+  /**
+   * A tag nothing carries, renamed.
+   *
+   * The rule at the top of this file is that a tag is derived from the files,
+   * so an operation rewrites documents and lets the sync rebuild the row. With
+   * no documents there is nothing to derive from and nothing to rewrite, which
+   * leaves the row as the *only* copy of the tag — its name, and a `color` and
+   * `description` that have no frontmatter counterpart, which is the whole
+   * reason `carryTagAppearance` exists.
+   *
+   * So this branch is where the rule stops applying, and it has to be stated
+   * because the general path is actively wrong here: the prune at the end of
+   * this function drops rows no document links to, and it is right to for a
+   * delete or a merge — the row is meant to go. For a rename it dropped the row
+   * while the sync (skipped, because nothing was written) never created the new
+   * one, so the tag and its appearance disappeared and the operator was told
+   * the rename had succeeded.
+   *
+   * The prune is skipped on this path, which is a consequence of the row being
+   * the thing being renamed: it would drop the row we just wrote. Other orphan
+   * rows then wait for the next operation that reaches the prune, which is what
+   * they already do — nothing else in the application prunes them.
+   */
+  if (mode === 'rename' && to && documents.length === 0) {
+    await db.update(tags).set({ slug: to.slug, name: to.name }).where(eq(tags.slug, from.slug))
+    report.renamedRow = true
+    await recordAudit({
+      action: TAG_ACTIONS.rename,
+      actorId: actorId ?? null,
+      targetType: 'tag',
+      targetId: from.slug,
+      metadata: { from: from.slug, to: to.slug, name: to.name, documents: 0, rowOnly: true },
+    })
+    return report
+  }
 
   for (const document of documents) {
     // What the callback decided to write, carried out of it. A holder object
@@ -218,7 +284,11 @@ export async function rewriteTag(options: TagRewriteOptions): Promise<TagRewrite
           type: document.type,
           slug: document.slug,
           path: document.path,
-          via: `tag.${mode}`,
+          // The operation's own action, not a second spelling of it: the row
+          // written below for the operation and this per-document row are read
+          // together, and deriving both from one map is what stops them
+          // disagreeing about which operation they are.
+          via: TAG_ACTIONS[mode],
           tag: from.slug,
           ...(to ? { to: to.slug } : {}),
         },
@@ -262,6 +332,25 @@ export async function rewriteTag(options: TagRewriteOptions): Promise<TagRewrite
   // and a document that failed to write still references the tag, which is what
   // keeps its row alive for the retry.
   report.prunedTags = await pruneOrphanTags()
+
+  // One row for the operation, in addition to the `post.update` row each
+  // rewritten document already wrote. Those rows say which files changed; this
+  // one says that the operation happened at all, which is otherwise invisible
+  // whenever it changes nothing — and the operation is what the operator chose
+  // and what the audit log is asked about.
+  await recordAudit({
+    action: TAG_ACTIONS[mode],
+    actorId: actorId ?? null,
+    targetType: 'tag',
+    targetId: from.slug,
+    metadata: {
+      from: from.slug,
+      ...(to ? { to: to.slug } : {}),
+      documents: report.written.length,
+      failed: report.failed.length,
+      unchanged: report.unchanged,
+    },
+  })
 
   return report
 }

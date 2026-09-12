@@ -70,8 +70,15 @@ afterAll(() => {
 /** True when a real database is available for integration tests. */
 export const hasTestDatabase = Boolean(process.env.TEST_DATABASE_URL)
 
-/** Root the content engine is writing to for this test file. */
+/**
+ * Root the content engine is writing to for this test file.
+ *
+ * Deliberately without an upload twin. A content test has to *place* fixture
+ * files before the engine reads them, so it needs a path it can write to — six
+ * files import this one. The asset tests need no such path from here: they take
+ * `UPLOAD_ROOT` from `@/lib/assets/storage`, which is the module under test's
+ * own resolution of `UPLOAD_DIR` and therefore also proves the variable was read
+ * as intended. An exported `testUploadRoot` used to sit here saying otherwise;
+ * it was named nowhere in the repository, and was removed.
+ */
 export const testContentRoot = contentRoot
-
-/** Root the asset store is writing to for this test file. */
-export const testUploadRoot = uploadRoot

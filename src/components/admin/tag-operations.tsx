@@ -109,11 +109,19 @@ function TagReport({ report }: { report: TagActionResult }) {
   const verb =
     report.mode === 'delete' ? 'Removed from' : report.mode === 'merge' ? 'Merged in' : 'Renamed in'
 
+  // A tag no document carries has no files to rewrite, so the operation renames
+  // its row instead. "Renamed in 0 documents" was what this said before, which
+  // is true and reads as a failure; the row is the tag in that case, and it now
+  // says so.
+  const sentence = report.renamedRow
+    ? 'No document carried this tag, so the tag itself was renamed and nothing on disk changed.'
+    : `${verb} ${report.written.length} document${report.written.length === 1 ? '' : 's'}.`
+
   return (
     <div className="border border-line bg-sunken px-4 py-3 text-sm">
       <p className="text-ink">
-        {verb} {report.written.length} document{report.written.length === 1 ? '' : 's'}.
-        {report.unchanged > 0
+        {sentence}
+        {!report.renamedRow && report.unchanged > 0
           ? ` ${report.unchanged} already read that way and were left alone.`
           : ''}
       </p>

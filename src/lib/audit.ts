@@ -41,6 +41,13 @@ export const AUDIT_ACTIONS = [
   'post.publish',
   'post.unpublish',
   'post.import',
+  // The operation, not only its per-document effects: a tag rewrite records a
+  // `post.update` for each document it changes, and nothing at all when it
+  // changes none — which is what a tag no document carries looks like. These
+  // name the operation itself, so it is in the log either way.
+  'tag.rename',
+  'tag.merge',
+  'tag.delete',
   'revision.restore',
   'asset.upload',
   'asset.update',
