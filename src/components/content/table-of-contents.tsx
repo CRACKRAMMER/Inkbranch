@@ -8,14 +8,8 @@ import type { Heading } from '@/lib/content/derive'
 import { cn } from '@/lib/utils/cn'
 
 /**
- * How long a jump is allowed to keep animating before the root stops asking for
- * smooth scrolling. The browser picks the real duration; this is only a ceiling
- * for readers whose browser never fires `scrollend`.
- */
-const SMOOTH_JUMP_MS = 1000
-
-/**
- * Jump to a heading, smoothly, without taking the browser's job away from it.
+ * Jump to a heading, doing the scrolling here rather than leaving it to the
+ * browser.
  *
  * The obvious implementation of "click the contents and glide there" is
  * `scroll-behavior: smooth` on `html`, and it is the wrong one here: the
@@ -25,35 +19,62 @@ const SMOOTH_JUMP_MS = 1000
  * position, so a global rule would animate the jump to the top of every article
  * they open from halfway down the last one.
  *
- * So the property is set on the root for the length of one anchor navigation
- * and then taken back off. The click itself is not prevented, which is the
- * point: the browser still writes the `#fragment` into the URL, still pushes a
- * history entry, still moves the focus order to the target, and still honours
- * the heading's `scroll-margin-top`. All that changes is that the scroll to it
- * is animated — and only for readers who have not asked for less motion.
+ * That is why this used to set the property on the root for the length of one
+ * anchor navigation and take it back off again, leaving the click to the
+ * browser. The click is prevented now, because the browser's jump is not
+ * dependable: a fragment navigation is a programmatic scroll, and Chromium
+ * discards one that arrives while a smooth scroll of its own is still running.
+ * That is exactly the state a reader is in when they change their mind
+ * mid-glide and pick a different section — the address bar moved to the new
+ * heading and the page stayed where it was, showing them one section while
+ * claiming another. Asking for the scroll here is what makes the second jump
+ * land like the first, and it is also what makes the jump immediate for a
+ * reader who asked for less motion, instead of leaving that to a stylesheet
+ * reaching in after the fact.
+ *
+ * The navigation did four things. Three are kept:
+ *
+ * - The fragment reaches the URL, and pushes a history entry, so the address
+ *   stays shareable and Back still returns to the section left behind.
+ * - The target becomes the starting point for the next Tab. A prevented
+ *   navigation does not do that, so the heading is made focusable for as long
+ *   as it is where the reader is. `tabindex="-1"` is what puts focus somewhere
+ *   without adding a tab stop, and the focus is taken without scrolling
+ *   because the scroll is the next line and it is the animated one.
+ * - The heading's `scroll-margin-top` still applies, since that is the
+ *   browser's rule for aligning a scrolled-to element and not the
+ *   navigation's.
+ *
+ * The fourth, leaving the scroll to the browser, is the one being given up.
  */
 function smoothJump(event: React.MouseEvent<HTMLAnchorElement>, id: string) {
   // Leave modified clicks alone: ⌘-click opens a new tab, and a click the code
   // inside the heading already handled is not ours to animate.
   if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.shiftKey) return
-  if (!document.getElementById(id)) return
-  if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return
 
-  const root = document.documentElement
-  root.style.scrollBehavior = 'smooth'
+  const target = document.getElementById(id)
+  // A fragment that matches no element is a no-op in the browser too — and one
+  // the URL should not record.
+  if (!target) return
 
-  // `scrollend` is the accurate signal but is not in every browser; the timer
-  // is the floor beneath it. Clearing early costs nothing worse than the jump
-  // finishing instantly, which is where it was going anyway. Both paths remove
-  // the listener, so a leftover one cannot silence a later jump by firing on an
-  // unrelated scroll.
-  const done = () => {
-    root.style.removeProperty('scroll-behavior')
-    clearTimeout(timer)
-    document.removeEventListener('scrollend', done)
+  event.preventDefault()
+
+  if (window.location.hash !== `#${id}`) {
+    window.history.pushState(null, '', `#${id}`)
   }
-  const timer = setTimeout(done, SMOOTH_JUMP_MS)
-  document.addEventListener('scrollend', done)
+
+  if (!target.hasAttribute('tabindex')) {
+    target.setAttribute('tabindex', '-1')
+    target.addEventListener('blur', () => target.removeAttribute('tabindex'), { once: true })
+  }
+  target.focus({ preventScroll: true })
+
+  // `auto` rather than `smooth` for a reader who asked for less motion. The
+  // site sets no global `scroll-behavior`, so `auto` is what an unadorned jump
+  // already is, and saying so by name keeps the choice on this side of the
+  // stylesheet rather than depending on a media query inside it.
+  const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  target.scrollIntoView({ behavior: reduced ? 'auto' : 'smooth', block: 'start' })
 }
 
 /**

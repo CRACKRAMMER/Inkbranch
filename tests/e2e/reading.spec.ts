@@ -18,9 +18,10 @@ import { showMetadata, signIn, typeBody, uniqueSlug } from './support'
  * Animated scrolling cannot be seen from the outside: Playwright has no
  * "watch the viewport move" assertion, and a test that read the scroll position
  * mid-flight would be racing the browser's own easing curve. What *is*
- * deterministic is the mechanism — the page asks for a smooth scroll for the
- * length of one jump and then stops asking — so the assertion is on that, read
- * in the same JavaScript turn as the click, before a frame can run.
+ * deterministic is the request the page makes — a smooth scroll of the target,
+ * asked for once, by name — so the assertion is on that, read in the same
+ * JavaScript turn as the click, before a frame can run. Whether the request was
+ * honoured is asserted separately and afterwards, by the viewport.
  *
  * That turn is also why one of the clicks below is dispatched with
  * `element.click()` rather than `locator.click()`. It is the same event handler
@@ -157,18 +158,19 @@ test('a reader moves through a long document from its contents list', async ({ p
       .getByRole('link', { name: sections[1], exact: true })
       .click()
 
-    // The fragment reaches the URL, which is the assertion that this feature did
-    // not cost the reader the browser's own behaviour: the address is still
-    // shareable and Back still works.
+    // The fragment reaches the URL: the address is still shareable and Back
+    // still works. The page writes it now rather than the browser, so this is a
+    // check on the half of the navigation it took over, not on the browser's.
     await expect(page).toHaveURL(new RegExp(`#${escapeForRegExp(target)}$`))
     await expect(landing(page, sections[1])).toBeInViewport()
 
-    // And the page stops asking for animated scrolling once the jump is over.
-    // It has to stop: the property applies to every scroll of the viewport,
-    // including the ones Next makes when a navigation lands on a new page.
+    // And the section is where the next Tab starts from. That is the other half
+    // of what a prevented navigation would have cost: a reader who arrived by
+    // keyboard carries on from the section they picked rather than from the
+    // contents list they picked it out of.
     await expect
-      .poll(() => page.evaluate(() => document.documentElement.style.scrollBehavior))
-      .toBe('')
+      .poll(() => page.evaluate(() => document.activeElement?.id || null))
+      .toBe(target)
   })
 
   await test.step('asks for an animated scroll, and only for the jump', async () => {
@@ -176,30 +178,87 @@ test('a reader moves through a long document from its contents list', async ({ p
     const target = await fragmentFor(page, sections[3])
     const during = await clickInPage(page, target)
 
-    expect(during).toBe('smooth')
+    expect(during.behavior).toBe('smooth')
+    // The other half of the claim in the step's name: the animation is asked for
+    // on this one scroll and never on the root, so no navigation, no page load
+    // and no restore can pick it up by accident.
+    expect(during.root).toBe('')
 
     await expect(page).toHaveURL(new RegExp(`#${escapeForRegExp(target)}$`))
     await expect(landing(page, sections[3])).toBeInViewport()
-
-    await expect
-      .poll(() => page.evaluate(() => document.documentElement.style.scrollBehavior))
-      .toBe('')
   })
 
   await test.step('does not animate for a reader who asked for less motion', async () => {
     await page.emulateMedia({ reducedMotion: 'reduce' })
     await openContents(page)
     const target = await fragmentFor(page, sections[0])
-
     const during = await clickInPage(page, target)
 
-    // Nothing was asked for, so the jump is the browser's plain one — which is
-    // the whole reason this is a check on the mechanism and not on a CSS rule:
-    // a global `scroll-behavior: smooth` would have animated it, and no
-    // `prefers-reduced-motion` override in the stylesheet could tell the
-    // difference between this jump and a page load.
-    expect(during).toBe('')
+    // An immediate scroll is asked for by name rather than left to the browser's
+    // default, which is the whole reason this is a check on the mechanism and
+    // not on a CSS rule: the choice is made where the jump is made, and a
+    // `prefers-reduced-motion` block in the stylesheet is not what tells this
+    // jump apart from a page load.
+    expect(during.behavior).toBe('auto')
+    expect(during.root).toBe('')
     await expect(page).toHaveURL(new RegExp(`#${escapeForRegExp(target)}$`))
+    await expect(landing(page, sections[0])).toBeInViewport()
+  })
+
+  await test.step('lands the second of two jumps asked for in quick succession', async () => {
+    // A reader who changes their mind mid-glide: the first jump is still moving
+    // when the second one is asked for. That is the state the browser cannot be
+    // left to handle — Chromium drops a fragment navigation's scroll while one
+    // of its own smooth scrolls is running, so the address moved to the second
+    // section and the page stayed at the first — and no other step in this spec
+    // can catch it, because every other jump is made from a page that is
+    // standing still.
+    await page.emulateMedia({ reducedMotion: 'no-preference' })
+    await openContents(page)
+
+    const first = await fragmentFor(page, sections[0])
+    const last = await fragmentFor(page, sections[3])
+
+    const asked = await page.evaluate(
+      async ({ first: toFirst, last: toLast }) => {
+        // Resolved at the moment of each click, and from the document rather
+        // than through the accessible tree. Below `xl` the list a reader taps is
+        // the one in the drawer, and following a link unmounts the drawer and
+        // the links inside it — so a reference taken once would be detached by
+        // the time the second jump is asked for, and a click on a detached
+        // anchor reaches the browser without reaching the page. What is wanted
+        // is the one on screen, and failing that whichever is in the document;
+        // the handler under test is on both lists at either width.
+        const link = (fragment: string) => {
+          const candidates = Array.from(
+            document.querySelectorAll<HTMLAnchorElement>(`a.toc-link[href="#${fragment}"]`),
+          )
+          const found = candidates.find((node) => node.offsetParent !== null) ?? candidates[0]
+          if (!found) throw new Error(`no contents link for #${fragment}`)
+          return found
+        }
+
+        window.scrollTo({ top: 0, behavior: 'auto' })
+        await new Promise((resolve) => setTimeout(resolve, 50))
+
+        link(toLast).click()
+        // Long enough that the glide is well under way and nowhere near arrived.
+        await new Promise((resolve) => setTimeout(resolve, 150))
+        const midY = Math.round(window.scrollY)
+
+        link(toFirst).click()
+        await new Promise((resolve) => setTimeout(resolve, 1200))
+
+        return { midY }
+      },
+      { first, last },
+    )
+
+    // The first jump was genuinely in flight when the second was asked for. If
+    // it had already arrived, this step would be asserting nothing.
+    expect(asked.midY).toBeGreaterThan(0)
+
+    await expect(page).toHaveURL(new RegExp(`#${escapeForRegExp(first)}$`))
     await expect(landing(page, sections[0])).toBeInViewport()
   })
 
@@ -258,20 +317,43 @@ async function openContents(page: Page): Promise<void> {
 }
 
 /**
- * Click a TOC link from inside the page and report what the root was asking for
- * at that instant.
+ * Click a TOC link from inside the page and report what the page asked the
+ * browser for, at that instant.
  *
  * One evaluation, so no frame runs between the click and the reading: the
- * handler sets the property synchronously, and the browser's own scroll — the
- * one being asked for smoothly — starts after the event has finished
- * dispatching. Read from outside, this would be a race against the animation.
+ * handler decides synchronously, and the scroll it asks for starts after the
+ * event has finished dispatching. Read from outside, this would be a race
+ * against the animation.
+ *
+ * `scrollIntoView` is spied on rather than the page's position being compared
+ * before and after, because the request is the thing that differs — an
+ * immediate jump and an animated one end in the same place, and only the
+ * request says which was asked for. The root's inline style is read in the same
+ * turn for the other half of the claim: that the animation is asked for on this
+ * one scroll and never on the root.
  */
-async function clickInPage(page: Page, fragment: string): Promise<string> {
+async function clickInPage(
+  page: Page,
+  fragment: string,
+): Promise<{ behavior: string | null; root: string }> {
   return page.evaluate((target) => {
     const link = document.querySelector<HTMLAnchorElement>(`a.toc-link[href="#${target}"]`)
     if (!link) throw new Error(`no contents link for #${target}`)
-    link.click()
-    return document.documentElement.style.scrollBehavior
+
+    const native = Element.prototype.scrollIntoView
+    let behavior: string | null = null
+    Element.prototype.scrollIntoView = function (options?: boolean | ScrollIntoViewOptions) {
+      if (typeof options === 'object' && options !== null) behavior = options.behavior ?? null
+      native.call(this, options)
+    }
+
+    try {
+      link.click()
+    } finally {
+      Element.prototype.scrollIntoView = native
+    }
+
+    return { behavior, root: document.documentElement.style.scrollBehavior }
   }, fragment)
 }
 
