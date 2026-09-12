@@ -175,6 +175,34 @@ const nextConfig: NextConfig = {
     return { beforeFiles: [], afterFiles: [], fallback: [] }
   },
 
+  async redirects() {
+    return [
+      /*
+       * `/tag/linux` → `/tags/linux`, and `/tag` → `/tags`. §46 writes the
+       * route in the singular and this site spells it in the plural, so the
+       * form the spec names is a shape of URL people will have written down.
+       * A redirect is how both are true: the alias resolves, and there is
+       * still one canonical address per topic for a crawler to settle on.
+       *
+       * Here rather than in the redirects table, which matches whole paths
+       * exactly — a row per tag is a row per tag, and one that no longer
+       * exists is a rule that outlives the topic it was written for. A
+       * dynamic segment is a rule about a URL shape, which is a different
+       * thing and belongs where the routes are declared.
+       *
+       * The consequence of the ordering is worth knowing: config redirects
+       * run before routing, so an admin-created redirect on `/tag/anything`
+       * would never fire. Nothing warns about that, hence this note.
+       *
+       * `permanent` gives 308. The alias is not a temporary state of affairs,
+       * and a search engine that has seen `/tag/linux` should move its
+       * entry rather than keep both.
+       */
+      { source: '/tag', destination: '/tags', permanent: true },
+      { source: '/tag/:tag', destination: '/tags/:tag', permanent: true },
+    ]
+  },
+
   typedRoutes: false,
   turbopack: {
     root: import.meta.dirname,

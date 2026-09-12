@@ -7,7 +7,6 @@ import { PageHeader } from '@/components/content/page-header'
 import { Pagination } from '@/components/content/pagination'
 import { TagDot } from '@/components/content/tag-dot'
 import { Container } from '@/components/site/container'
-import { TYPE_LABELS } from '@/lib/content/labels'
 import {
   countContent,
   getTag,
@@ -16,6 +15,7 @@ import {
   type ContentSummary,
 } from '@/lib/content/queries'
 import { pageCount, pageSlice, parsePage } from '@/lib/pagination'
+import { groupHits } from '@/lib/search/group'
 import { buildPageMetadata, siteIdentityFromSettings } from '@/lib/seo/metadata'
 import { getSettings } from '@/lib/settings'
 import { formatDate, toIsoDate } from '@/lib/utils/date'
@@ -28,6 +28,23 @@ import { formatDate, toIsoDate } from '@/lib/utils/date'
  * "this tag exists but is empty" is a state that cannot reach this route — and
  * a reader who follows a stale link from a search engine gets an honest "gone"
  * rather than a page that implies the topic exists and has nothing in it.
+ *
+ * ## The results are grouped by kind
+ *
+ * §46 asks for a tag page that is not a plain list of articles, and names the
+ * three groups it wants under the count: articles, notes, projects. A tag is
+ * the one place on this site where the three kinds genuinely meet — a topic is
+ * a topic whether it was written up as a post or planted as a note — so the
+ * grouping is what the page is for, not decoration on top of it.
+ *
+ * `groupHits` is the same function the search page groups with, so the headings
+ * cannot say one thing on `/search` and another here, and `CONTENT_TYPES`
+ * decides the order for both.
+ *
+ * The group headings carry no count, deliberately. This page paginates, so a
+ * heading's count would be a count of the rows on *this page* sitting directly
+ * under a total for all of them — two numbers about different things, one line
+ * apart. The total at the top is the count, and it is the honest one.
  *
  * The related topics at the foot are computed from this page's own results
  * rather than queried. Every tag on a result is already loaded, so counting
@@ -85,7 +102,7 @@ export default async function TagPage({
   ])
 
   const dateContext = { locale: settings.locale, timeZone: settings.timezone }
-  const spansTypes = new Set(items.map((item) => item.type)).size > 1
+  const groups = groupHits(items)
 
   const toEntry = (item: ContentSummary): Entry => ({
     href: item.url,
@@ -95,7 +112,12 @@ export default async function TagPage({
     description: item.description,
     readingTime: item.readingTime,
     tags: item.tags,
-    typeLabel: spansTypes ? TYPE_LABELS[item.type] : undefined,
+    /*
+      No `typeLabel`. It used to be set whenever a page happened to mix types,
+      because a flat list had to say which kind each row was. The group heading
+      above each list says it once instead, which is the same information told
+      without repeating it on every row.
+    */
   })
 
   /*
@@ -142,8 +164,18 @@ export default async function TagPage({
       {items.length === 0 ? (
         <p className="py-16 text-sm text-ink-subtle">That page is past the end of the list.</p>
       ) : (
-        <div className="pt-6">
-          <EntryList entries={items.map(toEntry)} showDescription showTags />
+        <div className="flex flex-col gap-10 pt-6">
+          {groups.map((group) => (
+            <section key={group.type} aria-labelledby={`tag-group-${group.type}`}>
+              <h2
+                id={`tag-group-${group.type}`}
+                className="mb-1 text-xs font-medium uppercase tracking-wider text-ink-subtle"
+              >
+                {group.label}
+              </h2>
+              <EntryList entries={group.hits.map(toEntry)} showDescription showTags />
+            </section>
+          ))}
         </div>
       )}
 
