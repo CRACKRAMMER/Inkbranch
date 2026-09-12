@@ -108,6 +108,12 @@ const CADENCE: readonly CadenceEntry[] = [
   // an upload rather than by time.
   { kind: 'analytics.prune', everyMs: 6 * 60 * 60_000 },
   { kind: 'assets.orphan-scan', everyMs: 6 * 60 * 60_000 },
+  // The slowest thing here, and the least urgent: both tables it trims are read
+  // only by the admin, and a row that should have been deleted an hour ago
+  // costs one line in a list rather than a wrong answer. Six hours keeps it off
+  // the daily backup's critical path and is far more often than either table
+  // grows enough to matter.
+  { kind: 'auth.prune', everyMs: 6 * 60 * 60_000 },
 ]
 
 /**

@@ -11,6 +11,8 @@ import {
 import { isDay } from '@/lib/analytics/day'
 import { findUnusedAssets } from '@/lib/assets/manage'
 import { recordAudit } from '@/lib/audit'
+import { pruneRateLimits } from '@/lib/auth/rate-limit'
+import { pruneExpiredSessions } from '@/lib/auth/session-store'
 import { db } from '@/lib/db'
 import { contentIndex, type ScheduledJobRow } from '@/lib/db/schema'
 import { parseFrontmatter } from '@/lib/content/frontmatter'
@@ -48,6 +50,7 @@ export const JOB_KINDS = [
   'analytics.aggregate',
   'analytics.prune',
   'assets.orphan-scan',
+  'auth.prune',
 ] as const
 
 export type JobKind = (typeof JOB_KINDS)[number]
@@ -131,6 +134,7 @@ export const jobHandlers: Record<JobKind, JobHandler> = Object.freeze({
   'analytics.aggregate': runAnalyticsAggregate,
   'analytics.prune': runAnalyticsPrune,
   'assets.orphan-scan': runAssetOrphanScan,
+  'auth.prune': runAuthPrune,
 })
 
 /** The handler for a kind, or null when nothing can run it. */
@@ -776,4 +780,49 @@ async function runAssetOrphanScan({ log }: JobContext): Promise<JobResult> {
       bytes: asset.size,
     })),
   }
+}
+
+/* -------------------------------------------------------------------------- */
+/*  auth.prune                                                                 */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Delete the sessions that have expired, and the rate-limit buckets that have.
+ *
+ * Two tables, one job, because they are the same piece of housekeeping: rows
+ * that are written by a request that is happening and read by nobody once the
+ * clock passes them. Neither has a reader that would notice a dead row, which is
+ * precisely why nothing else removes one — so both files' comments say "run by
+ * the worker" and, until this job existed, neither was.
+ *
+ * ## What accumulates without it
+ *
+ * A session is deleted when it is signed out, when it is presented after its
+ * expiry, or when a password change revokes it. What is *not* covered by those
+ * three is the ordinary case: a browser that is closed and a cookie that is
+ * never presented again. Nothing ever looks at that row again, so it stays in a
+ * table whose rows are meant to be the devices that are signed in — answering
+ * "which are they?" with devices that are not. The expiry is what makes the
+ * answer true again, and this is what applies it.
+ *
+ * A rate-limit bucket carries an `expires_at` column that is written on every
+ * consume and read by nothing else. Its TTL is twice the time the bucket needs
+ * to refill from empty, so deleting an expired one is indistinguishable from
+ * keeping it — and a bucket that is never deleted is one row per address and per
+ * account that has ever signed in, kept for the life of the installation.
+ *
+ * ## Why the counts are the result
+ *
+ * A prune that deletes nothing is the normal outcome on a quiet site, and the
+ * job list is where an operator checks that "nothing" is what happened rather
+ * than the job not running at all. Both numbers are cheap and neither is
+ * sensitive: neither table's rows are ever reported anywhere else.
+ */
+async function runAuthPrune({ log }: JobContext): Promise<JobResult> {
+  const sessions = await pruneExpiredSessions()
+  const rateLimits = await pruneRateLimits()
+
+  log.info({ event: 'job.auth-prune', sessions, rateLimits })
+
+  return { sessions, rateLimits }
 }

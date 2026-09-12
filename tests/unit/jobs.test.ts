@@ -12,7 +12,10 @@ import {
   auditLogs,
   contentIndex,
   contentRevisions,
+  rateLimits,
   scheduledJobs,
+  sessions,
+  users,
 } from '@/lib/db/schema'
 import { buildRelativePath } from '@/lib/content/paths'
 import { parseFrontmatter, serializeFrontmatter } from '@/lib/content/frontmatter'
@@ -83,16 +86,23 @@ describe('job kind registry', () => {
   })
 
   it('registers the housekeeping kinds, which nothing else would notice losing', () => {
-    // These three were absent until their modules existed, and the expectation
+    // These four were absent until their modules existed, and the expectation
     // that they were absent is what failed on the day they landed. It is kept
     // as a list because of what they have in common: nothing on a page depends
     // on them, so a kind that quietly disappeared from the registry would take
     // scheduled publishing or analytics rollups with it and the site would go
     // on serving, looking fine, with the work silently never done.
+    //
+    // `auth.prune` is the one of the four that has no visible consequence at
+    // all: the two tables it trims are read by one admin screen, and both
+    // degrade by quietly accumulating rows rather than by showing anything
+    // wrong. Removing it from the registry would leave no trace anywhere but
+    // this list.
     for (const kind of [
       'analytics.aggregate',
       'analytics.prune',
       'assets.orphan-scan',
+      'auth.prune',
     ] as const) {
       expect(isKnownJobKind(kind)).toBe(true)
       expect(resolveHandler(kind)).toBeTypeOf('function')
@@ -574,12 +584,25 @@ describe.runIf(hasTestDatabase)('handlers against Postgres', () => {
   const createdPaths: string[] = []
   const createdContentIds: string[] = []
 
+  /**
+   * Users this suite created, for the session rows to hang off.
+   *
+   * `sessions.user_id` cascades, so removing the user removes its sessions —
+   * which is also why these are deleted *after* the assertions rather than
+   * having the suite delete its session rows by hand.
+   */
+  const createdUserIds: string[] = []
+
+  /** Rate-limit buckets this suite created. Prefixed, like everything else here. */
+  const RATE_LIMIT_PREFIX = `jobs-test:${marker}:`
+
   afterAll(async () => {
     if (created.size > 0) {
       await db.delete(scheduledJobs).where(inArray(scheduledJobs.id, [...created]))
     }
     await db.delete(analyticsEvents).where(like(analyticsEvents.path, `${PATH_PREFIX}%`))
     await db.delete(analyticsDaily).where(like(analyticsDaily.path, `${PATH_PREFIX}%`))
+    await db.delete(rateLimits).where(like(rateLimits.key, `${RATE_LIMIT_PREFIX}%`))
     if (createdPaths.length > 0) {
       await db.delete(auditLogs).where(inArray(auditLogs.targetId, createdPaths))
     }
@@ -587,6 +610,9 @@ describe.runIf(hasTestDatabase)('handlers against Postgres', () => {
       await db
         .delete(contentIndex)
         .where(inArray(contentIndex.id, createdContentIds))
+    }
+    if (createdUserIds.length > 0) {
+      await db.delete(users).where(inArray(users.id, createdUserIds))
     }
   })
 
@@ -847,6 +873,104 @@ describe.runIf(hasTestDatabase)('handlers against Postgres', () => {
       expect(await db.select({ id: assets.id }).from(assets)).toHaveLength(before.length)
 
       expect(names(log.info)).toContain('job.assets-orphan-scan')
+    })
+  })
+
+  describe('auth.prune', () => {
+    /** A 64-character token hash, unique to this suite, without the hasher. */
+    const fakeHash = (label: string): string =>
+      `${marker}-${label}`.padEnd(64, '0').slice(0, 64)
+
+    it('deletes what has expired and leaves what has not', async () => {
+      const [user] = await db
+        .insert(users)
+        .values({
+          email: `jobs-${marker}@test.invalid`,
+          name: 'Jobs Test',
+          // Never used to sign in with: these rows exist so the session rows
+          // have an owner, and `sessions.user_id` is not nullable.
+          passwordHash: 'not-a-hash-and-never-verified',
+        })
+        .returning()
+      createdUserIds.push(user!.id)
+
+      const past = new Date(Date.now() - 60_000)
+      const future = new Date(Date.now() + 60 * 60_000)
+
+      // The two the prune should delete, inserted together because nothing
+      // below needs to tell them apart: between them they cover both halves of
+      // the rule, and a delete that read only one column would leave one
+      // behind and fail the survivor assertion.
+      await db.insert(sessions).values([
+        {
+          tokenHash: fakeHash('expired'),
+          csrfTokenHash: fakeHash('expired-csrf'),
+          userId: user!.id,
+          expiresAt: past,
+          idleExpiresAt: past,
+        },
+        {
+          // Absolute expiry still ahead, idle window behind. `resolveSession`
+          // refuses this one, so the table has no more use for it.
+          tokenHash: fakeHash('idle'),
+          csrfTokenHash: fakeHash('idle-csrf'),
+          userId: user!.id,
+          expiresAt: future,
+          idleExpiresAt: past,
+        },
+      ])
+
+      const [live] = await db
+        .insert(sessions)
+        .values({
+          tokenHash: fakeHash('live'),
+          csrfTokenHash: fakeHash('live-csrf'),
+          userId: user!.id,
+          expiresAt: future,
+          idleExpiresAt: future,
+        })
+        .returning()
+
+      await db.insert(rateLimits).values([
+        {
+          key: `${RATE_LIMIT_PREFIX}expired`,
+          tokens: 0,
+          lastRefillAt: past,
+          expiresAt: past,
+        },
+        {
+          key: `${RATE_LIMIT_PREFIX}live`,
+          tokens: 0,
+          lastRefillAt: new Date(),
+          expiresAt: future,
+        },
+      ])
+
+      const { result, log } = await runJob('auth.prune')
+
+      // The counts are floors rather than exact figures, and deliberately: this
+      // job is the first thing that has ever deleted from either table, so the
+      // first run against a database that has been used is expected to find a
+      // backlog of rows that outlived their expiry. Asserting an exact number
+      // would make the test an assertion about the database's history.
+      expect(result.sessions).toBeGreaterThanOrEqual(2)
+      expect(result.rateLimits).toBeGreaterThanOrEqual(1)
+
+      const survivors = await db
+        .select({ id: sessions.id })
+        .from(sessions)
+        .where(eq(sessions.userId, user!.id))
+
+      expect(survivors.map((row) => row.id)).toEqual([live!.id])
+
+      const buckets = await db
+        .select({ key: rateLimits.key })
+        .from(rateLimits)
+        .where(like(rateLimits.key, `${RATE_LIMIT_PREFIX}%`))
+
+      expect(buckets.map((row) => row.key)).toEqual([`${RATE_LIMIT_PREFIX}live`])
+
+      expect(names(log.info)).toContain('job.auth-prune')
     })
   })
 
