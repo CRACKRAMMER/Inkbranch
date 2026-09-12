@@ -3,10 +3,33 @@ import type { NextConfig } from 'next'
 /**
  * Security headers applied to every response.
  *
- * The CSP is deliberately strict for the public site. It still permits
- * `'unsafe-inline'` for styles because Shiki emits inline `style` attributes on
- * highlighted tokens, and KaTeX ships inline styles for layout. Scripts stay
- * free of `'unsafe-inline'`: no third-party script is loaded anywhere.
+ * ## What the CSP does, and what it does not
+ *
+ * `style-src` needs `'unsafe-inline'` because Shiki writes inline `style`
+ * attributes on highlighted tokens and KaTeX ships inline styles for layout.
+ * Neither is expressible as a class, so that one is not a compromise — it is
+ * the only way to serve those two.
+ *
+ * `script-src` needs it as well, and *that* is a compromise. Next's App Router
+ * puts the RSC payload in inline `<script>` tags — 21 of them on the home page,
+ * none carrying a nonce — and their contents differ per page and per render, so
+ * there is no stable hash to allow in their place. `'unsafe-inline'` is
+ * therefore present in production as well as development. The ternary below
+ * only adds `'unsafe-eval'`, which the dev server's HMR runtime compiles with
+ * and production does not.
+ *
+ * So this CSP is not the thing that stops an injected `<script>`, and a comment
+ * claiming otherwise would be worse than no comment. What stops it is
+ * `rehype-sanitize` in the Markdown pipeline and the magic-byte check on
+ * uploads. The CSP is the layer behind those, and it still does real work:
+ * `script-src 'self'` keeps every third-party origin out, `object-src 'none'`
+ * and `base-uri 'self'` close two classic bypasses, and `frame-ancestors
+ * 'self'` blocks clickjacking.
+ *
+ * Dropping `'unsafe-inline'` from `script-src` means generating a nonce per
+ * request in `src/proxy.ts` and letting Next stamp it onto the scripts it
+ * renders — and then the theme bootstrap, which is written inline, has to read
+ * the nonce rather than be one. Worth doing, not done.
  */
 const securityHeaders = [
   { key: 'X-Content-Type-Options', value: 'nosniff' },
@@ -21,8 +44,9 @@ const securityHeaders = [
     key: 'Content-Security-Policy',
     value: [
       "default-src 'self'",
-      // Next.js injects inline bootstrap scripts; hashes are not stable across
-      // builds, so 'unsafe-inline' is scoped to scripts only in development.
+      // `'unsafe-inline'` is in both branches — see the note above for why it
+      // has to be. What the mode actually decides is `'unsafe-eval'`, which the
+      // dev server's HMR runtime needs and production must not have.
       process.env.NODE_ENV === 'production'
         ? "script-src 'self' 'unsafe-inline'"
         : "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
