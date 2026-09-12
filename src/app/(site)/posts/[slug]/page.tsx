@@ -4,9 +4,9 @@ import { notFound } from 'next/navigation'
 import { DocumentView } from '@/components/content/document-view'
 import { getContent, getAdjacent } from '@/lib/content/queries'
 import { readDocument } from '@/lib/content/reader'
+import { renderDocument } from '@/lib/content/render'
 import { getBacklinks } from '@/lib/graph/backlinks'
 import { getRelatedPosts } from '@/lib/graph/related'
-import { renderMarkdown } from '@/lib/markdown/renderer'
 import {
   JsonLd,
   authorNodeId,
@@ -64,7 +64,7 @@ export default async function PostPage({
   // empty article that still looks published.
   if (!file) notFound()
 
-  const { html } = await renderMarkdown(file.body)
+  const { html } = await renderDocument(file.body)
   const site = siteIdentityFromSettings(settings)
 
   return (

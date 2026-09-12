@@ -2,8 +2,8 @@
 
 import { z } from 'zod'
 
-import { renderMarkdown } from '@/lib/markdown/renderer'
 import { indexSlugKeys } from '@/lib/admin/queries'
+import { renderDocument } from '@/lib/content/render'
 import { actionOk, type ActionResult } from '@/lib/admin/result'
 import { describeActionError, guardRead, parseActionInput } from '@/lib/admin/guard'
 
@@ -47,7 +47,7 @@ export async function previewMarkdownAction(
     if (!parsed.ok) return parsed
 
     const known = await knownSlugSet()
-    const { html } = await renderMarkdown(parsed.value.body, { knownSlugs: known })
+    const { html } = await renderDocument(parsed.value.body, { knownSlugs: known })
 
     return actionOk({ html, broken: collectBrokenTargets(html) })
   } catch (error) {

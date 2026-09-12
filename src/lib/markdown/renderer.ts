@@ -13,7 +13,7 @@ import { unified } from 'unified'
 import { visit } from 'unist-util-visit'
 import { mdastHandlers } from './handlers'
 import { rehypeCaptureCodeMeta, rehypeCode } from './rehype-code'
-import { rehypeEnhance } from './rehype-enhance'
+import { rehypeEnhance, type DocumentImage } from './rehype-enhance'
 import { remarkAlerts } from './remark-alerts'
 import { remarkBlocks } from './remark-blocks'
 import { ALLOWED_EMBED_ORIGINS, sanitizeSchema } from './sanitize-schema'
@@ -68,6 +68,16 @@ export interface RenderOptions {
    * is flagged — an empty set is not the same thing.
    */
   knownSlugs?: ReadonlySet<string>
+  /**
+   * What is known about the site's own images, keyed by `src` as written.
+   *
+   * This is the one option that comes from the database rather than from the
+   * document, and it is an option rather than a lookup for exactly that reason:
+   * rendering stays a pure function of its input, the loader lives in
+   * `@/lib/content/render`, and a caller that has no database — a unit test, a
+   * Markdown file being previewed off disk — can still render.
+   */
+  images?: ReadonlyMap<string, DocumentImage>
 }
 
 export interface RenderResult {
@@ -111,6 +121,7 @@ export async function renderMarkdown(
     .use(rehypeEnhance, {
       allowedEmbedOrigins: ALLOWED_EMBED_ORIGINS,
       ...(options.knownSlugs ? { knownSlugs: options.knownSlugs } : {}),
+      ...(options.images ? { images: options.images } : {}),
     })
     .use(rehypeCode)
     .use(rehypeKatex, {

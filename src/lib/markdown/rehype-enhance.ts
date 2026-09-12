@@ -7,9 +7,15 @@ import { HeadingSlugger } from './slugger'
 /**
  * Structural enhancement pass.
  *
- * Runs before the highlighter and before sanitisation. Everything here is
- * additive: heading anchors, table scroll wrappers, link rel/target policy and
- * image loading hints. Nothing removes content.
+ * Runs after sanitisation and before the highlighter. Everything it emits is
+ * therefore this project's own markup rather than the author's — which is the
+ * reason it may emit a `<picture>` that the sanitiser's allow-list does not
+ * carry, and the reason nothing here has to be sanitised again.
+ *
+ * What it does is additive: heading anchors, table scroll wrappers, link
+ * rel/target policy, image loading hints, intrinsic image sizes and the formats
+ * an image is also stored in. The one thing it removes is an `<iframe>` whose
+ * origin is not on the allow-list.
  */
 
 export interface EnhanceOptions {
@@ -17,6 +23,35 @@ export interface EnhanceOptions {
   allowedEmbedOrigins: readonly string[]
   /** When set, internal document links are checked against known slugs. */
   knownSlugs?: ReadonlySet<string>
+  /** What is known about the site's own images, keyed by `src` as written. */
+  images?: ReadonlyMap<string, DocumentImage>
+}
+
+/**
+ * What is known about one of the site's own images.
+ *
+ * Supplied by the caller, because this pass has no database to ask. The caller
+ * already walks a document for its image references — the sync engine does it
+ * for "which articles use this image" — and hands the answer in as a map.
+ *
+ * An image the map does not mention is rendered exactly as it was written. The
+ * map is an improvement and never a requirement, which is what keeps an
+ * external image, a reference-style one the scanner did not resolve, or an
+ * asset whose row has been deleted from being mangled by not being found.
+ */
+export interface DocumentImage {
+  /** Intrinsic size of the stored original, when the row knows it. */
+  width: number | null
+  height: number | null
+  /** The same picture in other formats, most preferred first. */
+  sources: readonly ImageSource[]
+}
+
+/** One entry of a `<picture>`'s `<source>` list. */
+export interface ImageSource {
+  /** A media type, e.g. `image/avif`. */
+  type: string
+  url: string
 }
 
 const HEADING_TAGS = new Set(['h1', 'h2', 'h3', 'h4', 'h5', 'h6'])
@@ -47,7 +82,7 @@ export function rehypeEnhance(options: EnhanceOptions) {
           enhanceLink(node)
           break
         case 'img':
-          enhanceImage(node)
+          enhanceImage(node, options.images?.get(imageSrc(node) ?? ''))
           images.push({ parent: parent as Element, index, node })
           break
         case 'iframe':
@@ -81,7 +116,7 @@ export function rehypeEnhance(options: EnhanceOptions) {
       iframe.parent.children.splice(iframe.index, 1)
     }
 
-    wrapImages(tree, images)
+    wrapImages(images, options.images)
 
     if (options.knownSlugs) {
       markMissingTargets(tree, options.knownSlugs)
@@ -203,7 +238,7 @@ function markMissingTargets(tree: Root, knownSlugs: ReadonlySet<string>): void {
  * node while `visit` is walking it is the classic way to produce a tree that
  * skips or duplicates siblings.
  */
-function enhanceImage(node: Element): void {
+function enhanceImage(node: Element, described: DocumentImage | undefined): void {
   // Native lazy loading costs nothing and defers offscreen diagrams. All images
   // are lazy, including the first: the layout reserves the space via the
   // wrapper's aspect ratio, so there is no content shift either way.
@@ -217,27 +252,106 @@ function enhanceImage(node: Element): void {
     node.properties.alt = ''
   }
 
+  /*
+   * The intrinsic size, which is what lets the browser reserve the box before
+   * the bytes arrive — without it, every diagram in an article shifts the text
+   * below it as it loads. The figures come from the asset row rather than from
+   * the file, so they describe the *stored* image: one the pipeline rotated is
+   * reported as it will be displayed.
+   *
+   * An author's own width/height written into raw HTML is left alone. That is a
+   * statement about how the image should be laid out, and this is a fact about
+   * the file; the fact does not get to overwrite the statement.
+   */
+  if (described) {
+    if (described.width !== null && node.properties.width === undefined) {
+      node.properties.width = described.width
+    }
+    if (described.height !== null && node.properties.height === undefined) {
+      node.properties.height = described.height
+    }
+  }
+
   node.properties.className = [
     ...toClassList(node.properties.className),
     'md-image__img',
   ]
 }
 
-/** Wrap images so the caption-less ones can be laid out and centred by CSS. */
+/**
+ * Wrap images so the caption-less ones can be laid out and centred by CSS, and
+ * offer the other formats the asset was stored in.
+ *
+ * ## Why the `<picture>` is inside the wrapper
+ *
+ * `<picture>` may contain `<source>` elements and one `<img>`, and nothing
+ * else. A wrapper between it and the image would be invalid HTML, and a browser
+ * repairs invalid HTML by guessing — so the wrapper goes outside and the
+ * picture, when there is one, goes in.
+ *
+ * ## Why the image never depends on a variant
+ *
+ * The `<img>` is the stored original and stays exactly where the author put it;
+ * the `<source>` elements are an offer the browser may decline. That is what
+ * makes this safe for a format this project did not encode itself: a browser
+ * that cannot read AVIF falls through to the next source, and one that reads
+ * none of them falls through to the original. The alternative — rewriting the
+ * `src` to a derivative — would replace a file that is known to be there with
+ * one that is merely believed to be, and the failure mode of that is a broken
+ * image rather than a heavier one.
+ */
 function wrapImages(
-  tree: Root,
   images: { parent: Element; index: number; node: Element }[],
+  described: ReadonlyMap<string, DocumentImage> | undefined,
 ): void {
   for (const image of images.reverse()) {
+    const description = described?.get(imageSrc(image.node) ?? '')
+    const content =
+      description && description.sources.length > 0
+        ? pictureFor(image.node, description)
+        : image.node
+
     // `loading="lazy"` inside a `figure` with a caption reads better, but the
     // plain wrapper is enough for inline images.
     const wrapper: Element = {
       type: 'element',
       tagName: 'span',
       properties: { className: ['md-image'] },
-      children: [image.node],
+      children: [content],
     }
     image.parent.children[image.index] = wrapper
+  }
+}
+
+/** The `src` of an image node, or null when it has none. */
+function imageSrc(node: Element): string | null {
+  const src = node.properties.src
+  return typeof src === 'string' ? src : null
+}
+
+/**
+ * The image, with the formats it is also stored in offered beside it.
+ *
+ * The sources keep the order the caller supplied — see `DocumentImage` — and
+ * `srcSet` is spelled the way hast spells it, which is the property the
+ * serialiser turns back into `srcset`.
+ */
+function pictureFor(node: Element, described: DocumentImage): Element {
+  return {
+    type: 'element',
+    tagName: 'picture',
+    properties: {},
+    children: [
+      ...described.sources.map(
+        (source): Element => ({
+          type: 'element',
+          tagName: 'source',
+          properties: { type: source.type, srcSet: source.url },
+          children: [],
+        }),
+      ),
+      node,
+    ],
   }
 }
 

@@ -4,7 +4,7 @@ import { notFound } from 'next/navigation'
 
 import { requireUser } from '@/lib/auth/session'
 import { parseFrontmatter } from '@/lib/content/frontmatter'
-import { renderMarkdown } from '@/lib/markdown/renderer'
+import { renderDocument } from '@/lib/content/render'
 import {
   AUTOSAVE_SUMMARY,
   RevisionNotFoundError,
@@ -78,7 +78,7 @@ export default async function RevisionDetailPage({
   ])
 
   const parsed = parseFrontmatter(revision.content)
-  const { html } = await renderMarkdown(parsed.content, { knownSlugs: new Set(knownSlugs) })
+  const { html } = await renderDocument(parsed.content, { knownSlugs: new Set(knownSlugs) })
   const now = new Date()
   const context = { locale: settings.locale, timeZone: settings.timezone, now }
   const isCurrent = revision.contentHash === document.checksum

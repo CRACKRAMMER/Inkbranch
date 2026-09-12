@@ -484,10 +484,28 @@
   border-top: 1px solid var(--color-line);
 }
 
-.prose img,
-.md-image {
+.prose img {
   border-radius: var(--radius-sm);
   border: 1px solid var(--color-line);
+}
+
+/*
+ * The wrapper hugs the picture it wraps.
+ *
+ * `inline-block` rather than the default `inline`, because the image inside is
+ * a block (the preflight sets that) and an inline element containing a block is
+ * split by the block-in-inline rule: its border is then painted around the
+ * inline box, which is a pair of vertical rules taller than the picture they
+ * are supposed to be framing. Inline-block gives the wrapper a box that
+ * contains the image, which is what the frame was meant to be.
+ *
+ * The frame itself is the image's border, above, and not a second one here: two
+ * elements around one picture drawing the same rectangle is a line the reader
+ * sees as thicker than every other line on the page.
+ */
+.md-image {
+  display: inline-block;
+  max-width: 100%;
 }
 
 .md-figure {

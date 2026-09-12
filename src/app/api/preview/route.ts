@@ -1,8 +1,8 @@
 import { requireUser } from '@/lib/auth/session'
 import { buildRelativePath } from '@/lib/content/paths'
 import { readDocument } from '@/lib/content/reader'
+import { renderDocument } from '@/lib/content/render'
 import { CONTENT_TYPES, type ContentType } from '@/lib/content/schema'
-import { renderMarkdown } from '@/lib/markdown/renderer'
 import { escapeXml } from '@/lib/seo/rss'
 import { isValidSlug } from '@/lib/utils/slug'
 
@@ -158,7 +158,7 @@ export async function GET(request: Request): Promise<Response> {
       return failure(`No document at ${relativePath}.`, 404)
     }
 
-    const { html } = await renderMarkdown(doc.body)
+    const { html } = await renderDocument(doc.body)
 
     const meta = [
       doc.type,

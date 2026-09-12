@@ -275,3 +275,96 @@ describe('renderMarkdown — structure', () => {
     expect(second.html).not.toContain('id="one"')
   })
 })
+
+/*
+ * Images the caller knows something about.
+ *
+ * The map is written here by hand rather than loaded from a database, which is
+ * the whole reason it is an option: what the renderer does with a description
+ * is a property of the renderer, and a test that needed Postgres to check the
+ * order of two `<source>` elements would be testing the loader instead.
+ */
+describe('renderMarkdown — described images', () => {
+  const PNG = '/api/assets/ab/cd/photo.png'
+
+  /** An asset stored in three formats, as `documentImages` would report it. */
+  const described = new Map([
+    [
+      PNG,
+      {
+        width: 1200,
+        height: 800,
+        sources: [
+          { type: 'image/avif', url: '/api/assets/ab/cd/photo.avif' },
+          { type: 'image/webp', url: '/api/assets/ab/cd/photo.webp' },
+        ],
+      },
+    ],
+  ])
+
+  it('offers the other formats, with the wrapper outside the picture', async () => {
+    const { html } = await renderMarkdown(`![A photo](${PNG})\n`, { images: described })
+
+    // The order is the caller's, and the caller's is best codec first: a
+    // browser takes the first `<source>` it understands, so a WebP listed
+    // first would be chosen on a browser that reads AVIF. The `<img>` stays
+    // last inside the picture and is never rewritten to a derivative — it is
+    // the format that is known to be there.
+    expect(collapse(html)).toContain(
+      `<span class="md-image"><picture>` +
+        `<source type="image/avif" srcset="/api/assets/ab/cd/photo.avif">` +
+        `<source type="image/webp" srcset="/api/assets/ab/cd/photo.webp">` +
+        `<img src="${PNG}"`,
+    )
+  })
+
+  it('reserves the box from the size the caller reports', async () => {
+    const { html } = await renderMarkdown(`![A photo](${PNG})\n`, { images: described })
+
+    expect(html).toContain('width="1200"')
+    expect(html).toContain('height="800"')
+  })
+
+  it('does not overwrite a size the author wrote', async () => {
+    // Raw HTML, because Markdown has no syntax for this and raw HTML is the
+    // only way an author states a layout size. The statement wins over the row.
+    const { html } = await renderMarkdown(
+      `<img src="${PNG}" width="400" height="300" alt="Sized by hand">\n`,
+      { images: described },
+    )
+
+    expect(html).toContain('width="400"')
+    expect(html).toContain('height="300"')
+    expect(html).not.toContain('width="1200"')
+  })
+
+  it('renders a known image with no other formats as a plain image', async () => {
+    const only = new Map([[PNG, { width: 64, height: 48, sources: [] }]])
+
+    const { html } = await renderMarkdown(`![A photo](${PNG})\n`, { images: only })
+
+    // A `<picture>` with no `<source>` is not harmless: it is an element the
+    // sanitiser's allow-list does not carry, emitted for nothing.
+    expect(html).not.toContain('<picture')
+    expect(collapse(html)).toContain(`<span class="md-image"><img src="${PNG}"`)
+    // The size is still applied — it comes from the row, not from the formats.
+    expect(html).toContain('width="64"')
+  })
+
+  it('renders an image it was not told about exactly as it was written', async () => {
+    const unknown = '![Elsewhere](https://example.com/photo.png)\n'
+
+    const withMap = await renderMarkdown(unknown, { images: described })
+    const withoutMap = await renderMarkdown(unknown)
+
+    // Not merely equal to each other: equal to what a caller with no database
+    // has always produced. A description that is absent must be an absence of
+    // change, which is what keeps an external image, an unresolved reference
+    // and a deleted asset's row from being mangled by not being found.
+    expect(withMap.html).toBe(withoutMap.html)
+    expect(withMap.html).not.toContain('<picture')
+    expect(withMap.html).not.toContain('width=')
+    // Still prepared for rendering, because that part is not a database fact.
+    expect(withMap.html).toContain('loading="lazy"')
+  })
+})
