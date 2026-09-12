@@ -12,6 +12,29 @@ import { E2E_ADMIN_EMAIL, E2E_ADMIN_PASSWORD, e2eDatabaseUrl } from './environme
  */
 
 /**
+ * Run something against the suite's own database.
+ *
+ * A connection per call rather than a shared one: this runs a handful of times
+ * in a run, and a client outliving the test that made it is a `globalTeardown`
+ * problem this file does not need to have.
+ *
+ * The suite talks to the database directly in exactly two places, and both are
+ * about state that has no screen: the rate-limit buckets, which would otherwise
+ * make a run fail on a security control it is not testing, and the owner's
+ * sessions, whose *number* one spec asserts on. Everything else here goes
+ * through the browser, which is the layer this suite exists to test.
+ */
+async function withE2eDatabase<T>(run: (client: Client) => Promise<T>): Promise<T> {
+  const client = new Client({ connectionString: e2eDatabaseUrl() })
+  await client.connect()
+  try {
+    return await run(client)
+  } finally {
+    await client.end()
+  }
+}
+
+/**
  * Empty the sign-in rate-limit buckets before signing in.
  *
  * ## Why the suite is allowed to do this
@@ -37,18 +60,37 @@ import { E2E_ADMIN_EMAIL, E2E_ADMIN_PASSWORD, e2eDatabaseUrl } from './environme
  * a successful sign-in resets the address bucket and never the account's, which
  * is the whole point of an account-level lockout.
  *
- * A connection per call rather than a shared one: this runs a handful of times
- * in a run, and a client outliving the test that made it is a `globalTeardown`
- * problem this file does not need to have.
+ * The password-change bucket needs no clearing: a change resets its own bucket
+ * on success (`changePasswordAction`), so only a *refused* attempt spends a
+ * token, and `password.spec.ts` makes one of those per run against a capacity of
+ * ten.
  */
 async function clearLoginLimits(): Promise<void> {
-  const client = new Client({ connectionString: e2eDatabaseUrl() })
-  await client.connect()
-  try {
-    await client.query("delete from rate_limits where key like 'login:%'")
-  } finally {
-    await client.end()
-  }
+  await withE2eDatabase((client) =>
+    client.query("delete from rate_limits where key like 'login:%'"),
+  )
+}
+
+/**
+ * Sign out every session the administrator has, without touching the account.
+ *
+ * For `password.spec.ts`, which asserts that a password change signs out
+ * *exactly one* other device: the number in the toast is a claim about the
+ * sessions this test created, and the suite shares one database and one
+ * administrator across two projects that run one after the other — so a session
+ * left behind by the desktop pass would make the mobile pass read "2 other
+ * sessions signed out", and the assertion would be about run order rather than
+ * about the feature.
+ *
+ * Safe for the rest of the suite because every other spec signs in for itself
+ * and none of them keeps a session across files.
+ */
+export async function clearAdminSessions(): Promise<void> {
+  await withE2eDatabase((client) =>
+    client.query('delete from sessions where user_id = (select id from users where email = $1)', [
+      E2E_ADMIN_EMAIL,
+    ]),
+  )
 }
 
 /**
@@ -65,19 +107,63 @@ export function uniqueSlug(): string {
 
 /** Sign in as the seeded administrator, and prove it worked. */
 export async function signIn(page: Page): Promise<void> {
+  await signInWith(page, E2E_ADMIN_PASSWORD)
+}
+
+/**
+ * Sign in with a particular password, and prove it worked.
+ *
+ * The parameter exists for `password.spec.ts`, which signs in with a password it
+ * has just set — that sign-in is the whole point of the flow it tests, and the
+ * seeded password does not open the door at that moment.
+ */
+export async function signInWith(page: Page, password: string): Promise<void> {
+  await attemptSignIn(page, password)
+
+  // The form posts to a server action and lands on the dashboard. Waiting for
+  // the URL rather than for a selector means a failed sign-in is reported here,
+  // as a sign-in failure, instead of as whatever the next assertion trips over.
+  await expect(page).toHaveURL(/\/admin(\?|$)/)
+}
+
+/**
+ * The same sign-in, answering whether it worked instead of failing.
+ *
+ * For a restore hook that has to try two possible passwords — see the `afterEach`
+ * in `password.spec.ts` — and whose job is to leave the database in a known
+ * state. An assertion here would replace a real failure with a second one.
+ */
+export async function trySignIn(page: Page, password: string): Promise<boolean> {
+  await attemptSignIn(page, password)
+
+  // The attempt has exactly two outcomes: the action redirects to the dashboard,
+  // or it returns a state and the form stays where it is. Only the first is
+  // observable as a URL, and the timeout is what covers the second — which only
+  // happens on a path that is already failing.
+  try {
+    await page.waitForURL(/\/admin(\?|$)/, { timeout: 10_000 })
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Fill the sign-in form and submit it, claiming nothing about the result.
+ *
+ * The two callers above disagree about what a failed sign-in means — one is a
+ * failing test, the other is an answer — so the attempt stops at the click and
+ * each of them decides.
+ */
+async function attemptSignIn(page: Page, password: string): Promise<void> {
   // Before the form, so the attempt this helper is about to make cannot be the
   // one that finds the bucket empty.
   await clearLoginLimits()
 
   await page.goto('/admin/login')
   await page.fill('#email', E2E_ADMIN_EMAIL)
-  await page.fill('#password', E2E_ADMIN_PASSWORD)
+  await page.fill('#password', password)
   await page.getByRole('button', { name: 'Sign in' }).click()
-
-  // The form posts to a server action and lands on the dashboard. Waiting for
-  // the URL rather than for a selector means a failed sign-in is reported here,
-  // as a sign-in failure, instead of as whatever the next assertion trips over.
-  await expect(page).toHaveURL(/\/admin(\?|$)/)
 }
 
 /** One node of the page's structured data, as a consumer would read it. */

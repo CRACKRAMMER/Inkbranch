@@ -1,5 +1,7 @@
 import { hash, verify, type Algorithm, type Options } from '@node-rs/argon2'
 
+import { MAX_PASSWORD_LENGTH, MIN_PASSWORD_LENGTH } from './password-policy'
+
 /**
  * Password hashing with Argon2id.
  *
@@ -28,10 +30,6 @@ const PARAMS = {
   parallelism: 1,
   outputLen: 32,
 } satisfies Options
-
-/** Reject absurd passwords before hashing; Argon2 cost scales with length. */
-export const MIN_PASSWORD_LENGTH = 12
-export const MAX_PASSWORD_LENGTH = 1024
 
 export class PasswordError extends Error {
   readonly code = 'PASSWORD'
@@ -128,52 +126,4 @@ function assertAcceptableLength(password: string): void {
       `Password must be at most ${MAX_PASSWORD_LENGTH} characters.`,
     )
   }
-}
-
-/**
- * Rough strength score, 0–4, based on length and character variety.
- *
- * Deliberately simple and local: no dictionary, no network call, no claim to be
- * a real estimator. It exists to nudge a single administrator, not to gate
- * access — the length minimum does that.
- */
-export function passwordStrength(password: string): {
-  score: 0 | 1 | 2 | 3 | 4
-  label: string
-  suggestions: string[]
-} {
-  const suggestions: string[] = []
-  if (password.length < MIN_PASSWORD_LENGTH) {
-    suggestions.push(`Use at least ${MIN_PASSWORD_LENGTH} characters`)
-  }
-
-  const hasLower = /[a-z]/.test(password)
-  const hasUpper = /[A-Z]/.test(password)
-  const hasDigit = /\d/.test(password)
-  const hasSymbol = /[^\w\s]/.test(password)
-  const hasNonAscii = /[^\x20-\x7e]/.test(password)
-
-  const variety = [hasLower, hasUpper, hasDigit, hasSymbol || hasNonAscii].filter(
-    Boolean,
-  ).length
-
-  // Length dominates; variety adds a smaller bonus, mirroring the fact that a
-  // long passphrase beats a short string with symbols.
-  let score = 0
-  if (password.length >= MIN_PASSWORD_LENGTH) score += 1
-  if (password.length >= 16) score += 1
-  if (password.length >= 24) score += 1
-  if (variety >= 3) score += 1
-  if (variety <= 1) score -= 1
-
-  const clamped = Math.max(0, Math.min(4, score)) as 0 | 1 | 2 | 3 | 4
-
-  if (clamped < 3) {
-    if (!hasUpper && !hasNonAscii) suggestions.push('Mix in uppercase or non-Latin characters')
-    if (!hasDigit) suggestions.push('Add a number')
-    if (variety < 3) suggestions.push('Combine letters with numbers or symbols')
-  }
-
-  const labels = ['Very weak', 'Weak', 'Fair', 'Strong', 'Very strong'] as const
-  return { score: clamped, label: labels[clamped], suggestions }
 }

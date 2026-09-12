@@ -33,6 +33,7 @@ export const AUDIT_ACTIONS = [
   'auth.login',
   'auth.login_failed',
   'auth.logout',
+  'auth.password_changed',
   'post.create',
   'post.update',
   'post.delete',

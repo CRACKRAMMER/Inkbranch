@@ -49,8 +49,9 @@ const DEFAULT_FOOTER_NAV = [
 void run('db:seed', async () => {
   const { db } = await import('@/lib/db')
   const { navigation, siteSettings, users } = await import('@/lib/db/schema')
-  const { hashPassword, MIN_PASSWORD_LENGTH, MAX_PASSWORD_LENGTH } = await import(
-    '@/lib/auth/password'
+  const { hashPassword } = await import('@/lib/auth/password')
+  const { MIN_PASSWORD_LENGTH, MAX_PASSWORD_LENGTH } = await import(
+    '@/lib/auth/password-policy'
   )
   const { eq, sql } = await import('drizzle-orm')
 

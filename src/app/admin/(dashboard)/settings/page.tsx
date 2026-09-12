@@ -3,8 +3,9 @@ import Link from 'next/link'
 
 import { requireUser } from '@/lib/auth/session'
 import { SETTINGS_DEFAULTS, SETTINGS_KEYS, getSettings } from '@/lib/settings'
-import { InlineNote, Page } from '@/components/admin/page'
+import { InlineNote, Page, Section } from '@/components/admin/page'
 import { SettingsForm } from '@/components/admin/settings-form'
+import { PasswordForm } from '@/components/admin/password-form'
 
 export const metadata: Metadata = { title: 'Settings' }
 
@@ -44,6 +45,21 @@ export default async function SettingsPage() {
       ) : null}
 
       <SettingsForm settings={settings} />
+
+      {/*
+        Below the settings form rather than inside it, and a form of its own.
+        The password is not a setting: it lives on the user row, it is not part
+        of `settingsPatchSchema`, and folding it into that form would mean the
+        patch that saves a tagline could also carry a credential.
+      */}
+      <div className="mt-14 border-t border-line pt-2">
+        <Section
+          title="Password"
+          description="The account's own credential. Changing it signs out every other device and keeps this one signed in."
+        >
+          <PasswordForm />
+        </Section>
+      </div>
 
       <p className="mt-6 text-xs leading-relaxed text-ink-subtle">
         Settings live in one database row, not in files — a change here does not touch the working
