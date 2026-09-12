@@ -673,36 +673,14 @@ Dialog、react-remove-scroll、sonner、lucide 图标、主题切换与搜索框
 
 ---
 
-## 附录：`ARCHITECTURE.md` 与当前实现已经不同步的几处
+## 附录：`ARCHITECTURE.md` 的来历
 
-`ARCHITECTURE.md` 先于实现写成，以下几条在实现过程中被推翻或调整，读它时请以本附录与
-代码为准（本文档不修改该文件）：
+`ARCHITECTURE.md` 是按 project.md 的要求**先于实现**写成的，因此在实现过程中被推翻了若干条
+描述。这些描述已经按代码改正（§4 的版本口径、§6 的插件表与 sanitize 顺序、§7 的
+`SearchProvider` 接口与索引持久化、§8 的 `/graph`、§10 的缓存策略、§11 的健康检查），
+所以现在这份文件与实现一致，读它不需要再对照别的东西。
 
-1. **§10 渲染与缓存表**：文中写 `/posts/[slug]` 等用 `generateStaticParams` + ISR
-   （`revalidate = 3600`），并写全站文章路由共用 `s-maxage=3600, stale-while-revalidate=86400`。
-   当前实现完全相反：没有任何 `generateStaticParams`、没有任何 `revalidate` 导出，公共
-   站点整棵树是 `force-dynamic`（理由见 `src/app/(site)/layout.tsx`）；只有订阅源、
-   `/api/graph` 与 OG 图路由自己设置了 `Cache-Control`。
-2. **§8** 写 `/graph` 是 `dynamic = 'force-static'` 并客户端拉取 `/api/graph`。当前
-   `src/app/(site)/graph/page.tsx` 没有 `force-static` 导出（"图谱不进入主 bundle"这一点
-   仍然成立）。
-3. **§11** 写 `src/lib/health.ts` 对外暴露检查。该文件不存在；健康检查在
-   `src/app/api/health/route.ts`，直接调用 `src/lib/db` 与 `src/lib/content/sync`。
-4. **§6 Markdown 管线** 列的插件名（`rehype-pretty-code`、`rehype-slug`、
-   `rehype-autolink-headings`、`remark-frontmatter`）并不在依赖里。能力都在，但由自研插件
-   实现：`rehype-code.ts`（Shiki 集成）、`slugger.ts`（标题 id）、`remark-blocks.ts` /
-   `remark-alerts.ts`（callout 与 GitHub Alert）、`remark-deflist`（定义列表）。
-5. **§4** 写 "Postgres 16+"，而 `docker-compose.yml` 固定 `postgres:17-alpine`。二者不冲突
-   （schema 不需要 16 以上的特性），只是版本口径不一致。
-6. **§7 搜索**：文中给 `SearchProvider` 定的接口含 `upsert` / `remove` / `rebuild`，当前只有
-   `search(query)` 一个方法（`src/lib/search/provider.ts` 的注释写明了为什么不放：那些方法
-   是本地存储的形状，不该强加给一个远端实现）。文中写索引持久化在 `.cache/search-index.json`、
-   按文档 checksum 增量重建——没有这个文件：本地 provider 在进程内从内容树构建，用内容树指纹
-   （`FINGERPRINT_TTL_MS`，5 秒）判断要不要重建，写完文档时由
-   `src/lib/admin/revalidate.ts` 显式作废。字段权重写的是 `title 5 / tags+category 3 /
-   description 2 / body 1` 且没有 `headings`，实际是
-   `title 8 / tags 6 / category 5 / description 4 / headings 3 / body 1`（`FIELD_WEIGHTS`）。
-   分词写成 "ASCII words (lowercased, stem-free, length ≥ 2)"，实际会做保守词干归并
-   （`render` / `renders` / `rendering` 是同一个词），也没有长度下限。查询语法只实现了
-   `type:` / `tag:` / `category:`（复数形式同义），`before:` / `after:` 会被当作不支持的
-   过滤器回报给读者（`ParsedQuery.unsupported` 变成页面与 palette 上的一句提示）。
+记下这段来历，是因为它解释了这份文件的一处风格：它偶尔会写"为什么不是另一种做法"
+（例如 §7 为什么不放 `upsert` / `remove` / `rebuild`，§10 为什么整棵树是 `force-dynamic`），
+那些段落是后来补的，不是设计阶段就有的——它们是实现过程中被推翻的判断留下来的记录。
+真正先于实现的判断，在文中不加标记，因为无法逐一区分。
