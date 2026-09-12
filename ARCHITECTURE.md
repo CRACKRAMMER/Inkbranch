@@ -146,14 +146,14 @@ Postgres. The floor is 13, and it is set by `gen_random_uuid()`, which is the ne
 | `tags` | Canonical tag records. | `slug` (unique), `name`, `description`, `color` |
 | `content_tags` | Many-to-many. | `content_id`, `tag_id` |
 | `content_links` | Resolved internal links + image refs. Drives backlinks and "unused asset". | `source_id`, `kind` (`internal`\|`wiki`\|`image`\|`anchor`), `target_key`, `target_id`, `label` |
-| `assets` | Uploaded media metadata. | `url`, `mime`, `size`, `width`, `height`, `blur_data_url`, `sha256`, `storage` |
+| `assets` | Uploaded media metadata. | `path`, `url`, `mime`, `size`, `width`, `height`, `variants`, `thumbnail`, `blur_data_url`, `alt` |
 | `redirects` | Legacy URL → new URL. Handles the Ghost migration. | `from_path` (unique), `to_path`, `status_code`, `enabled`, `hits` |
-| `site_settings` | Single-row typed settings. | identity, SEO, analytics, features, git, appearance |
-| `navigation` | Header / footer / social menus. | `location`, `label`, `href`, `position`, `parent_id` |
-| `analytics_daily` | Pre-aggregated by day. | `date`, `path`, `content_id`, `views`, `referrer_domain`, `device`, `country` |
+| `site_settings` | Single-row typed settings. | identity, SEO, features, git, revisions, about, custom |
+| `navigation` | Header / footer / social menus. | `location`, `label`, `href`, `position`, `visible`, `external`, `icon` |
+| `analytics_daily` | Pre-aggregated by day. | `day`, `path`, `content_id`, `views`, `visitors`, `referrer_domain`, `device`, `country` |
 | `analytics_events` | Raw events, short retention, **no IP**. | `created_at`, `path`, `content_id`, `referrer_domain`, `device`, `visitor_hash` |
 | `audit_logs` | Every mutating admin action. | `user_id`, `action`, `target_type`, `target_id`, `meta` (jsonb), `ip_hash` |
-| `scheduled_jobs` | Durable queue for publish + retention jobs. | `type`, `run_at`, `status`, `attempts`, `locked_at`, `last_error` |
+| `scheduled_jobs` | Durable queue for scheduled publishing, content sync, reindexing, analytics aggregation and retention. | `type`, `run_at`, `status`, `attempts`, `locked_at`, `last_error` |
 
 **Deliberately absent:** a `posts.body` column. Article text exists in exactly one place — the `.md` file.
 
@@ -166,7 +166,7 @@ The requirement allows `content/revisions/` or compressed diffs. We store **gzip
 - The filesystem stays clean: `content/posts/*.md` is exactly the content, nothing else.
 - Revisions are *history*, not *source*, so storing them in the DB does not violate principle #1.
 
-Retention: `revisions.max_per_content` (default 50) is enforced by a scheduled job; older snapshots are pruned.
+Retention: `revisionsMaxPerContent` (default 50) bounds the named revisions of one document, and `pruneRevisions` is called inline from the two paths that write history — the save path in `src/lib/revision/policy.ts` and restore in `src/app/admin/actions/revisions.ts` — rather than by a scheduled job. It runs *after* the write, so a failed trim costs disk rather than a lost save; autosaves are exempt, because they carry their own larger bound and are the wrong thing to re-read every couple of seconds while someone types.
 
 ---
 

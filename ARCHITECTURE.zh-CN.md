@@ -139,14 +139,14 @@ Postgres。版本下限是 13，这个下限由 `gen_random_uuid()` 决定 —�
 | `tags` | 规范化的标签记录。 | `slug`（唯一）、`name`、`description`、`color` |
 | `content_tags` | 多对多。 | `content_id`、`tag_id` |
 | `content_links` | 已解析的内部链接 + 图片引用。驱动反向链接与"未被使用的资源"。 | `source_id`、`kind`（`internal`\|`wiki`\|`image`\|`anchor`）、`target_key`、`target_id`、`label` |
-| `assets` | 上传媒体的元数据。 | `url`、`mime`、`size`、`width`、`height`、`blur_data_url`、`sha256`、`storage` |
+| `assets` | 上传媒体的元数据。 | `path`、`url`、`mime`、`size`、`width`、`height`、`variants`、`thumbnail`、`blur_data_url`、`alt` |
 | `redirects` | 旧 URL → 新 URL。用于处理 Ghost 迁移。 | `from_path`（唯一）、`to_path`、`status_code`、`enabled`、`hits` |
-| `site_settings` | 单行、类型化的设置。 | 身份信息、SEO、分析、功能开关、git、外观 |
-| `navigation` | 页头 / 页脚 / 社交菜单。 | `location`、`label`、`href`、`position`、`parent_id` |
-| `analytics_daily` | 按天预聚合。 | `date`、`path`、`content_id`、`views`、`referrer_domain`、`device`、`country` |
+| `site_settings` | 单行、类型化的设置。 | 身份信息、SEO、功能开关、git、修订、关于页、自定义 |
+| `navigation` | 页头 / 页脚 / 社交菜单。 | `location`、`label`、`href`、`position`、`visible`、`external`、`icon` |
+| `analytics_daily` | 按天预聚合。 | `day`、`path`、`content_id`、`views`、`visitors`、`referrer_domain`、`device`、`country` |
 | `analytics_events` | 原始事件，短期保留，**不存 IP**。 | `created_at`、`path`、`content_id`、`referrer_domain`、`device`、`visitor_hash` |
 | `audit_logs` | 每一次会改数据的后台操作。 | `user_id`、`action`、`target_type`、`target_id`、`meta`（jsonb）、`ip_hash` |
-| `scheduled_jobs` | 发布与保留任务的持久队列。 | `type`、`run_at`、`status`、`attempts`、`locked_at`、`last_error` |
+| `scheduled_jobs` | 定时发布、内容同步、重建索引、分析聚合与保留任务的持久队列。 | `type`、`run_at`、`status`、`attempts`、`locked_at`、`last_error` |
 
 **刻意缺席的：** `posts.body` 列。文章正文只存在于一个地方 —— 那个 `.md` 文件。
 
@@ -159,7 +159,7 @@ Postgres。版本下限是 13，这个下限由 `gen_random_uuid()` 决定 —�
 - 文件系统保持干净：`content/posts/*.md` 就是内容本身，别无他物。
 - 修订是*历史*，不是*源*，所以把它们放进数据库并不违反第 1 条原则。
 
-保留策略：`revisions.max_per_content`（默认 50）由定时任务强制执行；更早的快照会被清理。
+保留策略：`revisionsMaxPerContent`（默认 50）约束的是一篇文档的具名修订，`pruneRevisions` 由写入历史的两个路径就地调用 —— `src/lib/revision/policy.ts` 里的保存路径和 `src/app/admin/actions/revisions.ts` 里的恢复路径 —— 而不是由定时任务执行。它在写入*之后*运行，所以一次失败的裁剪代价是磁盘，而不是丢失的保存；自动保存不在其列，因为它们自带一个更大的上限，而且它们恰恰是有人打字时最不该每隔两秒重读一遍的东西。
 
 ---
 

@@ -235,7 +235,9 @@ export const contentIndex = pgTable(
 /**
  * Full snapshots, gzip-compressed. Diffs are computed on demand between any two
  * snapshots, so no derived data is stored twice. Pruned to
- * `settings.revisions.maxPerContent` by a scheduled job.
+ * `revisionsMaxPerContent` by `pruneRevisions`, which the writing paths call
+ * inline — there is no retention job for revisions, and `JOB_KINDS` has no
+ * member that would be one.
  */
 export const contentRevisions = pgTable(
   'content_revisions',

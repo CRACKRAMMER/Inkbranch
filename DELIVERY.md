@@ -114,19 +114,19 @@ Postgres + Drizzle ORM，SQL 迁移签入仓库（`src/lib/db/migrations/`，由
 
 | 表 | 用途 | 关键列 |
 |----|------|--------|
-| `users` | 管理员账号，不开放注册 | `email`、`password_hash`（Argon2id）、`role`、`last_login_at` |
+| `users` | 管理员账号，不开放注册 | `email`、`password_hash`（Argon2id）、`session_version`、`last_login_at` |
 | `sessions` | 服务端会话（令牌以哈希形式存储） | `token_hash`（SHA-256）、`user_id`、`expires_at`、`user_agent`、`ip_hash` |
 | `content_index` | 每个 Markdown 文件一行，支撑列表、统计与搜索 | `type`、`slug`、`path`、`title`、`status`、`published_at`、`scheduled_at`、`updated_at`、`checksum`、`word_count`、`reading_time`、`view_count`、`search_index_version` |
-| `content_revisions` | gzip 压缩的全文快照 + 增删行数 | `content_id`、`revision_no`、`snapshot`（bytea）、`additions`、`deletions`、`author_id`、`kind` |
+| `content_revisions` | gzip 压缩的全文快照 + 增删行数 | `content_id`、`revision_no`、`snapshot`（bytea）、`additions`、`deletions`、`byte_size`、`author_id`、`summary` |
 | `tags` / `content_tags` | 标签与其多对多关系 | `slug`（唯一）、`name`、`description`、`color` |
 | `content_links` | 已解析的内链、锚点与图片引用，驱动反链与"未被引用" | `source_id`、`kind`、`href`、`target_key`、`target_id`、`asset_id`、`label`、`resolved` |
-| `assets` | 上传媒体元数据 | `url`、`mime`、`size`、`width`、`height`、`blur_data_url`、`average_color`、`variants`（webp/avif 派生物）、`thumbnail`（网格用的缩小副本）、`sha256`、`storage` |
+| `assets` | 上传媒体元数据 | `path`、`url`、`filename`、`mime`、`size`、`width`、`height`、`blur_data_url`、`variants`（webp/avif 派生物）、`thumbnail`（网格用的缩小副本）、`alt`、`uploaded_by` |
 | `redirects` | 旧 URL → 新 URL（Ghost 迁移用） | `from_path`（唯一）、`to_path`、`status_code`、`enabled`、`hits` |
 | `site_settings` | 单行类型化设置（用 check 约束保证单行） | 站点标识、SEO、analytics/search/graph/rss/comments 开关、git、修订策略、About 内容 |
-| `navigation` | 头部/底部/社交菜单 | `location`、`label`、`href`、`position`、`parent_id` |
+| `navigation` | 头部/底部/社交菜单 | `location`、`label`、`href`、`position`、`visible`、`external`、`icon` |
 | `analytics_daily` | 按日预聚合 | `day`、`path`、`content_id`、`views`、`visitors`、`referrer_domain`、`device`、`country` |
 | `analytics_events` | 原始事件，短期留存，**不含 IP** | `created_at`、`path`、`content_id`、`referrer_domain`、`device`、`visitor_hash` |
-| `audit_logs` | 所有后台写操作 | `user_id`、`action`、`target_type`、`target_id`、`metadata`、`ip_hash` |
+| `audit_logs` | 所有后台写操作 | `user_id`、`action`、`target_type`、`target_id`、`meta`、`ip_hash`、`outcome` |
 | `scheduled_jobs` | 持久化任务队列 | `type`、`run_at`、`status`、`attempts`、`locked_at`、`last_error` |
 | `rate_limits` | 限流令牌桶（登录、上传、搜索） | `key`、`tokens`、`last_refill_at`、`expires_at` |
 
@@ -139,7 +139,7 @@ Postgres + Drizzle ORM，SQL 迁移签入仓库（`src/lib/db/migrations/`，由
 `bytea` 中存 gzip 压缩的**完整快照**。理由：恢复是一次单行读取，不存在"链式 diff 断一环
 就全废"的失败模式；`+23 −5` 这类统计由任意两份快照按需 diff 得出，不存冗余派生数据；
 `content/posts/*.md` 保持"就是内容本身"，文件树干净；修订是历史而非内容源，放在数据库
-并不违反第一原则。保留条数由 `revisions.max_per_content`（默认 50）限制，在每次具名保存之后
+并不违反第一原则。保留条数由 `revisionsMaxPerContent`（默认 50）限制，在每次具名保存之后
 **内联**裁剪而不是交给后台任务（第 10 节"架构性限制"第 3 条记了为什么）。
 
 ---
