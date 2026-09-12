@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
+import { randomUUID } from 'node:crypto'
 import { and, eq, inArray } from 'drizzle-orm'
 import sharp from 'sharp'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
@@ -26,6 +27,7 @@ import {
   findUnusedAssets,
   isAssetInUse,
   referenceMatchKeys,
+  updateAssetAlt,
 } from '@/lib/assets/manage'
 import {
   BLUR_LONG_EDGE,
@@ -42,6 +44,7 @@ import { extractLinks, referencedImageKeys } from '@/lib/content/links'
 import { db } from '@/lib/db'
 import { runMigrations } from '@/lib/db/migrate'
 import {
+  assets,
   auditLogs,
   contentIndex,
   contentLinks,
@@ -924,6 +927,39 @@ describe.skipIf(!hasTestDatabase)('references against a database', () => {
         await db.delete(siteSettings).where(eq(siteSettings.id, 'default'))
       }
     }
+  })
+
+  it('sets an alt text, clears it, and records both', async () => {
+    const asset = await storeImage('described.png')
+
+    const set = await updateAssetAlt(asset.id, 'A red square', { actorId: null })
+    expect(set).toMatchObject({ id: asset.id, alt: 'A red square' })
+
+    const [readBack] = await db
+      .select({ alt: assets.alt })
+      .from(assets)
+      .where(eq(assets.id, asset.id))
+    expect(readBack?.alt).toBe('A red square')
+
+    // Whitespace is not a description and neither is an empty string: both mean
+    // the author has not written one yet, and a reader has nothing to announce.
+    const cleared = await updateAssetAlt(asset.id, '   ')
+    expect(cleared?.alt).toBeNull()
+
+    const rows = await db
+      .select({ meta: auditLogs.meta })
+      .from(auditLogs)
+      .where(and(eq(auditLogs.action, 'asset.update'), eq(auditLogs.targetId, asset.id)))
+      .orderBy(auditLogs.createdAt)
+
+    // Two edits, two rows — the second is the one that says a description was
+    // removed rather than written, which the asset row alone cannot tell you.
+    expect(rows).toHaveLength(2)
+    expect(rows[0]?.meta).toMatchObject({ field: 'alt', cleared: false, length: 12 })
+    expect(rows[1]?.meta).toMatchObject({ field: 'alt', cleared: true, length: 0 })
+
+    // A stale dialog is the ordinary way to reach this, not an error.
+    expect(await updateAssetAlt(randomUUID(), 'gone')).toBeNull()
   })
 
   it('proposes the unreferenced assets and not the referenced ones', async () => {

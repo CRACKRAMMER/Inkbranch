@@ -1,15 +1,18 @@
 'use server'
 
-import { eq } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import { z } from 'zod'
 
 import { recordAudit } from '@/lib/audit'
 import { RATE_LIMITS, consumeRateLimit, retryAfterSeconds } from '@/lib/auth/rate-limit'
-import { deleteAsset, findAssetReferences, type AssetUsage } from '@/lib/assets/manage'
+import {
+  deleteAsset,
+  findAssetReferences,
+  updateAssetAlt,
+  type AssetUsage,
+} from '@/lib/assets/manage'
 import { assetUrl, storeAsset } from '@/lib/assets/storage'
-import { db } from '@/lib/db'
-import { assets, type AssetRow } from '@/lib/db/schema'
+import type { AssetRow } from '@/lib/db/schema'
 import { actionFailure, actionOk, type ActionResult } from '@/lib/admin/result'
 import { describeActionError, guardAction, guardRead, parseActionInput } from '@/lib/admin/guard'
 import { segmentForType } from '@/lib/admin/routes'
@@ -128,25 +131,22 @@ const updateAltSchema = z.object({
 
 export type UpdateAltInput = z.output<typeof updateAltSchema>
 
-/** Set an asset's alt text. Not audited: `AUDIT_ACTIONS` has no entry for an edit. */
+/** Set an asset's alt text. */
 export async function updateAssetAltAction(
   input: UpdateAltInput,
 ): Promise<ActionResult<{ id: string; alt: string | null }>> {
   try {
-    await guardAction()
+    const context = await guardAction()
     const parsed = parseActionInput(updateAltSchema, input)
     if (!parsed.ok) return parsed
 
-    const [updated] = await db
-      .update(assets)
-      .set({ alt: parsed.value.alt || null })
-      .where(eq(assets.id, parsed.value.id))
-      .returning({ id: assets.id, alt: assets.alt })
-
+    const updated = await updateAssetAlt(parsed.value.id, parsed.value.alt, {
+      actorId: context.user.id,
+    })
     if (!updated) return actionFailure('That asset no longer exists.')
 
     revalidatePath('/admin/assets')
-    return actionOk(updated)
+    return actionOk({ id: updated.id, alt: updated.alt })
   } catch (error) {
     return describeActionError(error)
   }

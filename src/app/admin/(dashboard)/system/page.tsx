@@ -117,9 +117,10 @@ export default async function SystemPage({
           Queueing writes a row and nothing else happens until the worker runs — start it with{' '}
           <span className="font-mono">pnpm worker</span>, or run these as one-shot commands with{' '}
           <span className="font-mono">pnpm content:sync</span> and{' '}
-          <span className="font-mono">pnpm content:reindex</span>. None of these operations writes an
-          audit entry: the audit log records changes to content, assets, settings, navigation and
-          redirects, and a sync or a reindex changes none of them.
+          <span className="font-mono">pnpm content:reindex</span>. Each operation is recorded in the
+          audit log as <span className="font-mono">system.operation</span>, with what it queued or
+          counted. A queued publish pass is recorded twice over: once here for the person who asked,
+          and once per document it publishes in the worker.
         </p>
       </Section>
 

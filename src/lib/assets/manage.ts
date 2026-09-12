@@ -566,6 +566,64 @@ export async function deleteAsset(
 }
 
 /* -------------------------------------------------------------------------- */
+/*  Alt text                                                                   */
+/* -------------------------------------------------------------------------- */
+
+export interface UpdateAssetAltOptions {
+  /** `users.id` of whoever asked, for the audit row. */
+  actorId?: string | null
+}
+
+/**
+ * Set an asset's alt text.
+ *
+ * Lives here rather than in the action because this is where the other asset
+ * audits are, and because alt text is the one field an author can be *required*
+ * to fix after the fact — a missing or wrong description is invisible on the
+ * page and the only thing a screen reader has. An edit that rewrites it is worth
+ * a row in the log even though it touches no files.
+ *
+ * `''` becomes `null`: an empty string and an absent description are the same
+ * thing to every reader, and storing both would make "has alt text" a question
+ * with two answers.
+ *
+ * Returns null when there is no such asset, which the caller turns into a
+ * message — a stale dialog is the ordinary way to reach that, not an error.
+ */
+export async function updateAssetAlt(
+  id: string,
+  alt: string,
+  options: UpdateAssetAltOptions = {},
+): Promise<{ id: string; path: string; alt: string | null } | null> {
+  const next = alt.trim() === '' ? null : alt
+
+  const [updated] = await db
+    .update(assets)
+    .set({ alt: next })
+    .where(eq(assets.id, id))
+    .returning({ id: assets.id, path: assets.path, alt: assets.alt })
+
+  if (!updated) return null
+
+  await recordAudit({
+    action: 'asset.update',
+    actorId: options.actorId ?? null,
+    targetType: 'asset',
+    targetId: updated.id,
+    metadata: {
+      path: updated.path,
+      field: 'alt',
+      // The text itself is not the point of the row — that it was set, and by
+      // whom, is. The length says whether a description was written or cleared.
+      cleared: updated.alt === null,
+      length: updated.alt?.length ?? 0,
+    },
+  })
+
+  return updated
+}
+
+/* -------------------------------------------------------------------------- */
 /*  Cleanup                                                                    */
 /* -------------------------------------------------------------------------- */
 

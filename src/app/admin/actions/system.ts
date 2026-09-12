@@ -3,8 +3,10 @@
 import { revalidatePath, updateTag } from 'next/cache'
 import { z } from 'zod'
 
+import { recordAudit } from '@/lib/audit'
 import { SETTINGS_CACHE_TAG } from '@/lib/settings'
 import { RATE_LIMITS, consumeRateLimit, retryAfterSeconds } from '@/lib/auth/rate-limit'
+import type { ActionContext } from '@/lib/auth/session'
 import { syncContent } from '@/lib/content/sync'
 import { enqueue, type JobKind } from '@/lib/jobs'
 import { actionFailure, actionOk, type ActionResult } from '@/lib/admin/result'
@@ -25,12 +27,34 @@ import { describeActionError, guardAction, parseActionInput } from '@/lib/admin/
  *   index from the files in process memory, so the work belongs where the
  *   process that will hold the index lives.
  *
- * None of these record an audit row, and that is a fact about the audit union
- * rather than an oversight: `AUDIT_ACTIONS` covers changes to content, assets,
- * settings, navigation and redirects. A sync reconciles derived data and a
- * reindex rebuilds a cache — neither is a change to something a reader sees —
- * and inventing an action for them would put rows in the log that no reader of
- * it can act on. The page says so where the buttons are.
+ * ## Why every one of these is audited
+ *
+ * An earlier version of this comment argued the opposite — that a sync
+ * reconciles derived data and a reindex rebuilds a cache, so neither is "a
+ * change to something a reader sees" and an action for them would only put rows
+ * in the log that nobody can act on. Two of the buttons falsify that. A sync can
+ * delete index rows and `sync-now` revalidates the entire public tree on the
+ * strength of it; a publish pass rewrites frontmatter to make documents public.
+ * A cache purge is the only record anywhere that somebody caused every page to
+ * be rendered again.
+ *
+ * `system.operation` is one action for all five rather than five, and the
+ * operation is in the metadata. The rest of the union is finer-grained because
+ * its members are different outcomes for the same objects — a create, an update,
+ * a delete. Here the object is always the system page and the difference is
+ * already a validated enum, so splitting it would add four more entries to the
+ * log's filter for no more information.
+ *
+ * A rate-limited sync is not recorded. No other rate limit in this application
+ * writes a row, and a refusal that changed nothing is not an operation.
+ *
+ * These rows are written here rather than in a library, which is the opposite of
+ * where every other audit call in this tree lives. The others can be in a
+ * library because each records a change to one object through one function —
+ * `saveNavigation`, `deleteAsset`. Nothing is changed *by* these buttons: a sync
+ * is a library function that also runs at boot and from the worker, and the row
+ * belongs to the press, not to the scan. So the press is what is recorded, and
+ * the press is here.
  */
 
 const operationSchema = z.enum([
@@ -124,6 +148,15 @@ export async function runSystemOperationAction(
 
         const report = await syncContent()
 
+        await recordOperation(context, 'sync-now', {
+          scanned: report.scanned,
+          added: report.added,
+          updated: report.updated,
+          deleted: report.deleted,
+          errors: report.errors.length,
+          truncated: report.truncated,
+        })
+
         // A sync can add, change or delete anything public, and it also moves
         // the counts the admin lists are built from.
         revalidatePath('/', 'layout')
@@ -160,6 +193,16 @@ export async function runSystemOperationAction(
         // unique index behind this collapses the second insert instead.
         const row = await enqueue({ type: kind, dedupeKey: 'admin' })
 
+        await recordOperation(context, parsed.value.operation, {
+          kind,
+          // The job that will do the work, when one was queued. A publish pass
+          // records `post.publish` against each document it publishes, with a
+          // null actor because the worker is what acts; this row is the only
+          // place that says which administrator asked for it.
+          ...(row ? { jobId: row.id } : {}),
+          deduped: row === null,
+        })
+
         revalidatePath('/admin/system')
 
         return actionOk({
@@ -174,6 +217,7 @@ export async function runSystemOperationAction(
 
       case 'purge-caches': {
         purgeCaches()
+        await recordOperation(context, 'purge-caches')
         return actionOk({
           operation: 'purge-caches',
           summary: 'Caches purged.',
@@ -185,6 +229,29 @@ export async function runSystemOperationAction(
   } catch (error) {
     return describeActionError(error)
   }
+}
+
+/**
+ * One audit row per press, whatever it was.
+ *
+ * `targetId` is the operation rather than a row id, because there is no single
+ * row these act on: a sync touches as many documents as it touches. What a
+ * reader of the log wants from these is who reached for the button and when, and
+ * the metadata carries the counts that make the row specific.
+ */
+async function recordOperation(
+  context: ActionContext,
+  operation: SystemOperation,
+  metadata: Record<string, unknown> = {},
+): Promise<void> {
+  await recordAudit({
+    action: 'system.operation',
+    actorId: context.user.id,
+    targetType: 'system',
+    targetId: operation,
+    metadata: { via: 'admin.system', operation, ...metadata },
+    request: context.request,
+  })
 }
 
 /**
