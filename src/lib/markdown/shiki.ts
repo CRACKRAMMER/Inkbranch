@@ -1,4 +1,6 @@
-import type { Highlighter } from 'shiki'
+import type { Highlighter, ThemeRegistration } from 'shiki'
+
+import { makeContrastSafeTheme } from './theme-contrast'
 
 /**
  * Shiki highlighter singleton.
@@ -17,6 +19,47 @@ export const SHIKI_THEMES = {
   light: 'vitesse-light',
   dark: 'vitesse-dark',
 } as const
+
+/**
+ * The pair of themes the highlighter is built with.
+ *
+ * Not the same values as `SHIKI_THEMES`, which names them. These are the theme
+ * objects themselves, fetched from the bundle and rewritten so every foreground
+ * is legible — `theme-contrast.ts` says what the editor palettes get wrong and
+ * why the correction belongs here rather than in the stylesheet. Loaded once,
+ * alongside the highlighter, because a theme is a few tens of kilobytes of JSON
+ * and re-importing it per render would be pure waste.
+ */
+let themesPromise: Promise<{ light: ThemeRegistration; dark: ThemeRegistration }> | null =
+  null
+
+async function loadThemes(): Promise<{
+  light: ThemeRegistration
+  dark: ThemeRegistration
+}> {
+  const { bundledThemes } = await import('shiki/themes')
+
+  const [light, dark] = await Promise.all([
+    bundledThemes[SHIKI_THEMES.light](),
+    bundledThemes[SHIKI_THEMES.dark](),
+  ])
+
+  return {
+    light: makeContrastSafeTheme(light.default),
+    dark: makeContrastSafeTheme(dark.default),
+  }
+}
+
+export function getThemes(): Promise<{
+  light: ThemeRegistration
+  dark: ThemeRegistration
+}> {
+  themesPromise ??= loadThemes().catch((error: unknown) => {
+    themesPromise = null
+    throw error
+  })
+  return themesPromise
+}
 
 /** Languages loaded eagerly. Everything else is loaded on demand. */
 const EAGER_LANGUAGES = [
@@ -90,8 +133,10 @@ let highlighterPromise: Promise<Highlighter> | null = null
 async function createHighlighterInstance(): Promise<Highlighter> {
   const { createHighlighter, createJavaScriptRegexEngine } = await import('shiki')
 
+  const themes = await getThemes()
+
   return createHighlighter({
-    themes: [SHIKI_THEMES.light, SHIKI_THEMES.dark],
+    themes: [themes.light, themes.dark],
     langs: [...EAGER_LANGUAGES],
     engine: createJavaScriptRegexEngine({ forgiving: true }),
   })

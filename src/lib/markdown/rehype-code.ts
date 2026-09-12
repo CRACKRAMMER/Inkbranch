@@ -3,7 +3,7 @@ import type { Element, ElementContent, Parent, Root, RootContent } from 'hast'
 import type { ShikiTransformer } from 'shiki'
 import { visit } from 'unist-util-visit'
 import { parseCodeFenceMeta } from './code-meta'
-import { getHighlighter, resolveLanguage, SHIKI_THEMES } from './shiki'
+import { getHighlighter, getThemes, resolveLanguage } from './shiki'
 
 /**
  * Rehype plugin: render every fenced code block with Shiki on the server.
@@ -36,7 +36,7 @@ export function rehypeCode() {
 
     if (targets.length === 0) return
 
-    const highlighter = await getHighlighter()
+    const [highlighter, themes] = await Promise.all([getHighlighter(), getThemes()])
 
     // Process in reverse so earlier indices stay valid as nodes are replaced.
     for (const target of targets.reverse()) {
@@ -59,6 +59,7 @@ export function rehypeCode() {
         const language = await resolveLanguage(languageClass)
         replacement = await buildCodeFigure({
           highlighter,
+          themes,
           source,
           language,
           languageLabel: languageClass,
@@ -126,6 +127,7 @@ function extractMeta(codeElement: Element): string | undefined {
 
 interface BuildCodeInput {
   highlighter: Awaited<ReturnType<typeof getHighlighter>>
+  themes: Awaited<ReturnType<typeof getThemes>>
   source: string
   language: string | null
   languageLabel: string | undefined
@@ -133,7 +135,7 @@ interface BuildCodeInput {
 }
 
 async function buildCodeFigure(input: BuildCodeInput): Promise<Element> {
-  const { highlighter, source, language, languageLabel, meta } = input
+  const { highlighter, themes, source, language, languageLabel, meta } = input
 
   const highlightSet = new Set(meta.highlightLines)
 
@@ -161,7 +163,7 @@ async function buildCodeFigure(input: BuildCodeInput): Promise<Element> {
   const root: Root = language
     ? highlighter.codeToHast(source, {
         lang: language,
-        themes: SHIKI_THEMES,
+        themes,
         // Emit only the CSS variables; the palette is chosen in CSS so that
         // theme switching costs nothing.
         defaultColor: false,
