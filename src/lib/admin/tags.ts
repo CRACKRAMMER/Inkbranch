@@ -11,6 +11,7 @@ import { contentIndex, contentTags, tags, type ContentType, type ContentStatus }
 import { tagSlug } from '@/lib/utils/slug'
 import { normalizeTagName } from '@/lib/utils/text'
 import { captureWithPolicy } from '@/lib/revision/policy'
+import type { TagChangeImpact } from './tag-impact'
 
 /**
  * Renaming, merging and deleting tags.
@@ -65,7 +66,10 @@ export async function documentsWithTag(tagSlugValue: string): Promise<TaggedDocu
   return rows
 }
 
-/** Documents carrying every one of `slugs`, for the "both tags present" count. */
+/**
+ * Documents carrying any one of `slugs` — the union a merge touches, counted
+ * once each however many of the tags they carry.
+ */
 async function documentsWithAnyTag(slugs: string[]): Promise<TaggedDocument[]> {
   if (slugs.length === 0) return []
   const rows = await db
@@ -289,14 +293,24 @@ export async function carryTagAppearance(
 /**
  * How many documents a change would touch, and how many already carry the
  * destination tag — the number that makes a merge a merge rather than a rename.
+ *
+ * Counted before the button is pressed, not after: a merge rewrites the
+ * frontmatter of every document carrying the tag, and an operator deciding
+ * about that needs the count, not an upper bound. `documents` is the union
+ * rather than the sum for the same reason — two tags that overlap would
+ * otherwise be counted twice, which is exactly the case where the decision is
+ * interesting.
+ *
+ * The shape is declared in `./tag-impact` beside the sentence it is rendered
+ * into, so that the number and the words about it cannot drift apart.
  */
 export async function tagChangeImpact(
   fromSlug: string,
   toSlug: string | null,
-): Promise<{ documents: number; overlapping: number }> {
+): Promise<TagChangeImpact> {
   if (!toSlug || toSlug === fromSlug) {
     const documents = await documentsWithTag(fromSlug)
-    return { documents: documents.length, overlapping: 0 }
+    return { documents: documents.length, carrying: documents.length, overlapping: 0 }
   }
 
   const [union, source, target] = await Promise.all([
@@ -311,6 +325,7 @@ export async function tagChangeImpact(
 
   return {
     documents: union.length,
+    carrying: source.length,
     overlapping: source.filter((row) => targetIds.has(row.id)).length,
   }
 }

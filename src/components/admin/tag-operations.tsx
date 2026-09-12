@@ -2,15 +2,22 @@
 
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import { useId, useState, useTransition } from 'react'
+import { useEffect, useId, useState, useTransition } from 'react'
 import { toast } from 'sonner'
 
 import {
   deleteTagAction,
   mergeTagAction,
   renameTagAction,
+  tagMergeImpactAction,
   type TagActionResult,
 } from '@/app/admin/actions/tags'
+import {
+  currentImpact,
+  destinationFor,
+  mergeConsequence,
+  type ImpactState,
+} from '@/lib/admin/tag-impact'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -33,6 +40,17 @@ import type { ActionResult } from '@/lib/admin/result'
  * rest proceed — so the result panel reports what actually happened rather than
  * a tick: which documents were rewritten, which were not and why, and whether
  * the index was reconciled afterwards.
+ *
+ * That panel is the reason the run does not simply refresh the page it ran from.
+ * This component is only ever rendered on one tag's page, and all three
+ * operations can remove the tag that page is about, so a refresh after a
+ * finished run asks for a 404 and discards the report with it. Only a run with a
+ * failure in it left the page standing — a document that could not be written
+ * still names the tag, so the row survives the prune — which is exactly
+ * backwards: the clean run, where the toast is the only other confirmation there
+ * is, was the one that ended on "Not found". `destinationFor` decides where the
+ * operator goes instead, and it keeps them here whenever there is something to
+ * read.
  */
 
 export interface TagOperationTag {
@@ -156,12 +174,40 @@ function useTagAction() {
       }
       handlers.onReport(result.data)
       handlers.close()
+
+      // Two things can be wrong with a run that returned rather than failed:
+      // documents it could not write, and an index it could not reconcile. The
+      // report says both — but the report is state on a page this run may be
+      // about to leave, so the toast says them too. It is the one channel that
+      // survives the navigation below, and without this the sync warning has no
+      // other messenger at all.
+      const warnings: string[] = []
+      if (result.data.failed.length > 0) {
+        warnings.push(
+          `${result.data.failed.length} document(s) could not be written — see the report.`,
+        )
+      }
+      if (!result.data.sync.ok) {
+        warnings.push('The index was not reconciled, so the site still shows the old tags.')
+      }
       toast.success('Tags updated.', {
-        description: result.data.failed.length
-          ? `${result.data.failed.length} document(s) could not be written — see the report.`
-          : undefined,
+        description: warnings.length > 0 ? warnings.join(' ') : undefined,
       })
-      router.refresh()
+
+      // Never a refresh of this page: the tag it is about may be the one the run
+      // just removed, and a 404 would take the report — the thing the toast
+      // above points at — with it. Next logs "the destination stream closed
+      // early" when this happens; it is the aborted render of the page being
+      // left behind, not a failure of the run.
+      const destination = destinationFor({
+        mode: result.data.mode,
+        failed: result.data.failed.length,
+        synced: result.data.sync.ok,
+        toSlug: result.data.to?.slug ?? null,
+      })
+
+      if (destination) router.replace(destination)
+      else router.refresh()
     })
   }
 
@@ -271,9 +317,42 @@ function MergeDialog({
 }) {
   const [open, setOpen] = useState(false)
   const [into, setInto] = useState(others[0]?.slug ?? '')
+  const [impact, setImpact] = useState<ImpactState>({ status: 'counting' })
   const { pending, run } = useTagAction()
   const fieldId = useId()
   const target = others.find((option) => option.slug === into)
+
+  /*
+    Ask what the merge would touch when the dialog opens and whenever the
+    destination changes. The count is not a page-load figure: it is what the
+    files would gain or lose, and it belongs to the tag selected now — which is
+    why the answer is stored with the destination it was asked about, and why
+    `cancelled` discards one that arrives after the selection moved on.
+  */
+  useEffect(() => {
+    if (!open || !into) return
+
+    let cancelled = false
+    const asked = into
+
+    void tagMergeImpactAction({ slug: tag.slug, into: asked }).then((result) => {
+      if (cancelled) return
+      setImpact(
+        result.ok
+          ? { status: 'counted', into: asked, impact: result.data }
+          : { status: 'failed', into: asked },
+      )
+    })
+
+    return () => {
+      cancelled = true
+    }
+  }, [open, into, tag.slug])
+
+  // The count is asked of the same function the rewrite reports through, so the
+  // sentence and the run cannot disagree; `currentImpact` is what stops a count
+  // for a tag that is no longer selected from being rendered beside the button.
+  const consequence = currentImpact(impact, into)
 
   function submit() {
     if (!into) return
@@ -330,11 +409,7 @@ function MergeDialog({
               ))}
             </select>
             <FieldDescription>
-              {target
-                ? `${target.name} will end up on up to ${
-                    target.contentCount + tag.contentCount
-                  } documents.`
-                : 'Pick a destination tag.'}
+              {target ? mergeConsequence(tag, target, consequence) : 'Pick a destination tag.'}
             </FieldDescription>
           </Field>
 

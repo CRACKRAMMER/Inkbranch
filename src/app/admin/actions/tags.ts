@@ -5,9 +5,15 @@ import { z } from 'zod'
 
 import { getAdminTag } from '@/lib/admin/queries'
 import { actionFailure, actionOk, type ActionResult } from '@/lib/admin/result'
-import { describeActionError, guardAction, parseActionInput } from '@/lib/admin/guard'
+import { describeActionError, guardAction, guardRead, parseActionInput } from '@/lib/admin/guard'
 import { commitContentChange } from '@/lib/admin/git'
-import { carryTagAppearance, rewriteTag, type TagRewriteReport } from '@/lib/admin/tags'
+import {
+  carryTagAppearance,
+  rewriteTag,
+  tagChangeImpact,
+  type TagRewriteReport,
+} from '@/lib/admin/tags'
+import type { TagChangeImpact } from '@/lib/admin/tag-impact'
 import type { GitCommitOutcome } from '@/lib/git'
 import { tagSlug } from '@/lib/utils/slug'
 
@@ -169,7 +175,11 @@ export async function mergeTagAction(
     const report = await rewriteTag({
       mode: 'merge',
       from: { slug, name: source.name },
-      to: { slug, name: target.name },
+      // The destination's own slug, not the source's: the report says what the
+      // documents were changed *to*, and a caller that reads it — the tag to
+      // move to once the run is over, a link to the surviving tag — is asking
+      // about the tag that exists afterwards.
+      to: { slug: into, name: target.name },
       actorId: context.user.id,
     })
 
@@ -180,6 +190,44 @@ export async function mergeTagAction(
       affectedPaths: revalidateTagPages([slug, into]),
       git,
     })
+  } catch (error) {
+    return describeActionError(error)
+  }
+}
+
+/**
+ * What merging one tag into another would touch, asked before it runs.
+ *
+ * The dialog states the consequence of a merge, so the consequence has to be
+ * knowable while the dialog is open: `mergeTagAction` rewrites the frontmatter
+ * of every document carrying the tag, and a sum of the two counts on the page
+ * is an upper bound rather than the number the operator is deciding about.
+ *
+ * The counting is `tagChangeImpact`, the same function the rewrite path's own
+ * report is derived from — not a second query written for the dialog, which
+ * would be one rule with two implementations and therefore two answers.
+ *
+ * A read, so `guardRead`: nothing is written, which is also why there is no
+ * CSRF check to pay for on every change of the destination. No rate limit for
+ * the same reason there is none on the session list: two index lookups, on a
+ * page only the owner can open, answering a question the owner asked.
+ */
+const impactSchema = z.object({
+  slug: slugField,
+  into: slugField,
+})
+
+export type TagImpactInput = z.output<typeof impactSchema>
+
+export async function tagMergeImpactAction(
+  input: TagImpactInput,
+): Promise<ActionResult<TagChangeImpact>> {
+  try {
+    await guardRead()
+    const parsed = parseActionInput(impactSchema, input)
+    if (!parsed.ok) return parsed
+
+    return actionOk(await tagChangeImpact(parsed.value.slug, parsed.value.into))
   } catch (error) {
     return describeActionError(error)
   }

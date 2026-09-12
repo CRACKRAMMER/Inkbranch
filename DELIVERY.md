@@ -895,6 +895,45 @@ valid session"）与 `cookiesAreSecure()`（注释写 "Mirrors the env flag, for
 `global-setup.ts` 会重置数据库、再跑真正的 `migrate.ts` 与 `seed.ts`，所以 50 条 e2e 通过就是这条
 迁移在空库上跑通的证据。回归数字：lint 干净、typecheck 干净、1081 单元、1230 集成、50 e2e。
 
+**再补一条，仍是查证时发现的：合并标签的对话框一直在说一个它不必说的上限。** `src/lib/admin/tags.ts`
+里有个 `tagChangeImpact`（以及它背后那个私有函数 `documentsWithAnyTag`），**一个读者都没有**；而对话框
+在需要它的位置写着另一句话——"「Linux」will end up on **up to** N documents"，N 取的是页面上两个计数
+之和。这个和是错的：同时带两个标签的文档被算了两次，而那正是"合并"与"改名"的区别所在。更直白的是
+两处注释自己写着要什么：`tagChangeImpact` 写"Counted before the button is pressed, not after…
+an operator deciding about that needs the count, not an upper bound"，`documentsWithAnyTag` 写
+"for the 'both tags present' count"——一句描述了需求，一句描述了用途，而**没有任何界面问过这个数**。
+这也是这个项目重复出现的那类缺陷：数据层写好了，使用它的那一半从没接上。
+
+于是接上，而不是删掉——判据是"这个能力是项目想要的"：合并要改写每一篇带该标签的文档的 frontmatter，
+按一次不可撤销的按钮之前，操作者该看到的是确切数字。`tagChangeImpact` 现在返回三个数（并集 `documents`、
+带源标签的 `carrying`、两个都带的 `overlapping`），对话框在打开时与每次改目标时问一次；句子除了报出
+确切数字，还会在有人两个都带的时候说清楚：对那几篇来说这是**去掉**一个标签，不是替换。计数用的就是
+重写路径自己用的那个函数，不是为对话框另写一条查询——一条规则两个实现就是两个答案。
+
+接上它之后，发现了三件事，都不是猜的：
+
+1. **那份报告在干净跑完的那一次根本显示不出来。** `TagOperations` 只渲染在一个标签自己的页面上
+   （`/admin/tags/<slug>`），而三个操作**都可能删掉这一页所讲的那个标签**，所以跑完之后
+   `router.refresh()` 会重新渲染一个 404：操作者按下 Merge、一切成功、屏幕上是 "Not found"。
+   准确地说，报告之前只在**有文档写失败**的那一次活下来（失败的文件还在 frontmatter 里写着这个标签，
+   标签行于是活过 prune，页面照常存在），而在**跑干净**的那一次被丢掉——正好是操作者没有别的确认渠道的
+   那一次。修法是 `destinationFor`：干净跑完就走到活下来的那个标签（改名、合并）或列表（删除），
+   有报告要读就留在原地。
+2. **接上这个数，让代码第一次读了 `report.to.slug`，而它一直是错的。** `mergeTagAction` 传的是
+   `to: { slug, name: target.name }`——**源**标签的 slug 配**目标**标签的名字。之所以一直没人发现，
+   是因为没有人读过 `to.slug`：frontmatter 重写只用 `to.name`，提交标题也只用 `to.name`。新的导航
+   读它，于是把操作者送到 `/admin/tags/<源标签>`，也就是刚被删掉的那一个。e2e 逮住了它（先看到的是
+   "Not found"，服务端日志打出 `"to":{"slug":"e2e-source-…","name":"E2E Target …"}`），修法是一个词，
+   集成测试现在同时盯住 `report.to` 的两半。
+3. **同步失败的警告只有报告这一个信使，而报告可能留不住。** toast 会活过导航（它是 toast），所以
+   它现在把两件事都说出来：哪些文档没写成、以及索引没对上（"the site still shows the old tags"）。
+
+测试补在各自该在的层：单元测句子——真实站点上不特意构造就够不到的那几个分支（没人带的标签、
+两篇都带的文档、还没数出来的状态、跑完落在哪里）；集成测数字——并集/重叠/各计数落在真实 Markdown
+文件和真实索引上，并且合并改写的文件数正好等于对话框报出的 `carrying`，没被碰到的文件逐字节不变；
+e2e 测接线——发两篇带标签的文档，断言句子里是**并集**（特别不是那个和 3），按下按钮后落在活下来的
+标签上，源标签的公开 URL 变成 404。回归数字：lint 干净、typecheck 干净、1095 单元、1249 集成、52 e2e。
+
 ---
 
 ## 附录：`ARCHITECTURE.md` 的来历
