@@ -3,12 +3,7 @@ import { eq } from 'drizzle-orm'
 import { db } from '@/lib/db'
 import { runMigrations } from '@/lib/db/migrate'
 import { auditLogs, siteSettings } from '@/lib/db/schema'
-import {
-  getSetting,
-  getSettings,
-  setSetting,
-  updateSettings,
-} from '@/lib/settings'
+import { getSettings, updateSettings } from '@/lib/settings'
 import {
   SETTINGS_DEFAULTS,
   SETTINGS_KEYS,
@@ -204,7 +199,7 @@ describeWithDatabase('site_settings storage', () => {
     const written = await updateSettings({ tagline: 'Notes on things' })
     expect(written.tagline).toBe('Notes on things')
     expect(written.siteName).toBe(SETTINGS_DEFAULTS.siteName)
-    expect((await getSetting('tagline'))).toBe('Notes on things')
+    expect((await getSettings()).tagline).toBe('Notes on things')
   })
 
   it('merges custom keys rather than replacing the blob', async () => {
@@ -224,25 +219,11 @@ describeWithDatabase('site_settings storage', () => {
     expect(row?.tagline).toBe('Three')
   })
 
-  it('writes one setting through setSetting', async () => {
-    await clear()
-    const settings = await setSetting('rssItemLimit', 42)
-    expect(settings.rssItemLimit).toBe(42)
-    expect(await getSetting('rssItemLimit')).toBe(42)
-  })
-
-  it('refuses a key that is not in the registry', async () => {
-    await clear()
-    await expect(
-      setSetting('siteNam' as 'siteName', 'x'),
-    ).rejects.toMatchObject({ code: 'SETTINGS', reason: 'unknown_key' })
-  })
-
   it('refuses a value that fails its own field', async () => {
     await clear()
     await expect(
-      setSetting('rssItemLimit', 0),
-    ).rejects.toMatchObject({ code: 'SETTINGS', reason: 'invalid_value' })
+      updateSettings({ rssItemLimit: 0 }),
+    ).rejects.toMatchObject({ code: 'SETTINGS', reason: 'invalid_patch' })
   })
 
   it('refuses a patch with an unknown key', async () => {

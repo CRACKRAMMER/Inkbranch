@@ -4,7 +4,7 @@ import { inArray } from 'drizzle-orm'
 import { afterAll, describe, expect, it } from 'vitest'
 import { CONTENT_ROOT } from '@/lib/content/paths'
 import { checksumOf } from '@/lib/content/reader'
-import { createDocument, writeDocument, type WriteResult } from '@/lib/content/writer'
+import { createDocument, updateDocument, type WriteResult } from '@/lib/content/writer'
 import { db } from '@/lib/db'
 import { contentIndex } from '@/lib/db/schema'
 import {
@@ -459,11 +459,10 @@ describe.skipIf(!hasTestDatabase)('revisions against a database', () => {
   it('stores the state a save replaced, and returns it decompressed', async () => {
     const fixture = await seedDocument()
 
-    const written = await writeDocument({
-      relativePath: fixture.relativePath,
+    const written = await updateDocument(fixture.relativePath, () => ({
       data: { title: fixture.title, date: '2024-01-01' },
       body: 'Second version.\n',
-    })
+    }))
 
     const result = await capture(fixture, previousText(written), 'save')
     expect(result.captured).toBe(true)
@@ -481,11 +480,10 @@ describe.skipIf(!hasTestDatabase)('revisions against a database', () => {
 
   it('lists metadata without touching the snapshots', async () => {
     const fixture = await seedDocument()
-    const written = await writeDocument({
-      relativePath: fixture.relativePath,
+    const written = await updateDocument(fixture.relativePath, () => ({
       data: { title: 'Listed' },
       body: 'Listed body.\n',
-    })
+    }))
     await capture(fixture, previousText(written), 'save')
 
     const rows = await listRevisions(fixture.contentId)
@@ -562,18 +560,16 @@ describe.skipIf(!hasTestDatabase)('revisions against a database', () => {
   it('restores through the writer, keeping the state it replaced', async () => {
     const fixture = await seedDocument()
 
-    const second = await writeDocument({
-      relativePath: fixture.relativePath,
+    const second = await updateDocument(fixture.relativePath, () => ({
       data: { title: 'Second' },
       body: 'Second version.\n',
-    })
+    }))
     const capturedFirst = await capture(fixture, previousText(second), 'save')
 
-    await writeDocument({
-      relativePath: fixture.relativePath,
+    await updateDocument(fixture.relativePath, () => ({
       data: { title: 'Third' },
       body: 'Third version.\n',
-    })
+    }))
     const thirdText = await fs.readFile(fixture.absolutePath, 'utf8')
 
     const restored = await restoreRevision(idOf(capturedFirst), null)

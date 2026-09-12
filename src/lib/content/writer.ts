@@ -72,6 +72,37 @@ export interface WriteResult {
   created: boolean
 }
 
+/**
+ * Translate a failure in this module's own write steps into a write error.
+ *
+ * The guard on the admin's side answers a `ContentWriteError` with "Writing X
+ * failed. The original file was not modified." — the sentence an operator needs
+ * before deciding whether to retype their work. A bare `ENOSPC` from the rename
+ * reaches them as "the server hit an unexpected error" instead: true, and no use
+ * at all, because a full disk and a bug look the same from the browser.
+ *
+ * The message names the document and stops there: the guard repeats it as the
+ * failure's second line, in the browser. The cause is kept on the error and
+ * written to the server log here instead, because a filesystem failure's own
+ * message carries both absolute paths involved — and the one reader who can act
+ * on `ENOSPC` is at the terminal, not at the form.
+ *
+ * Only the steps where the target is certainly untouched are covered, and only
+ * the doors that report through `describeActionError`: `createDocument`,
+ * `updateDocument` and `writeRawDocument` — the last of which is how a revision
+ * restore writes. A callback that throws is the caller's own control flow — the
+ * editor refuses a save by throwing from inside `updateDocument`'s mutator, and
+ * the screen reads the field errors off that error — so it is left exactly as
+ * it was thrown. `importDocument` is left out for a different reason: its reader
+ * is a per-file report, which prints the message it was given beside the file
+ * it concerns, so wrapping would only replace a specific cause with a generic
+ * one.
+ */
+function writeFailure(relativePath: string, error: unknown): ContentWriteError {
+  console.error('[content] write failed', { relativePath, error })
+  return new ContentWriteError(`Failed to write ${relativePath}`, relativePath, error)
+}
+
 /* -------------------------------------------------------------------------- */
 /*  Setup                                                                      */
 /* -------------------------------------------------------------------------- */
@@ -267,65 +298,6 @@ async function fsyncDirectory(dir: string): Promise<void> {
 /*  Public API                                                                 */
 /* -------------------------------------------------------------------------- */
 
-export interface WriteDocumentInput {
-  relativePath: string
-  data: Record<string, unknown>
-  body: string
-  extra?: Record<string, unknown>
-  comment?: string
-}
-
-/**
- * Write a document, returning the previous contents so the caller can record a
- * revision. Callers should snapshot *before* relying on the new file being live.
- */
-export async function writeDocument(
-  input: WriteDocumentInput,
-): Promise<WriteResult> {
-  await ensureContentDirectories()
-
-  const relativePath = toPosix(input.relativePath)
-  const absolutePath = documentPath(relativePath)
-
-  const lock = await acquireLock(relativePath)
-  try {
-    const previous = await fs.readFile(absolutePath, 'utf8').catch((error) => {
-      if (isNotFound(error)) return null
-      throw new ContentWriteError(
-        `Cannot read the current version of ${relativePath}`,
-        relativePath,
-        error,
-      )
-    })
-
-    const content = serializeFrontmatter(input.data, input.body, {
-      ...(input.extra ? { extra: input.extra } : {}),
-      ...(input.comment ? { comment: input.comment } : {}),
-    })
-
-    await atomicWrite(absolutePath, content)
-    invalidateContentCache(relativePath)
-
-    return {
-      relativePath,
-      absolutePath,
-      checksum: checksumOf(content),
-      byteSize: Buffer.byteLength(content, 'utf8'),
-      previousContent: previous,
-      created: previous === null,
-    }
-  } catch (error) {
-    if (error instanceof ContentWriteError) throw error
-    throw new ContentWriteError(
-      `Failed to write ${relativePath}: ${error instanceof Error ? error.message : String(error)}`,
-      relativePath,
-      error,
-    )
-  } finally {
-    await lock.release()
-  }
-}
-
 export interface CreateDocumentInput {
   type: ContentType
   slug: string
@@ -361,10 +333,15 @@ export async function createDocument(
       )
     }
 
-    const content = serializeFrontmatter(input.data, input.body, {
-      ...(input.extra ? { extra: input.extra } : {}),
-    })
-    await atomicWrite(absolutePath, content)
+    let content: string
+    try {
+      content = serializeFrontmatter(input.data, input.body, {
+        ...(input.extra ? { extra: input.extra } : {}),
+      })
+      await atomicWrite(absolutePath, content)
+    } catch (error) {
+      throw writeFailure(relativePath, error)
+    }
     invalidateContentCache(relativePath)
 
     return {
@@ -424,25 +401,43 @@ export async function updateDocument(
   await ensureContentDirectories()
 
   const relative = toPosix(relativePath)
+  // Resolved up front so that a path escaping the content root fails as the
+  // path guard, rather than being reported below as a write that did not happen.
+  const absolutePath = documentPath(relative)
+
   const lock = await acquireLock(relative)
   try {
-    const current = await readDocument(relative)
+    const current = await readDocument(relative).catch((error: unknown) => {
+      throw writeFailure(relative, error)
+    })
     if (!current) {
       throw new ContentWriteError(`No document at ${relative}`, relative)
     }
 
+    // The mutator is the caller's code and runs before anything is written.
+    // Whatever it throws — a refusal with field errors, a validation failure —
+    // is the caller's own control flow and is not translated.
     const { data, body, comment } = mutate(current)
-    const content = serializeFrontmatter(data, body, {
-      extra: current.extra,
-      ...(comment ? { comment } : {}),
-    })
 
-    await atomicWrite(documentPath(relative), content)
+    let content: string
+    try {
+      content = serializeFrontmatter(data, body, {
+        extra: current.extra,
+        ...(comment ? { comment } : {}),
+      })
+
+      await atomicWrite(absolutePath, content)
+    } catch (error) {
+      throw writeFailure(relative, error)
+    }
+
+    // Outside the block above on purpose: by the time this runs the rename has
+    // happened, so a failure here must not be reported as a write that did not.
     invalidateContentCache(relative)
 
     return {
       relativePath: relative,
-      absolutePath: documentPath(relative),
+      absolutePath,
       checksum: checksumOf(content),
       byteSize: Buffer.byteLength(content, 'utf8'),
       previousContent: current.raw,
@@ -468,12 +463,20 @@ export async function writeRawDocument(
 
   const lock = await acquireLock(relative)
   try {
-    const previous = await fs.readFile(absolutePath, 'utf8').catch((error) => {
-      if (isNotFound(error)) return null
-      throw error
-    })
+    let previous: string | null
+    try {
+      previous = await fs.readFile(absolutePath, 'utf8').catch((error) => {
+        if (isNotFound(error)) return null
+        throw error
+      })
 
-    await atomicWrite(absolutePath, content)
+      await atomicWrite(absolutePath, content)
+    } catch (error) {
+      throw writeFailure(relative, error)
+    }
+
+    // Outside the block above on purpose: by the time this runs the rename has
+    // happened, so a failure here must not be reported as a write that did not.
     invalidateContentCache(relative)
 
     return {

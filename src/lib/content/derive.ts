@@ -232,44 +232,11 @@ function cleanHeadingText(text: string): string {
     .trim()
 }
 
-/**
- * Nest a flat heading list for rendering, dropping levels that would create a
- * gap (an `h4` following an `h2` becomes a child of the `h2`).
- */
-export function buildHeadingTree(
-  headings: Heading[],
-): (Heading & { children: Heading[] })[] {
-  const roots: (Heading & { children: Heading[] })[] = []
-  const stack: (Heading & { children: Heading[] })[] = []
-
-  for (const heading of headings) {
-    const node = { ...heading, children: [] as Heading[] }
-
-    while (stack.length > 0 && (stack[stack.length - 1]?.level ?? 1) >= heading.level) {
-      stack.pop()
-    }
-
-    const parent = stack[stack.length - 1]
-    if (parent) parent.children.push(node)
-    else roots.push(node)
-
-    stack.push(node)
-  }
-
-  return roots
-}
-
 /** Minimum number of headings before a table of contents is worth showing. */
 export const MIN_HEADINGS_FOR_TOC = 2
 
 export function shouldShowToc(tocEnabled: boolean, headings: Heading[]): boolean {
   return tocEnabled && headings.length >= MIN_HEADINGS_FOR_TOC
-}
-
-/** Fallback slug when a document has neither a declared slug nor a usable title. */
-export function fallbackSlug(filename: string, type: ContentType): string {
-  const base = slugFromFilename(filename)
-  return base === 'untitled' ? `${type}-${Date.now().toString(36)}` : base
 }
 
 export { slugify }

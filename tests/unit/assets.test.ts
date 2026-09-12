@@ -43,7 +43,7 @@ import {
 import { env } from '@/env'
 import { prepareSvg } from '@/lib/assets/svg'
 import { documentUrl } from '@/lib/content/paths'
-import { extractLinks, referencedImageKeys } from '@/lib/content/links'
+import { extractLinks } from '@/lib/content/links'
 import { db } from '@/lib/db'
 import { runMigrations } from '@/lib/db/migrate'
 import {
@@ -648,9 +648,14 @@ describe('which documents reference an asset', () => {
     variants: { url: string }[]
   }, markdown: string): string[] {
     const { links } = extractLinks(markdown, { uploadUrlPrefix: '/uploads' })
-    // `referencedImageKeys` is what the sync engine reduces the scan to, so the
-    // keys compared below are the ones actually written to `content_links`.
-    return referencedImageKeys(links)
+    // The sync engine writes one `content_links` row per image link and the
+    // delete check reads the distinct keys back, so the keys compared below are
+    // the ones actually stored — not a second reading of the Markdown.
+    const keys = new Set<string>()
+    for (const link of links) {
+      if (link.kind === 'image') keys.add(link.targetKey)
+    }
+    return [...keys]
   }
 
   it('matches the keys the Markdown scanner produces, variants included', async () => {

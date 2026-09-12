@@ -134,26 +134,6 @@ export const getSettings = cache(async (): Promise<Settings> => {
   return mergeSettings(row)
 })
 
-/** One setting, for the single-field controls in the admin UI. */
-export async function getSetting<K extends SettingsKey>(
-  key: K,
-): Promise<Settings[K]> {
-  assertSettingsKey(key)
-  const settings = await getSettings()
-  return settings[key]
-}
-
-/** Throw a typed error rather than reading or writing a key nothing can find. */
-function assertSettingsKey(key: string): asserts key is SettingsKey {
-  if (!isSettingsKey(key)) {
-    throw new SettingsError(
-      'unknown_key',
-      `Unknown setting: ${key}`,
-      [`Allowed keys: ${Object.keys(settingsSchema.shape).join(', ')}`],
-    )
-  }
-}
-
 /* -------------------------------------------------------------------------- */
 /*  Writing                                                                    */
 /* -------------------------------------------------------------------------- */
@@ -262,25 +242,4 @@ export async function updateSettings(
   revalidateSettings()
 
   return settings
-}
-
-/** Write one setting, for the single-field controls in the admin UI. */
-export async function setSetting<K extends SettingsKey>(
-  key: K,
-  value: Settings[K],
-  context: SettingsWriteContext = {},
-): Promise<Settings> {
-  assertSettingsKey(key)
-
-  const fieldSchema = settingsSchema.shape[key]
-  const parsed = fieldSchema.safeParse(value)
-  if (!parsed.success) {
-    throw new SettingsError(
-      'invalid_value',
-      `Invalid value for ${key}.`,
-      describeIssues(parsed.error.issues),
-    )
-  }
-
-  return updateSettings({ [key]: parsed.data } as SettingsPatch, context)
 }

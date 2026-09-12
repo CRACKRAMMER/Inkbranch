@@ -4,11 +4,8 @@ import {
   normalizeImageKey,
   parseInternalTarget,
   parseWikiTarget,
-  referencedImageKeys,
-  referencedTargets,
   rewriteWikiLinks,
   scanWikiLinks,
-  targetKeyToUrl,
   wikiTargetCandidates,
 } from '@/lib/content/links'
 import { extractHeadings } from '@/lib/content/derive'
@@ -158,11 +155,19 @@ describe('extractLinks — line reporting', () => {
   })
 
   it('finds nothing in an empty document', () => {
-    expect(extractLinks('')).toEqual({ links: [], externalCount: 0 })
+    expect(extractLinks('')).toEqual({ links: [] })
   })
 })
 
 describe('extractLinks — classification of non-document references', () => {
+  /*
+   * Every row in `content_links` is a claim that one document points at another
+   * document or at an asset of this site — the backlink list, the broken-link
+   * report and the unused-image check all read it that way. A reference
+   * somewhere else is therefore not a row with an empty target: it is no row at
+   * all, which is what the assertions below pin down.
+   */
+
   it('treats a same-origin absolute URL as the internal target it names', () => {
     const links = find('[a](https://example.com/posts/x)\n', {
       siteUrl: 'https://example.com',
@@ -174,34 +179,33 @@ describe('extractLinks — classification of non-document references', () => {
     expect(links[0]?.href).toBe('/posts/x')
   })
 
-  it('treats a same-origin URL as external when no site URL is configured', () => {
+  it('records nothing for a same-origin URL when no site URL is configured', () => {
     const result = extractLinks('[a](https://example.com/posts/x)\n')
 
+    // Without a configured origin there is nothing to compare the host against,
+    // and assuming it is ours would put a row in the graph for a URL that may
+    // point at somebody else's site.
     expect(result.links).toEqual([])
-    expect(result.externalCount).toBe(1)
   })
 
-  it('counts an off-site URL as external without inventing a target', () => {
+  it('records nothing for an off-site URL, and invents no target', () => {
     const result = extractLinks('[a](https://other.example/x)\n', {
       siteUrl: 'https://example.com',
     })
 
     expect(result.links).toEqual([])
-    expect(result.externalCount).toBe(1)
   })
 
-  it('counts a mailto: link as external, since it leaves the site', () => {
+  it('records nothing for a mailto: link, which leaves the site', () => {
     const result = extractLinks('[a](mailto:someone@example.com)\n')
 
     expect(result.links).toEqual([])
-    expect(result.externalCount).toBe(1)
   })
 
-  it('counts a protocol-relative URL as external', () => {
+  it('records nothing for a scheme-relative URL', () => {
     const result = extractLinks('[a](//cdn.example/x)\n')
 
     expect(result.links).toEqual([])
-    expect(result.externalCount).toBe(1)
   })
 
   it('records a bare fragment as an anchor keyed by the fragment', () => {
@@ -278,11 +282,12 @@ describe('extractLinks — HTML images', () => {
     expect(find('<img src="">\n')).toEqual([])
   })
 
-  it('counts an external img as external and records nothing', () => {
+  it('records nothing for an external img', () => {
     const result = extractLinks('<img src="https://cdn.example/a.png">\n')
 
+    // No local key, so no row — and no entry in the unused-image check, which
+    // could not tell a file we host from one we do not.
     expect(result.links).toEqual([])
-    expect(result.externalCount).toBe(1)
   })
 })
 
@@ -498,44 +503,6 @@ describe('rewriteWikiLinks', () => {
   })
 })
 
-describe('extractLinks — counting and aggregation', () => {
-  it('counts every external reference of any kind', () => {
-    const markdown = [
-      '[a](https://x.example/1)',
-      '![b](https://x.example/2.png)',
-      '<img src="https://x.example/3.png">',
-      '',
-    ].join('\n')
-
-    expect(extractLinks(markdown).externalCount).toBe(3)
-  })
-
-  it('lists each referenced target once, keeping the first occurrence', () => {
-    const links = find('[b](/posts/b) [a](/posts/b "Again") [c](/posts/c)\n')
-
-    expect(referencedTargets(links).map((link) => link.targetKey)).toEqual([
-      'posts/b',
-      'posts/c',
-    ])
-    expect(referencedTargets(links)[0]?.label).toBe('b')
-  })
-
-  it('lists each referenced image once and ignores everything else', () => {
-    const links = find(
-      '![i](/uploads/i.png) ![again](/uploads/i.png) [doc](/posts/d) <img src="/uploads/j.png">\n',
-    )
-
-    expect(referencedImageKeys(links)).toEqual(['i.png', 'j.png'])
-  })
-
-  it('reports no targets when a document only links out of the site', () => {
-    const links = find('[a](https://x.example/1) [b](/tags/linux) [c](#top)\n')
-
-    expect(referencedTargets(links)).toEqual([])
-    expect(referencedImageKeys(links)).toEqual([])
-  })
-})
-
 describe('parseInternalTarget', () => {
   it('maps each type directory to its content type', () => {
     expect(parseInternalTarget('/posts/x')).toEqual({
@@ -592,30 +559,6 @@ describe('normalizeImageKey', () => {
     expect(normalizeImageKey('/uploadsx/a.png', '/uploads')).toBeNull()
     expect(normalizeImageKey('#fragment', '/uploads')).toBeNull()
     expect(normalizeImageKey('', '/uploads')).toBeNull()
-  })
-})
-
-describe('targetKeyToUrl', () => {
-  it('maps the keys the scanner produces back to their routes', () => {
-    // Keys are built as `${type}s/${slug}`, so the prefix is the directory.
-    expect(targetKeyToUrl('posts/hello')).toBe('/posts/hello')
-    expect(targetKeyToUrl('notes/hello')).toBe('/notes/hello')
-    expect(targetKeyToUrl('projects/hello')).toBe('/projects/hello')
-  })
-
-  it('percent-encodes the slug on the way back to a URL', () => {
-    expect(targetKeyToUrl('posts/a b')).toBe('/posts/a%20b')
-  })
-
-  it('returns null for a prefix that is not a content directory', () => {
-    expect(targetKeyToUrl('tags/linux')).toBeNull()
-    expect(targetKeyToUrl('junk/hello')).toBeNull()
-  })
-
-  it('returns null when the key has no slug', () => {
-    expect(targetKeyToUrl('posts')).toBeNull()
-    expect(targetKeyToUrl('/hello')).toBeNull()
-    expect(targetKeyToUrl('')).toBeNull()
   })
 })
 

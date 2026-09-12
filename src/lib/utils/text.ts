@@ -9,10 +9,11 @@
 /**
  * The CJK ranges, as a character-class body.
  *
- * Exported as *text* rather than as a finished regex because three call sites
- * need it in three shapes: a global match, a boolean test, and spliced into a
- * longer negated class in `slug.ts`. Writing it out at each of them is how
- * `slug.ts` came to accept fewer scripts than everything around it did.
+ * Exported as *text* rather than as a finished regex because it is needed in
+ * two shapes: a global match for counting, and spliced into a longer class where
+ * the ranges are one part of the question — the negated class in `slug.ts`, and
+ * `WIDE_RANGES` below. Writing it out at each of them is how `slug.ts` came to
+ * accept fewer scripts than everything around it did.
  *
  * - U+3400-U+4DBF  CJK Unified Ideographs Extension A
  * - U+4E00-U+9FFF  CJK Unified Ideographs
@@ -28,7 +29,6 @@ export const CJK_RANGES =
   '\\u3400-\\u4dbf\\u4e00-\\u9fff\\uf900-\\ufaff\\u3040-\\u30ff\\uac00-\\ud7af'
 
 const CJK = new RegExp(`[${CJK_RANGES}]`, 'g')
-const CJK_TEST = new RegExp(`[${CJK_RANGES}]`)
 const LATIN_TOKEN = /[A-Za-z0-9][A-Za-z0-9'’_-]*/g
 
 export interface TextStats {
@@ -60,10 +60,6 @@ export function textStats(input: string): TextStats {
   const readingTime = Math.max(1, Math.round(minutes))
 
   return { words: cjkChars + latinWords, cjkChars, latinWords, readingTime }
-}
-
-export function containsCJK(input: string): boolean {
-  return CJK_TEST.test(input)
 }
 
 /**

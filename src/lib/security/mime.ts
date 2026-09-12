@@ -336,11 +336,3 @@ function stripBlocks(source: string, tag: string, removed: string[]): string {
   }
   return out
 }
-
-/**
- * Validate that a string is a hex colour before it is interpolated into CSS.
- * Tag colours come from the admin and reach a `style` attribute.
- */
-export function isSafeHexColor(value: string): boolean {
-  return /^#(?:[0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(value)
-}

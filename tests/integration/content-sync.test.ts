@@ -50,12 +50,31 @@ precisely is worth more than one it merely survives.
 A link to a document that does not exist: [[no-such-note]].
 `
 
+/**
+ * A document that names the same target three times, two ways.
+ *
+ * Written for the row count below: repetition is ordinary — a piece of writing
+ * refers back to the same note in several sections — and the two spellings are
+ * the case that has to stay two rows, because they resolve by different routes
+ * and one can break while the other still works.
+ */
+const REPETITIVE = `---
+title: Repetitive
+date: 2026-09-12
+tags: [Engineering]
+---
+
+Naming it as a wiki link twice: [[atomic-writes]] and again [[atomic-writes]],
+and once by its route: [the post](/posts/atomic-writes).
+`
+
 describe.skipIf(!hasTestDatabase)('content sync with real files', () => {
   beforeAll(async () => {
     await fs.mkdir(POSTS, { recursive: true })
     await fs.mkdir(NOTES, { recursive: true })
     await fs.writeFile(path.join(POSTS, 'atomic-writes.md'), POST, 'utf8')
     await fs.writeFile(path.join(NOTES, 'why-not-catch.md'), NOTE, 'utf8')
+    await fs.writeFile(path.join(NOTES, 'repetitive.md'), REPETITIVE, 'utf8')
   })
 
   afterAll(async () => {
@@ -65,7 +84,13 @@ describe.skipIf(!hasTestDatabase)('content sync with real files', () => {
 
     await db
       .delete(contentIndex)
-      .where(inArray(contentIndex.path, ['posts/atomic-writes.md', 'notes/why-not-catch.md']))
+      .where(
+        inArray(contentIndex.path, [
+          'posts/atomic-writes.md',
+          'notes/why-not-catch.md',
+          'notes/repetitive.md',
+        ]),
+      )
 
     await fs.rm(POSTS, { recursive: true, force: true })
     await fs.rm(NOTES, { recursive: true, force: true })
@@ -113,6 +138,25 @@ describe.skipIf(!hasTestDatabase)('content sync with real files', () => {
     const fromDescription = links.filter((link) => link.sourcePath === 'notes/why-not-catch.md')
     expect(fromDescription).toHaveLength(1)
     expect(fromDescription[0]?.href).toBe('atomic-writes')
+  })
+
+  it('writes one row per distinct link, however often a document repeats it', async () => {
+    const { syncContent } = await import('@/lib/content/sync')
+    await syncContent({ hashAll: true })
+
+    const { getContentLinks } = await import('./helpers')
+    const rows = (await getContentLinks()).filter(
+      (row) => row.sourcePath === 'notes/repetitive.md',
+    )
+
+    // `notes/repetitive.md` names `atomic-writes` three times, two ways. The
+    // same fact twice is not a second edge — two rows would list this document
+    // twice in every backlink list, and count it twice in the graph. The two
+    // spellings stay apart, which is why the row key is the (kind, target) pair
+    // and not the target: a wiki link and a route resolve by different rules,
+    // and one of them can break while the other still works.
+    expect(rows.map((row) => row.kind).sort()).toEqual(['internal', 'wiki'])
+    expect(rows.every((row) => row.resolved)).toBe(true)
   })
 
   it('resolves links by slug as well, for documents that declare one', async () => {

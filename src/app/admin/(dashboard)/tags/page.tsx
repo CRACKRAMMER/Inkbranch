@@ -5,6 +5,7 @@ import { requireUser } from '@/lib/auth/session'
 import { listAdminTags } from '@/lib/admin/queries'
 import { InlineNote, Page, Section, Stat, StatCell, StatRow } from '@/components/admin/page'
 import { Badge } from '@/components/ui/badge'
+import { safeTagColor } from '@/lib/utils/tag-color'
 
 export const metadata: Metadata = { title: 'Tags' }
 
@@ -123,44 +124,53 @@ export default async function TagsPage({
                 </tr>
               </thead>
               <tbody>
-                {filtered.map((tag) => (
-                  <tr key={tag.id} className="border-b border-line last:border-0">
-                    <th scope="row" className="py-2 pr-3 text-left font-normal">
-                      <Link
-                        href={`/admin/tags/${tag.slug}`}
-                        className="text-ink hover:text-brand"
-                      >
-                        {tag.name}
-                      </Link>
-                      {tag.color ? (
-                        <span
-                          aria-hidden="true"
-                          className="ml-2 inline-block size-2 rounded-full align-middle"
-                          style={{ backgroundColor: tag.color }}
-                        />
-                      ) : null}
-                    </th>
-                    <td className="py-2 pr-3 font-mono text-xs text-ink-muted">{tag.slug}</td>
-                    <td className="py-2 pr-3 text-right tabular-nums text-ink-muted">
-                      {tag.contentCount === 0 ? (
-                        <Badge variant="outline">unused</Badge>
-                      ) : (
-                        tag.contentCount
-                      )}
-                    </td>
-                    <td className="py-2 pr-3 text-right tabular-nums text-ink-muted">
-                      {tag.publishedCount}
-                    </td>
-                    <td className="py-2 text-right">
-                      <Link
-                        href={`/admin/tags/${tag.slug}`}
-                        className="text-xs text-brand underline underline-offset-2"
-                      >
-                        Manage
-                      </Link>
-                    </td>
-                  </tr>
-                ))}
+                {filtered.map((tag) => {
+                  // The swatch is painted from a column no form on this screen
+                  // writes, so it goes through the same guard the public dot
+                  // uses before it reaches a `style` attribute — a colour that
+                  // predates the validator, or one written by a direct SQL
+                  // import, must not reach CSS. A refused value draws no swatch.
+                  const color = safeTagColor(tag.color)
+
+                  return (
+                    <tr key={tag.id} className="border-b border-line last:border-0">
+                      <th scope="row" className="py-2 pr-3 text-left font-normal">
+                        <Link
+                          href={`/admin/tags/${tag.slug}`}
+                          className="text-ink hover:text-brand"
+                        >
+                          {tag.name}
+                        </Link>
+                        {color ? (
+                          <span
+                            aria-hidden="true"
+                            className="ml-2 inline-block size-2 rounded-full align-middle"
+                            style={{ backgroundColor: color }}
+                          />
+                        ) : null}
+                      </th>
+                      <td className="py-2 pr-3 font-mono text-xs text-ink-muted">{tag.slug}</td>
+                      <td className="py-2 pr-3 text-right tabular-nums text-ink-muted">
+                        {tag.contentCount === 0 ? (
+                          <Badge variant="outline">unused</Badge>
+                        ) : (
+                          tag.contentCount
+                        )}
+                      </td>
+                      <td className="py-2 pr-3 text-right tabular-nums text-ink-muted">
+                        {tag.publishedCount}
+                      </td>
+                      <td className="py-2 text-right">
+                        <Link
+                          href={`/admin/tags/${tag.slug}`}
+                          className="text-xs text-brand underline underline-offset-2"
+                        >
+                          Manage
+                        </Link>
+                      </td>
+                    </tr>
+                  )
+                })}
               </tbody>
             </table>
           </div>

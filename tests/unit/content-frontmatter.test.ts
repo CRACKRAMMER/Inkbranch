@@ -1,11 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   FrontmatterError,
-  frontmatterValueToString,
-  isoDate,
-  isoTimestamp,
   parseFrontmatter,
-  replaceFrontmatter,
   serializeFrontmatter,
 } from '@/lib/content/frontmatter'
 import {
@@ -17,13 +13,10 @@ import {
   splitFrontmatterKeys,
 } from '@/lib/content/schema'
 import {
-  buildHeadingTree,
   deriveContent,
   extractHeadings,
-  fallbackSlug,
   humanizeFilename,
   shouldShowToc,
-  type Heading,
 } from '@/lib/content/derive'
 
 /**
@@ -42,11 +35,6 @@ function captureThrow(fn: () => unknown): unknown {
     return error
   }
   throw new Error('Expected the call to throw, but it returned normally')
-}
-
-/** The recursive shape `buildHeadingTree` builds, which its return type flattens. */
-interface NestedHeading extends Heading {
-  children: NestedHeading[]
 }
 
 describe('parseFrontmatter', () => {
@@ -298,7 +286,10 @@ describe('serializeFrontmatter', () => {
   })
 })
 
-describe('replaceFrontmatter', () => {
+// A metadata-only rewrite is `serializeFrontmatter(data, parsed.content)`. It is
+// spelled out in these tests rather than wrapped in a helper, because that pair
+// of calls is what the admin save does with the author's own text.
+describe('a metadata-only rewrite', () => {
   it('replaces the metadata and leaves the article body byte-identical', () => {
     const source = [
       '---',
@@ -317,57 +308,40 @@ describe('replaceFrontmatter', () => {
       '',
     ].join('\n')
 
-    const updated = replaceFrontmatter(source, { title: 'New', tags: ['new'] })
+    const updated = serializeFrontmatter(
+      { title: 'New', tags: ['new'] },
+      parseFrontmatter(source).content,
+    )
 
     expect(parseFrontmatter(updated).data).toEqual({ title: 'New', tags: ['new'] })
-    // The body never round-trips through a parser: what the author typed stays
-    // on disk, down to the two spaces that mean a hard line break.
+    // The body is split off the frontmatter but never parsed as Markdown and
+    // re-rendered: what the author typed stays on disk, down to the two spaces
+    // that mean a hard line break.
     expect(updated.slice(updated.indexOf('---\n\n') + 5)).toBe(
       '# Keep me\n\n```ts\nconst a = 1  \n```\n\nA paragraph  \ncontinued.\n',
     )
   })
 
   it('adds a block to a file that had none', () => {
-    const updated = replaceFrontmatter('# Heading\n\nBody.\n', { title: 'New' })
+    const updated = serializeFrontmatter(
+      { title: 'New' },
+      parseFrontmatter('# Heading\n\nBody.\n').content,
+    )
 
     expect(parseFrontmatter(updated).data).toEqual({ title: 'New' })
     expect(parseFrontmatter(updated).content).toBe('# Heading\n\nBody.\n')
   })
 
   it('does not duplicate the body when the file ends with blank lines', () => {
-    const updated = replaceFrontmatter('---\ntitle: T\n---\n\nLast line.\n\n\n', {
-      title: 'N',
-    })
+    const updated = serializeFrontmatter(
+      { title: 'N' },
+      parseFrontmatter('---\ntitle: T\n---\n\nLast line.\n\n\n').content,
+    )
 
     expect(parseFrontmatter(updated).content).toBe('Last line.\n')
     expect(updated.match(/Last line\./g)).toHaveLength(1)
     // Exactly one block: rewriting metadata must never append a second one.
     expect(updated.match(/^---$/gm)).toHaveLength(2)
-  })
-})
-
-describe('isoDate / isoTimestamp', () => {
-  it('formats the day in UTC so the stored date never shifts', () => {
-    // 23:30 UTC is already tomorrow in Tokyo and still today in Los Angeles;
-    // the stored day has to be the same for both readers.
-    expect(isoDate(new Date(Date.UTC(2026, 8, 11, 23, 30)))).toBe('2026-09-11')
-    expect(isoDate(new Date(Date.UTC(2026, 0, 1, 0, 0)))).toBe('2026-01-01')
-  })
-
-  it('keeps the time and milliseconds in a full timestamp', () => {
-    expect(isoTimestamp(new Date(Date.UTC(2026, 8, 11, 23, 30, 15, 250)))).toBe(
-      '2026-09-11T23:30:15.250Z',
-    )
-  })
-})
-
-describe('frontmatterValueToString', () => {
-  it('renders each value the way the admin raw-YAML view shows it', () => {
-    expect(frontmatterValueToString(new Date(Date.UTC(2026, 8, 11, 12)))).toBe('2026-09-11')
-    expect(frontmatterValueToString(['linux', 'zsh'])).toBe('linux, zsh')
-    expect(frontmatterValueToString(null)).toBe('')
-    expect(frontmatterValueToString(undefined)).toBe('')
-    expect(frontmatterValueToString(3)).toBe('3')
   })
 })
 
@@ -670,35 +644,6 @@ describe('extractHeadings', () => {
   })
 })
 
-describe('buildHeadingTree', () => {
-  it('nests headings under the section they belong to', () => {
-    // The declared return type is one level deep, because `Heading.children` is
-    // a flat list; asserting on grandchildren needs the recursive shape.
-    const tree = buildHeadingTree(
-      extractHeadings('# A\n\n## B\n\n### C\n\n# D\n'),
-    ) as NestedHeading[]
-
-    expect(tree).toHaveLength(2)
-    expect(tree[0]?.text).toBe('A')
-    expect(tree[0]?.children.map((child) => child.text)).toEqual(['B'])
-    expect(tree[0]?.children[0]?.children.map((child) => child.text)).toEqual(['C'])
-    expect(tree[1]?.text).toBe('D')
-  })
-
-  it('drops a skipped level rather than inventing a parent', () => {
-    // An `h4` following an `h2` has no `h3` above it; it becomes a child of the
-    // `h2` so the table of contents stays connected.
-    const tree = buildHeadingTree(extractHeadings('## A\n\n#### B\n\n### C\n'))
-
-    expect(tree).toHaveLength(1)
-    expect(tree[0]?.children.map((child) => child.level)).toEqual([4, 3])
-  })
-
-  it('returns an empty tree for a document with no headings', () => {
-    expect(buildHeadingTree([])).toEqual([])
-  })
-})
-
 describe('deriveContent', () => {
   it('uses the declared metadata when the frontmatter has it', () => {
     const derived = deriveContent({
@@ -838,13 +783,5 @@ describe('shouldShowToc', () => {
 
   it('honours toc: false however many headings there are', () => {
     expect(shouldShowToc(false, [heading(1), heading(2), heading(3)])).toBe(false)
-  })
-})
-
-describe('fallbackSlug', () => {
-  it('uses the filename, and a unique name when the filename has none', () => {
-    expect(fallbackSlug('2026-09-11-linux-notes.md', 'post')).toBe('linux-notes')
-    // Two untitled files must not land on the same URL.
-    expect(fallbackSlug('.md', 'note')).toMatch(/^note-[a-z0-9]+$/)
   })
 })

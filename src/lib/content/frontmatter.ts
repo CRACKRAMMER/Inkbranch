@@ -235,38 +235,3 @@ function shouldOmit(key: string, value: unknown): boolean {
   return false
 }
 
-/**
- * Replace just the frontmatter of a file, keeping the body byte-identical.
- * Used when only metadata changed, so the article text never round-trips
- * through a parser.
- */
-export function replaceFrontmatter(
-  source: string,
-  data: Record<string, unknown>,
-  options: SerializeOptions = {},
-): string {
-  const parsed = parseFrontmatter(source)
-  return serializeFrontmatter(data, parsed.content, options)
-}
-
-/**
- * Render a value for display in the admin's raw-YAML view.
- * Dates are normalised to `YYYY-MM-DD`, or full ISO when a time is present.
- */
-export function frontmatterValueToString(value: unknown): string {
-  if (value instanceof Date) return isoDate(value)
-  if (Array.isArray(value)) return value.map(frontmatterValueToString).join(', ')
-  if (value === null || value === undefined) return ''
-  if (typeof value === 'object') return JSON.stringify(value)
-  return String(value)
-}
-
-/** `YYYY-MM-DD`, computed in UTC so the stored day never shifts. */
-export function isoDate(date: Date): string {
-  return date.toISOString().slice(0, 10)
-}
-
-/** Full ISO timestamp. */
-export function isoTimestamp(date: Date): string {
-  return date.toISOString()
-}

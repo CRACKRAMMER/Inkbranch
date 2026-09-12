@@ -2,7 +2,7 @@ import { beforeAll, describe, expect, it } from 'vitest'
 import { createDocument } from '@/lib/content/writer'
 import { highlight, invalidateSearchIndex, runSearch } from '@/lib/search/local'
 import { parseQuery } from '@/lib/search/provider'
-import { hasCJK, indexTerms, queryGroups, stem, tokenize } from '@/lib/search/tokenize'
+import { indexTerms, queryGroups, stem, tokenize } from '@/lib/search/tokenize'
 
 /**
  * Search.
@@ -160,11 +160,6 @@ describe('tokenize', () => {
   it('skips bare numbers but keeps identifiers', () => {
     expect(tokenize('2024')).toEqual([])
     expect(indexTerms('sha256')).toContain('sha256')
-  })
-
-  it('detects CJK', () => {
-    expect(hasCJK('中文')).toBe(true)
-    expect(hasCJK('plain latin')).toBe(false)
   })
 
   it('maps plurals and gerunds onto one stem', () => {

@@ -61,10 +61,15 @@ export function wikiTargetCandidates(targetKey: string): string[] {
   return Object.values(CONTENT_TYPE_DIRS).map((dir) => `${dir}/${slug}`)
 }
 
+/**
+ * What one scan found.
+ *
+ * `links` holds only what the index can act on. A reference it cannot resolve —
+ * an off-site URL, a `mailto:`, an external `<img>` — is absent rather than
+ * reported beside it.
+ */
 export interface LinkExtractionResult {
   links: ExtractedLink[]
-  /** Links whose target URL is external or otherwise not our business. */
-  externalCount: number
 }
 
 /* -------------------------------------------------------------------------- */
@@ -130,7 +135,7 @@ function splitHash(href: string): [string, string | undefined] {
 
 /**
  * Normalise an image reference to a key relative to the upload root.
- * Returns null for external images, which are tracked but not resolvable.
+ * Returns null for external images, which nothing here can resolve.
  */
 export function normalizeImageKey(href: string, urlPrefix: string): string | null {
   const [pathPart] = splitHash(href)
@@ -171,15 +176,10 @@ export function extractLinks(
   const siteHost = options.siteUrl ? safeHost(options.siteUrl) : null
 
   const links: ExtractedLink[] = []
-  let externalCount = 0
 
   for (const { text, line } of proseLines(markdown)) {
     for (const ref of scanMarkdownLinks(text)) {
       const classified = classifyRef(ref.href, ref.label, uploadPrefix, siteHost)
-      if (classified === 'external') {
-        externalCount += 1
-        continue
-      }
       if (classified) links.push({ ...classified, line })
     }
 
@@ -190,10 +190,7 @@ export function extractLinks(
 
     for (const ref of scanHtmlImages(text)) {
       const key = normalizeImageKey(ref.src, uploadPrefix)
-      if (!key) {
-        if (/^https?:\/\//i.test(ref.src)) externalCount += 1
-        continue
-      }
+      if (!key) continue
       links.push({
         kind: 'image',
         href: ref.src,
@@ -204,7 +201,7 @@ export function extractLinks(
     }
   }
 
-  return { links, externalCount }
+  return { links }
 }
 
 interface ProseLine {
@@ -599,7 +596,14 @@ function escapeDestination(url: string): string {
 /*  Classification                                                             */
 /* -------------------------------------------------------------------------- */
 
-type Classification = ExtractedLink | 'external' | null
+/**
+ * A link the index can act on, or nothing at all.
+ *
+ * `null` is both "not a link" and "a link that leaves the site": this function
+ * is only ever asked what to record, and the answer to each is nothing. See
+ * `LinkExtractionResult`.
+ */
+type Classification = ExtractedLink | null
 
 function classifyRef(
   href: string,
@@ -624,9 +628,10 @@ function classifyRef(
   }
 
   if (/^(mailto|tel|sms|data|javascript|vbscript):/i.test(trimmed)) {
-    // `data:` and `javascript:` are neutralised by the renderer's sanitiser;
-    // they are not our links to track.
-    return 'external'
+    // None of these names a document or an asset, so there is nothing to
+    // resolve them to. `data:` and `javascript:` are additionally neutralised
+    // by the renderer's sanitiser.
+    return null
   }
 
   if (/^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed)) {
@@ -643,15 +648,18 @@ function classifyRef(
           )
         }
       } catch {
-        return 'external'
+        // Unparseable, so it cannot be shown to be one of ours.
+        return null
       }
     }
-    return 'external'
+    return null
   }
 
-  if (trimmed.startsWith('//')) return 'external'
+  // Scheme-relative: the scheme is whoever is reading's choice, and the host is
+  // not ours.
+  if (trimmed.startsWith('//')) return null
 
-  // Protocol-relative or query-only references.
+  // Query-only references.
   if (trimmed.startsWith('?')) return null
 
   // Image by extension, even when written as a normal Markdown link.
@@ -727,50 +735,4 @@ function safeHost(url: string): string | null {
   } catch {
     return null
   }
-}
-
-/* -------------------------------------------------------------------------- */
-/*  Aggregation                                                                */
-/* -------------------------------------------------------------------------- */
-
-/** Distinct image keys referenced by a document. */
-export function referencedImageKeys(links: ExtractedLink[]): string[] {
-  const keys = new Set<string>()
-  for (const link of links) {
-    if (link.kind === 'image') keys.add(link.targetKey)
-  }
-  return [...keys]
-}
-
-/**
- * Distinct internal targets referenced by a document, wiki links included.
- *
- * A wiki link is an internal reference that has not been narrowed to a type
- * yet, so leaving it out here would put the backlink index out of step with
- * what the reader sees on the page.
- */
-export function referencedTargets(links: ExtractedLink[]): ExtractedLink[] {
-  const seen = new Map<string, ExtractedLink>()
-  for (const link of links) {
-    if (link.kind !== 'internal' && link.kind !== 'wiki') continue
-    // Keyed by kind as well as target: `[[hello]]` and `/posts/hello` may name
-    // the same document, but they resolve differently and collapsing them would
-    // keep whichever the scanner happened to reach first.
-    const key = `${link.kind}:${link.targetKey}`
-    if (!seen.has(key)) seen.set(key, link)
-  }
-  return [...seen.values()]
-}
-
-/**
- * Map a `type/slug` key back to a route. Used by the link checker to render
- * a clickable suggestion.
- */
-export function targetKeyToUrl(targetKey: string): string | null {
-  const [prefix, slug] = targetKey.split('/')
-  if (!prefix || !slug) return null
-  // Keys are built as `${type}s/${slug}` (see `classifyRef`), so the prefix is
-  // the *directory* name — the values of CONTENT_TYPE_DIRS, not its keys.
-  if (!Object.values(CONTENT_TYPE_DIRS).includes(prefix)) return null
-  return `/${prefix}/${encodeURIComponent(slug)}`
 }

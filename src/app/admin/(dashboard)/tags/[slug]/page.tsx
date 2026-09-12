@@ -6,6 +6,7 @@ import { requireUser } from '@/lib/auth/session'
 import { getAdminTag, listAdminTags } from '@/lib/admin/queries'
 import { documentsWithTag } from '@/lib/admin/tags'
 import { segmentForType } from '@/lib/admin/routes'
+import { safeTagColor } from '@/lib/utils/tag-color'
 import { InlineNote, Page, Section, Stat, StatCell, StatRow } from '@/components/admin/page'
 import { StatusBadge } from '@/components/admin/status-badge'
 import { TagOperations } from '@/components/admin/tag-operations'
@@ -49,6 +50,13 @@ export default async function TagPage({ params }: { params: Promise<{ slug: stri
     }))
 
   const drafts = documents.length - tag.publishedCount
+
+  // The column is shown as stored below, because an admin page that hides what
+  // is actually in the database cannot be used to diagnose it. What is rendered
+  // as a colour is the validated value: `tag.color` is interpolated into a
+  // `style` attribute, and a value written by a direct SQL import never passed
+  // the validator. `safeTagColor` is the same guard the public site's dot uses.
+  const color = safeTagColor(tag.color)
 
   return (
     <Page
@@ -185,9 +193,14 @@ export default async function TagPage({ params }: { params: Promise<{ slug: stri
                 <span
                   aria-hidden="true"
                   className="inline-block size-3 rounded-full"
-                  style={{ backgroundColor: tag.color }}
+                  style={color ? { backgroundColor: color } : undefined}
                 />
                 <span className="font-mono text-xs">{tag.color}</span>
+                {color ? null : (
+                  <span className="text-ink-subtle">
+                    Not a hex colour, so the site derives one from the slug instead.
+                  </span>
+                )}
               </span>
             ) : (
               <span className="text-ink-subtle">No colour set; the site derives one from the slug.</span>

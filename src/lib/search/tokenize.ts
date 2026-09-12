@@ -17,7 +17,6 @@
  */
 
 /** Ranges covering CJK ideographs, kana and hangul. */
-const CJK_CHAR = /[㐀-䶿一-鿿豈-﫿぀-ヿ가-힯]/
 const CJK_RUN = /[㐀-䶿一-鿿豈-﫿぀-ヿ가-힯]+/g
 const LATIN_RUN = /[A-Za-z0-9][A-Za-z0-9'’_-]*/g
 
@@ -139,11 +138,6 @@ export function queryGroups(text: string): string[][] {
   return tokenize(text).map((token) =>
     token.term === token.stem ? [token.term] : [token.term, token.stem],
   )
-}
-
-/** True when the string contains any CJK character. */
-export function hasCJK(text: string): boolean {
-  return CJK_CHAR.test(text)
 }
 
 /* -------------------------------------------------------------------------- */

@@ -13,7 +13,6 @@ import {
   importDocument,
   sweepOrphanTempFiles,
   updateDocument,
-  writeDocument,
   writeRawDocument,
 } from '@/lib/content/writer'
 
@@ -110,53 +109,6 @@ describe('createDocument', () => {
       }),
     ).rejects.toThrow(/separator/)
   })
-})
-
-describe('writeDocument', () => {
-  it('returns the previous contents so a revision can be recorded', async () => {
-    const slug = uniqueSlug()
-    const created = await createDocument({
-      type: 'post',
-      slug,
-      data: { title: 'v1' },
-      body: 'First.\n',
-    })
-    documents.push(created.absolutePath)
-
-    const second = await writeDocument({
-      relativePath: created.relativePath,
-      data: { title: 'v2' },
-      body: 'Second.\n',
-    })
-
-    expect(second.previousContent).toContain('title: "v1"')
-    expect(second.previousContent).toContain('First.')
-    expect(second.created).toBe(false)
-    expect(second.checksum).not.toBe(created.checksum)
-
-    const onDisk = await fs.readFile(created.absolutePath, 'utf8')
-    expect(onDisk).toContain('Second.')
-    expect(onDisk).not.toContain('First.')
-  })
-
-  it('reports the same checksum when the bytes are unchanged', async () => {
-    const slug = uniqueSlug()
-    const created = await createDocument({
-      type: 'post',
-      slug,
-      data: { title: 'Stable' },
-      body: 'Same.\n',
-    })
-    documents.push(created.absolutePath)
-
-    const again = await writeDocument({
-      relativePath: created.relativePath,
-      data: { title: 'Stable' },
-      body: 'Same.\n',
-    })
-
-    expect(again.checksum).toBe(created.checksum)
-  })
 
   it('leaves no temporary file behind after a successful write', async () => {
     const slug = uniqueSlug()
@@ -172,68 +124,6 @@ describe('writeDocument', () => {
       name.startsWith(`posts_${slug}`),
     )
     expect(leftovers).toEqual([])
-  })
-
-  it('writes after the working directories are cleared underneath it', async () => {
-    // A content root can be emptied while a server is running: an operator
-    // clearing it, a deploy mounting an empty volume, a harness rebuilding it
-    // between runs. The directories a write needs are created by that write,
-    // not remembered as created once per process — otherwise the first save
-    // after the clear fails with ENOENT on a temp file whose directory is gone,
-    // and the admin is told the server hit an unexpected error.
-    const slug = uniqueSlug()
-    const created = await createDocument({
-      type: 'post',
-      slug,
-      data: { title: 'Survivor' },
-      body: 'First version.\n',
-    })
-    documents.push(created.absolutePath)
-
-    await fs.rm(TMP_DIR, { recursive: true, force: true })
-
-    const rewritten = await writeDocument({
-      relativePath: created.relativePath,
-      data: { title: 'Survivor' },
-      body: 'Second version.\n',
-    })
-
-    expect(rewritten.previousContent).toContain('First version.')
-    expect(await fs.readFile(created.absolutePath, 'utf8')).toContain('Second version.')
-  })
-
-  it('does not damage the file when the new content cannot be serialised', async () => {
-    const slug = uniqueSlug()
-    const created = await createDocument({
-      type: 'post',
-      slug,
-      data: { title: 'Safe' },
-      body: 'Untouched.\n',
-    })
-    documents.push(created.absolutePath)
-
-    // A value that blows up when it is read. This stands in for any failure
-    // between "start writing" and "rename into place": whatever goes wrong, the
-    // rename must not happen.
-    const unrepresentable: Record<string, unknown> = {}
-    Object.defineProperty(unrepresentable, 'title', {
-      enumerable: true,
-      get() {
-        throw new TypeError('cannot be represented')
-      },
-    })
-
-    await expect(
-      writeDocument({
-        relativePath: created.relativePath,
-        data: unrepresentable,
-        body: 'Should never land.\n',
-      }),
-    ).rejects.toBeInstanceOf(ContentWriteError)
-
-    const onDisk = await fs.readFile(created.absolutePath, 'utf8')
-    expect(onDisk).toContain('Untouched.')
-    expect(onDisk).not.toContain('Should never land.')
   })
 })
 
@@ -256,11 +146,10 @@ describe('locking', () => {
     )
 
     await expect(
-      writeDocument({
-        relativePath: created.relativePath,
+      updateDocument(created.relativePath, () => ({
         data: { title: 'Racer' },
         body: 'Should never land.\n',
-      }),
+      })),
     ).rejects.toBeInstanceOf(ContentLockError)
 
     const onDisk = await fs.readFile(created.absolutePath, 'utf8')
@@ -285,11 +174,10 @@ describe('locking', () => {
     const old = new Date(Date.now() - 60_000)
     await fs.utimes(file, old, old)
 
-    const result = await writeDocument({
-      relativePath: created.relativePath,
+    const result = await updateDocument(created.relativePath, () => ({
       data: { title: 'Recovered' },
       body: 'New contents.\n',
-    })
+    }))
 
     expect(result.previousContent).toContain('Original.')
     expect(await fs.readFile(created.absolutePath, 'utf8')).toContain('New contents.')
@@ -325,6 +213,109 @@ describe('locking', () => {
 })
 
 describe('updateDocument', () => {
+  it('returns the previous contents so a revision can be recorded', async () => {
+    const slug = uniqueSlug()
+    const created = await createDocument({
+      type: 'post',
+      slug,
+      data: { title: 'v1' },
+      body: 'First.\n',
+    })
+    documents.push(created.absolutePath)
+
+    const second = await updateDocument(created.relativePath, () => ({
+      data: { title: 'v2' },
+      body: 'Second.\n',
+    }))
+
+    expect(second.previousContent).toContain('title: "v1"')
+    expect(second.previousContent).toContain('First.')
+    expect(second.created).toBe(false)
+    expect(second.checksum).not.toBe(created.checksum)
+
+    const onDisk = await fs.readFile(created.absolutePath, 'utf8')
+    expect(onDisk).toContain('Second.')
+    expect(onDisk).not.toContain('First.')
+  })
+
+  it('reports the same checksum when the bytes are unchanged', async () => {
+    const slug = uniqueSlug()
+    const created = await createDocument({
+      type: 'post',
+      slug,
+      data: { title: 'Stable' },
+      body: 'Same.\n',
+    })
+    documents.push(created.absolutePath)
+
+    const again = await updateDocument(created.relativePath, () => ({
+      data: { title: 'Stable' },
+      body: 'Same.\n',
+    }))
+
+    expect(again.checksum).toBe(created.checksum)
+  })
+
+  it('writes after the working directories are cleared underneath it', async () => {
+    // A content root can be emptied while a server is running: an operator
+    // clearing it, a deploy mounting an empty volume, a harness rebuilding it
+    // between runs. The directories a write needs are created by that write,
+    // not remembered as created once per process — otherwise the first save
+    // after the clear fails with ENOENT on a temp file whose directory is gone,
+    // and the admin is told the server hit an unexpected error.
+    const slug = uniqueSlug()
+    const created = await createDocument({
+      type: 'post',
+      slug,
+      data: { title: 'Survivor' },
+      body: 'First version.\n',
+    })
+    documents.push(created.absolutePath)
+
+    await fs.rm(TMP_DIR, { recursive: true, force: true })
+
+    const rewritten = await updateDocument(created.relativePath, () => ({
+      data: { title: 'Survivor' },
+      body: 'Second version.\n',
+    }))
+
+    expect(rewritten.previousContent).toContain('First version.')
+    expect(await fs.readFile(created.absolutePath, 'utf8')).toContain('Second version.')
+  })
+
+  it('does not damage the file when the new content cannot be serialised', async () => {
+    const slug = uniqueSlug()
+    const created = await createDocument({
+      type: 'post',
+      slug,
+      data: { title: 'Safe' },
+      body: 'Untouched.\n',
+    })
+    documents.push(created.absolutePath)
+
+    // A value that blows up when it is read. This stands in for any failure
+    // between "start writing" and "rename into place": whatever goes wrong, the
+    // rename must not happen.
+    const unrepresentable: Record<string, unknown> = {}
+    Object.defineProperty(unrepresentable, 'title', {
+      enumerable: true,
+      get() {
+        throw new TypeError('cannot be represented')
+      },
+    })
+
+    await expect(
+      updateDocument(created.relativePath, () => ({
+        data: unrepresentable,
+        body: 'Should never land.\n',
+      })),
+    ).rejects.toBeInstanceOf(ContentWriteError)
+
+    const onDisk = await fs.readFile(created.absolutePath, 'utf8')
+    expect(onDisk).toContain('Untouched.')
+    expect(onDisk).not.toContain('Should never land.')
+  })
+
   it('hands the callback the freshly read document, not a cached one', async () => {
     const slug = uniqueSlug()
     const created = await createDocument({
@@ -426,6 +417,32 @@ describe('writeRawDocument and importDocument', () => {
 
     await writeRawDocument(created.relativePath, raw)
     expect(await fs.readFile(created.absolutePath, 'utf8')).toBe(raw)
+  })
+
+  it('reports a failed write as a write error, and names no path in it', async () => {
+    const slug = uniqueSlug('raw-failure')
+    const relativePath = `posts/${slug}.md`
+    // A directory where the document should be. Reading it back is some other
+    // failure than "no such file", so the write cannot start — and what comes
+    // out has to be a `ContentWriteError`, because that is the one class the
+    // admin's guard renders as "Writing X failed. The original file was not
+    // modified." Anything else reaches the operator as "the server hit an
+    // unexpected error", which tells them nothing about their article.
+    const directory = documentPath(relativePath)
+    await fs.mkdir(directory, { recursive: true })
+
+    const failure = await writeRawDocument(relativePath, 'never written\n').catch(
+      (error: unknown) => error,
+    )
+
+    expect(failure).toBeInstanceOf(ContentWriteError)
+    // The message is what the browser is given, as the failure's second line.
+    // The cause it was built from names both absolute paths in the rename, and
+    // the admin is not shown those.
+    expect((failure as ContentWriteError).relativePath).toBe(relativePath)
+    expect((failure as ContentWriteError).message).not.toContain(CONTENT_ROOT)
+
+    await fs.rm(directory, { recursive: true, force: true })
   })
 
   it('imports without touching the original bytes', async () => {

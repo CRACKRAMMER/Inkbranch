@@ -11,11 +11,8 @@ import {
   sanitizeFilename,
   toPosix,
 } from '@/lib/security/paths'
-import {
-  isSafeHexColor,
-  sanitizeSvg,
-  sniffMime,
-} from '@/lib/security/mime'
+import { sanitizeSvg, sniffMime } from '@/lib/security/mime'
+import { safeTagColor } from '@/lib/utils/tag-color'
 import {
   isValidSlug,
   slugFromFilename,
@@ -23,11 +20,7 @@ import {
   tagSlug,
   uniqueSlug,
 } from '@/lib/utils/slug'
-import {
-  containsCJK,
-  stripMarkdown,
-  textStats,
-} from '@/lib/utils/text'
+import { stripMarkdown, textStats } from '@/lib/utils/text'
 
 /**
  * The boundary between "input from the admin" and "the filesystem and the
@@ -733,20 +726,19 @@ describe('sanitizeSvg', () => {
   })
 })
 
-describe('isSafeHexColor', () => {
-  it('accepts the three hex lengths, in either case', () => {
+describe('safeTagColor', () => {
+  it('accepts the four hex lengths, in either case', () => {
     for (const value of ['#fff', '#FFF', '#0f172a', '#0F172A', '#0f172a80', '#ABCDEF12']) {
-      expect(isSafeHexColor(value)).toBe(true)
+      expect(safeTagColor(value)).toBe(value)
     }
   })
 
-  it('rejects a colour that is not a hex colour', () => {
+  it('refuses a colour that is not a hex colour', () => {
     for (const value of [
       'red',
       'rgb(1, 2, 3)',
       'hsl(0 0% 0%)',
       'fff',
-      '#ffff',
       '#fffff',
       '#fffffff',
       '#1234567',
@@ -754,23 +746,32 @@ describe('isSafeHexColor', () => {
       '',
       '#',
     ]) {
-      expect(isSafeHexColor(value)).toBe(false)
+      expect(safeTagColor(value)).toBeNull()
     }
   })
 
-  it('rejects a value that tries to break out of the CSS declaration', () => {
+  it('refuses a value that tries to break out of the CSS declaration', () => {
     // Tag colours are interpolated into a style attribute, so a trailing `;`
     // or `}` would let a stored value add its own declarations.
     for (const value of ['#fff;', '#fff;}', '#fff!important', 'expression(alert(1))', 'url(x)']) {
-      expect(isSafeHexColor(value)).toBe(false)
+      expect(safeTagColor(value)).toBeNull()
     }
   })
 
-  it('rejects surrounding whitespace, including a trailing newline', () => {
-    expect(isSafeHexColor(' #fff')).toBe(false)
-    expect(isSafeHexColor('#fff ')).toBe(false)
-    expect(isSafeHexColor('#fff\n')).toBe(false)
-    expect(isSafeHexColor('#fff;background:url(https://evil.test/x)')).toBe(false)
+  it('returns the value it tested, so padding cannot smuggle anything past the check', () => {
+    // The trimmed string is both what the pattern sees and what the caller
+    // interpolates, which is what makes trimming safe rather than a bypass: a
+    // padded hex comes back as the hex, and a padded injection comes back as
+    // nothing at all.
+    expect(safeTagColor(' #fff')).toBe('#fff')
+    expect(safeTagColor('#fff\n')).toBe('#fff')
+    expect(safeTagColor('#fff;background:url(https://evil.test/x)')).toBeNull()
+  })
+
+  it('answers null for a tag with no colour', () => {
+    expect(safeTagColor(null)).toBeNull()
+    expect(safeTagColor(undefined)).toBeNull()
+    expect(safeTagColor('')).toBeNull()
   })
 })
 
@@ -980,32 +981,6 @@ describe('textStats', () => {
   it('reports no words and a minimum of one minute for an empty document', () => {
     expect(textStats('')).toEqual({ words: 0, cjkChars: 0, latinWords: 0, readingTime: 1 })
     expect(textStats('   \n\n  ').readingTime).toBe(1)
-  })
-})
-
-describe('containsCJK', () => {
-  it('detects CJK, kana and Hangul', () => {
-    expect(containsCJK('中文')).toBe(true)
-    expect(containsCJK('あ')).toBe(true)
-    expect(containsCJK('한')).toBe(true)
-    expect(containsCJK('mixed 中文 text')).toBe(true)
-  })
-
-  it('returns false for text without any CJK', () => {
-    expect(containsCJK('hello world')).toBe(false)
-    expect(containsCJK('Café — naïve!')).toBe(false)
-    expect(containsCJK('')).toBe(false)
-  })
-
-  it('gives the same answer however often it is called', () => {
-    // A /g regex used with .test() carries lastIndex between calls and would
-    // start alternating answers; this must not become one of those.
-    expect([containsCJK('中文'), containsCJK('中文'), containsCJK('中文')]).toEqual([
-      true,
-      true,
-      true,
-    ])
-    expect([containsCJK('hi'), containsCJK('hi')]).toEqual([false, false])
   })
 })
 

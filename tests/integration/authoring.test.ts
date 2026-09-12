@@ -12,6 +12,7 @@ import {
   storeAsset,
 } from '@/lib/assets/storage'
 import { loadEditorDocument } from '@/lib/admin/documents'
+import { serializeFrontmatter } from '@/lib/content/frontmatter'
 import { listContent } from '@/lib/content/queries'
 import { readDocument } from '@/lib/content/reader'
 import { removeFromIndex, syncOneDocument } from '@/lib/content/sync'
@@ -21,7 +22,6 @@ import {
   ensureContentDirectories,
   sweepOrphanTempFiles,
   updateDocument,
-  writeDocument,
 } from '@/lib/content/writer'
 import { db } from '@/lib/db'
 import { assets, contentIndex } from '@/lib/db/schema'
@@ -250,11 +250,10 @@ describe.skipIf(!hasTestDatabase)('authoring lifecycle', () => {
       const escape = path.resolve(testContentRoot, '..', 'escaped-by-a-test.md')
 
       await expect(
-        writeDocument({
-          relativePath: '../escaped-by-a-test.md',
+        updateDocument('../escaped-by-a-test.md', () => ({
           data: frontmatter(),
           body: 'outside\n',
-        }),
+        })),
       ).rejects.toBeInstanceOf(PathSecurityError)
 
       await expect(fs.readFile(escape, 'utf8')).rejects.toMatchObject({
@@ -576,16 +575,29 @@ describe.skipIf(!hasTestDatabase)('authoring lifecycle', () => {
    * each other on disk.
    */
   describe('a document the index has not seen', () => {
-    /** Write a document and leave the index alone — the state a hand-added file is in. */
+    /**
+     * Write a document and leave the index alone — the state a hand-added file
+     * is in.
+     *
+     * Written with `fs` rather than through a writer on purpose. Two reasons,
+     * and the first is the load-bearing one: this is the file an editor outside
+     * the admin, a `git pull` or a `cp` put there, and the state under test is
+     * precisely that no application code has touched it — a save brings an index
+     * row along with it. The second is the path: one case below names the file
+     * something other than its slug, and `createDocument`, the only door that
+     * makes a new file, builds its path from a validated type and slug.
+     */
     async function writeUnindexed(
       relativePath: string,
       data: Record<string, unknown>,
     ): Promise<void> {
-      await writeDocument({
-        relativePath,
-        data,
-        body: 'A body written straight to the disk.\n',
-      })
+      const absolutePath = path.join(testContentRoot, relativePath)
+      await fs.mkdir(path.dirname(absolutePath), { recursive: true })
+      await fs.writeFile(
+        absolutePath,
+        serializeFrontmatter(data, 'A body written straight to the disk.\n'),
+        'utf8',
+      )
       created.push(relativePath)
     }
 
