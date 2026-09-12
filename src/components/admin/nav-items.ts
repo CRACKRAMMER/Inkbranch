@@ -1,8 +1,12 @@
 /**
- * The admin's navigation, in one place because three surfaces render it: the
- * desktop sidebar, the mobile sheet, and the dashboard's own link cards.
+ * The admin's navigation, in one place because everything that lists it reads it
+ * here: `NavList` renders it twice — once as the desktop sidebar and once as the
+ * mobile sheet — and `currentLabel` walks it to name the page the operator is
+ * on. The dashboard's cards are deliberately not built from this list: they
+ * point at individual documents and at anchors inside System, neither of which a
+ * navigation entry describes.
  *
- * `matches` exists because several pages own a subtree (`/admin/posts/new`,
+ * `isCurrent` exists because several pages own a subtree (`/admin/posts/new`,
  * `/admin/posts/<slug>/edit`), and an item that is current only on its exact
  * path is a navigation that lies about where you are.
  */
