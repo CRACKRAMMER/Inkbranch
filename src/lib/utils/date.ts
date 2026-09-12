@@ -17,7 +17,7 @@
  * showing it as the 10th because the server runs in UTC is simply wrong.
  */
 
-export type DateStyle = 'long' | 'medium' | 'short' | 'day'
+export type DateStyle = 'long' | 'medium' | 'short' | 'day' | 'month'
 
 const STYLE_OPTIONS: Record<DateStyle, Intl.DateTimeFormatOptions> = {
   /** 11 September 2026 */
@@ -28,6 +28,8 @@ const STYLE_OPTIONS: Record<DateStyle, Intl.DateTimeFormatOptions> = {
   short: { day: 'numeric', month: 'short' },
   /** 11 */
   day: { day: 'numeric' },
+  /** September — the archive's middle level */
+  month: { month: 'long' },
 }
 
 export interface DateFormatContext {
@@ -75,6 +77,22 @@ export function yearIn(date: Date | string, timeZone: string): string {
   const value = typeof date === 'string' ? new Date(date) : date
   if (Number.isNaN(value.getTime())) return ''
   return new Intl.DateTimeFormat('en', { year: 'numeric', timeZone }).format(value)
+}
+
+/**
+ * The two-digit month an instant falls in, in the site's time zone.
+ *
+ * A sort key rather than a label, and `en` for the same reason `yearIn` uses it:
+ * "09" compares and groups the same way whatever the site's locale renders a
+ * month as. The label comes from `formatDate(…, 'month')` on a date that is
+ * genuinely in the month, so no synthetic `Date` has to be built for it — which
+ * matters, because a date constructed at the first of the month in UTC is the
+ * last of the previous month for every reader west of Greenwich.
+ */
+export function monthIn(date: Date | string, timeZone: string): string {
+  const value = typeof date === 'string' ? new Date(date) : date
+  if (Number.isNaN(value.getTime())) return ''
+  return new Intl.DateTimeFormat('en', { month: '2-digit', timeZone }).format(value)
 }
 
 const RELATIVE_UNITS: { unit: Intl.RelativeTimeFormatUnit; seconds: number }[] = [

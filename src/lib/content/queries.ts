@@ -506,20 +506,16 @@ export const getTag = cache(async (slug: string): Promise<TagWithCount | null> =
 /*  Archive                                                                    */
 /* -------------------------------------------------------------------------- */
 
-export interface ArchiveGroup {
-  /** Four-digit year, or the empty string for undated documents. */
-  year: string
-  items: ContentSummary[]
-}
-
 /**
- * Everything published, grouped by year, newest first.
+ * Everything published, newest first.
  *
- * Undated documents are grouped under an empty year and placed last: they are a
- * real category (a note can legitimately have no date) and dropping them would
- * make the archive quietly incomplete.
+ * Flat, and grouped by the caller rather than here. Which year and which month
+ * a document belongs to is a question about the site's time zone, and what a
+ * month is called is a question about its locale — neither of which this layer
+ * has. `groupByYearAndMonth` in `@/lib/content/archive` takes the ordered list
+ * and the site's context and does both.
  */
-export async function listArchive(type?: ContentType): Promise<ArchiveGroup[]> {
+export async function listArchive(type?: ContentType): Promise<ContentSummary[]> {
   const conditions = [visibleFilter()]
   if (type) conditions.push(eq(contentIndex.type, type))
 
@@ -529,23 +525,7 @@ export async function listArchive(type?: ContentType): Promise<ArchiveGroup[]> {
     .where(and(...conditions))
     .orderBy(sql`${effectiveDate()} DESC NULLS LAST`, desc(contentIndex.updatedAt))
 
-  const summaries = await withTags(rows)
-
-  const groups = new Map<string, ContentSummary[]>()
-  for (const item of summaries) {
-    const year = item.publishedAt ? String(item.publishedAt.getUTCFullYear()) : ''
-    const list = groups.get(year)
-    if (list) list.push(item)
-    else groups.set(year, [item])
-  }
-
-  return [...groups.entries()]
-    .map(([year, items]) => ({ year, items }))
-    .sort((a, b) => {
-      if (a.year === '') return 1
-      if (b.year === '') return -1
-      return b.year.localeCompare(a.year)
-    })
+  return withTags(rows)
 }
 
 /* -------------------------------------------------------------------------- */
