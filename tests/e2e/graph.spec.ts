@@ -48,13 +48,13 @@ test.skip(
  * exists only if the link table resolved a reference that names a document the
  * writer never had a URL for.
  *
- * It also means the link has to point backwards, and the order below is load
- * bearing: saving a document resolves the links *in that document* against the
- * index as it stands, so a reference to a document nobody has written yet stays
- * unresolved, and nothing revisits it when the target finally appears — not
- * until the next full sync, which is a boot or an import. So the document that
- * is linked *to* is published first, which is also the ordinary direction: a
- * note that follows on from an older one.
+ * It also means the link is published *before* the document it names, which is
+ * the harder order and the one worth driving through a browser. A save resolves
+ * the links in the document being saved against the index as it stands, so this
+ * reference is written as a row with no target — and it becomes an edge only
+ * because the save that follows resolves the links pointing *at* the document it
+ * is saving. That second half is invisible from the unit tests, which call the
+ * sync engine directly; here it is what the browser ends up drawing.
  */
 async function publish(
   page: Page,
@@ -93,15 +93,19 @@ test('the graph draws the documents, their link, and the tag they share', async 
   const alphaLink = (list: Locator) => list.getByRole('link', { name: alpha.title })
   const betaLink = (list: Locator) => list.getByRole('link', { name: beta.title })
 
-  await test.step('publishes a document, then one that links to it, sharing a tag', async () => {
+  await test.step('publishes a document that links forward, then the one it names', async () => {
     await signIn(page)
 
-    await publish(page, { ...alpha, body: 'The first half of the pair.', tag: tagName })
+    // Beta first, naming a document that does not exist yet. This is the order
+    // an author writes in — the note that follows on from something before the
+    // something is finished — and the one that used to leave the graph without
+    // an edge.
     await publish(page, {
       ...beta,
       body: `The second half, following on from [[${alpha.slug}]].`,
       tag: tagName,
     })
+    await publish(page, { ...alpha, body: 'The first half of the pair.', tag: tagName })
   })
 
   await test.step('waits for the index the page is drawn from to catch up', async () => {
@@ -148,7 +152,9 @@ test('the graph draws the documents, their link, and the tag they share', async 
     // One connection each, and that is the interesting half: only beta has a
     // link written in it, so a figure of 1 beside alpha is the backlink being
     // counted — which is what makes this a graph of the two rather than of the
-    // one. The tag is carried by both, and is as big as that. These are the
+    // one. Alpha was published last, so its figure is the whole of what this
+    // spec is here to prove: the link was written before there was anything to
+    // point at. The tag is carried by both, and is as big as that. These are the
     // figures the drawn graph sizes its nodes by, read where a reader can check
     // them by counting.
     await expect(degreeOf(list, alpha.title)).toHaveText('1')

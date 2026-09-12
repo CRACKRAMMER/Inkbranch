@@ -1,4 +1,4 @@
-import { and, count, eq, inArray, or, sql } from 'drizzle-orm'
+import { and, count, eq, inArray, isNull, or, sql } from 'drizzle-orm'
 import { env } from '@/env'
 import { db } from '@/lib/db'
 import {
@@ -178,6 +178,7 @@ export async function syncContent(options: SyncOptions = {}): Promise<SyncReport
   // Anything indexed but no longer on disk.
   const missing = existing.filter((row) => !seenPaths.has(row.path))
   if (missing.length > 0) {
+    await markIncomingUnresolved(missing.map((row) => row.id))
     await db.delete(contentIndex).where(
       inArray(
         contentIndex.id,
@@ -319,8 +320,9 @@ export async function syncOneDocument(
   const files = await scanContentFiles()
   const file = files.find((f) => f.relativePath === relativePath)
   if (!file) {
-    // The file is gone; drop the row.
-    await db.delete(contentIndex).where(eq(contentIndex.path, relativePath))
+    // The file is gone; drop the row, and leave the links that pointed at it
+    // looking as broken as they now are.
+    await removeFromIndex(relativePath)
     return null
   }
 
@@ -351,6 +353,9 @@ export async function syncOneDocument(
 
   await syncTags([{ document, row }])
   await syncLinks([{ document, row }])
+  // The links *in* the document are settled above, against an index that now
+  // contains it. This settles the links *at* it.
+  await resolveIncomingLinks(row)
 
   return { row, document }
 }
@@ -365,8 +370,34 @@ export async function removeFromIndex(relativePath: string): Promise<void> {
 
   if (!row) return
 
-  // content_tags and content_links cascade from content_index.
-  await db.delete(contentIndex).where(eq(contentIndex.id, row.id))
+  await removeIndexRow(row.id)
+}
+
+/**
+ * Drop one index row and everything derived from it.
+ *
+ * `content_tags` and `content_links` cascade from `content_index`. The one
+ * thing the cascade does not do is keep `content_links.resolved` honest: the
+ * foreign key nulls `target_id`, but `resolved` is a column of its own, so a
+ * link that pointed at the document that just vanished would go on being
+ * reported as fine by `pnpm content:links` — the command that exists to catch
+ * exactly that — and nothing else would notice.
+ *
+ * Every delete goes through here, and the rows are flipped before the delete
+ * because afterwards they are indistinguishable from rows that never resolved.
+ */
+async function removeIndexRow(id: string): Promise<void> {
+  await markIncomingUnresolved([id])
+  await db.delete(contentIndex).where(eq(contentIndex.id, id))
+}
+
+/** Mark the links pointing at these documents as pointing at nothing. */
+async function markIncomingUnresolved(ids: string[]): Promise<void> {
+  if (ids.length === 0) return
+  await db
+    .update(contentLinks)
+    .set({ resolved: false })
+    .where(inArray(contentLinks.targetId, ids))
 }
 
 /* -------------------------------------------------------------------------- */
@@ -536,17 +567,7 @@ async function syncLinks(
       if (seen.has(dedupe)) continue
       seen.add(dedupe)
 
-      // A wiki target may name its type or may be a bare slug, and only this
-      // layer has the index needed to settle a bare one — hence the lookup
-      // rather than a direct `get`.
-      const targetId =
-        link.kind === 'internal'
-          ? (targetIdByKey.get(link.targetKey) ?? null)
-          : link.kind === 'wiki'
-            ? (wikiTargetCandidates(link.targetKey)
-                .map((key) => targetIdByKey.get(key))
-                .find((id) => id !== undefined) ?? null)
-            : null
+      const targetId = resolveLinkTarget(link, targetIdByKey)
 
       // Only these two kinds have a target to resolve. Images point at assets
       // and anchors at a heading in the same document, so neither can be
@@ -582,6 +603,141 @@ async function syncLinks(
   }
 
   return { resolved, broken }
+}
+
+/**
+ * Which document a link points at, given the index.
+ *
+ * One expression, used from both directions: when a document is saved it
+ * settles the links *in* that document, and when a document appears it settles
+ * the links *at* it (`resolveIncomingLinks`). They have to agree. When two
+ * predicates disagreed, a broken wiki link was counted as broken and stored as
+ * resolved, and the backlink graph claimed a target that did not exist.
+ *
+ * A wiki target may name its type or may be a bare slug, and only this layer
+ * has the index needed to settle a bare one — hence the lookup rather than a
+ * direct `get`.
+ */
+function resolveLinkTarget(
+  link: { kind: ExtractedLinkKind; targetKey: string },
+  targetIdByKey: Map<string, string>,
+): string | null {
+  if (link.kind === 'internal') return targetIdByKey.get(link.targetKey) ?? null
+  if (link.kind !== 'wiki') return null
+  return (
+    wikiTargetCandidates(link.targetKey)
+      .map((key) => targetIdByKey.get(key))
+      .find((id) => id !== undefined) ?? null
+  )
+}
+
+/** A document's path without its Markdown extension. */
+function pathStem(path: string): string {
+  return path.replace(/\.(md|markdown)$/i, '')
+}
+
+/**
+ * The `content_links.target_key` strings that could be naming this document.
+ *
+ * The two spellings `resolveTargetKeys` registers for a row — the `type/slug`
+ * an internal link is written as, and the path without its extension — plus the
+ * bare slug on its own, which is how wiki links are usually written and which
+ * the resolver reads as a candidate list rather than as a key.
+ *
+ * Both halves of each spelling are emitted because a directory-qualified link
+ * and a bare one are different strings in the column, and an index can only be
+ * asked for strings.
+ */
+function incomingKeys(row: Pick<ContentRow, 'type' | 'slug' | 'path'>): string[] {
+  const dir = CONTENT_TYPE_DIRS[row.type]
+  const stem = pathStem(row.path)
+  const tails = new Set([
+    row.slug,
+    stem.startsWith(`${dir}/`) ? stem.slice(dir.length + 1) : stem,
+  ])
+
+  const keys = new Set<string>()
+  for (const tail of tails) {
+    keys.add(`${dir}/${tail}`)
+    keys.add(tail)
+  }
+  return [...keys]
+}
+
+/**
+ * Resolve the links that were written before their target existed.
+ *
+ * A save resolves the links *in* the document being saved against the index as
+ * it stands, which keeps the cost of a save proportional to that one document —
+ * but it means a `[[reference]]` to a document nobody has written yet stays
+ * unresolved, and nothing revisits it when the target finally appears. Only the
+ * next full sync (a boot with `CONTENT_SYNC_ON_BOOT=1`, or an import) turned it
+ * into an edge, which is the wrong half of the workflow for a wiki-style
+ * corpus: writing the link first is how people write.
+ *
+ * The lookup is the reverse of the one above, and it uses
+ * `content_links_target_key_idx`: find the unresolved rows whose spelling could
+ * name this document, then keep the ones this document *wins*, by asking
+ * `resolveLinkTarget` — the same function the save path uses, so the two
+ * directions cannot drift apart. A row that already names a document is never
+ * revisited: this fills nulls, it does not re-decide.
+ *
+ * What it cannot do is see a document that has not been indexed yet. A bare
+ * `[[slug]]` that two types both claim is settled by "first candidate that
+ * exists", and this resolves against the index as it stands, exactly as a save
+ * does — so if the losing document is indexed first, it is the winner, and the
+ * later arrival does not take the row back. That is the same ambiguity
+ * `wikiTargetCandidates` declines to guess at, and the same one
+ * `pnpm content:links` reports; it is not a new one.
+ *
+ * The rows are selected on a null `target_id` rather than on `resolved`: a
+ * deletion nulls the column through its foreign key and leaves `resolved`
+ * behind, and such a row is unresolved in fact and should be picked up if the
+ * document comes back.
+ *
+ * Only the document being saved triggers this, so an import that writes a
+ * corpus in arbitrary order resolves its own cross-references as it goes.
+ */
+async function resolveIncomingLinks(
+  row: Pick<ContentRow, 'id' | 'type' | 'slug' | 'path'>,
+): Promise<void> {
+  const keys = incomingKeys(row)
+  if (keys.length === 0) return
+
+  const pending = await db
+    .select({
+      id: contentLinks.id,
+      kind: contentLinks.kind,
+      targetKey: contentLinks.targetKey,
+    })
+    .from(contentLinks)
+    .where(
+      and(
+        isNull(contentLinks.targetId),
+        inArray(contentLinks.kind, ['internal', 'wiki']),
+        inArray(contentLinks.targetKey, keys),
+      ),
+    )
+
+  if (pending.length === 0) return
+
+  const wanted = new Set<string>()
+  for (const link of pending) {
+    if (link.kind === 'internal') wanted.add(link.targetKey)
+    else for (const key of wikiTargetCandidates(link.targetKey)) wanted.add(key)
+  }
+  const targetIdByKey = await resolveTargetKeys([...wanted])
+
+  const winners = pending
+    .filter((link) => resolveLinkTarget(link, targetIdByKey) === row.id)
+    .map((link) => link.id)
+
+  if (winners.length === 0) return
+
+  await db
+    .update(contentLinks)
+    .set({ targetId: row.id, resolved: true })
+    .where(inArray(contentLinks.id, winners))
 }
 
 /**
@@ -636,8 +792,10 @@ async function resolveTargetKeys(keys: string[]): Promise<Map<string, string>> {
     const prefix = CONTENT_TYPE_DIRS[type]
     for (const row of rows) {
       result.set(`${prefix}/${row.slug}`, row.id)
-      // The filename key, without its extension — how a wiki link names it.
-      result.set(row.path.replace(/\.(md|markdown)$/i, ''), row.id)
+      // The filename key — how a wiki link names it. The same helper builds the
+      // keys `resolveIncomingLinks` searches for, so the two agree by
+      // construction rather than by review.
+      result.set(pathStem(row.path), row.id)
     }
   }
 

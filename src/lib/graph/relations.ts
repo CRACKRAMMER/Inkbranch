@@ -192,11 +192,11 @@ async function buildRelationsIndex(): Promise<RelationsIndex> {
       .orderBy(contentIndex.id)
       .limit(env.CONTENT_MAX_FILES),
 
-    // `target_id is not null` is the filter, not `resolved`: the sync engine
-    // marks every non-internal kind resolved regardless of whether it found a
-    // target, so a wiki link that resolved to nothing is `resolved = true` with
-    // a null `target_id`. The target being non-null is what "links to a
-    // document" actually means.
+    // `target_id is not null` is the filter, not `resolved`. The two agree for
+    // the kinds that have a target to find, but `resolved` is `true` for the
+    // kinds that have none — an image reference or an anchor — so filtering on
+    // it would offer this pass an edge to a null end. The target being non-null
+    // is what "links to a document" actually means.
     db
       .select({
         sourceId: contentLinks.sourceId,

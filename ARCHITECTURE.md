@@ -145,7 +145,7 @@ Postgres. The floor is 13, and it is set by `gen_random_uuid()`, which is the ne
 | `content_revisions` | Gzipped full snapshots + stats. | `content_id`, `revision_no`, `snapshot` (bytea, gzip), `additions`, `deletions`, `author_id`, `summary` |
 | `tags` | Canonical tag records. | `slug` (unique), `name`, `description`, `color` |
 | `content_tags` | Many-to-many. | `content_id`, `tag_id` |
-| `content_links` | Resolved internal links + image refs. Drives backlinks and "unused asset". | `source_id`, `kind` (`internal`\|`image`\|`anchor`), `target_slug`, `target_id`, `label` |
+| `content_links` | Resolved internal links + image refs. Drives backlinks and "unused asset". | `source_id`, `kind` (`internal`\|`wiki`\|`image`\|`anchor`), `target_key`, `target_id`, `label` |
 | `assets` | Uploaded media metadata. | `url`, `mime`, `size`, `width`, `height`, `blur_data_url`, `sha256`, `storage` |
 | `redirects` | Legacy URL → new URL. Handles the Ghost migration. | `from_path` (unique), `to_path`, `status_code`, `enabled`, `hits` |
 | `site_settings` | Single-row typed settings. | identity, SEO, analytics, features, git, appearance |
@@ -220,6 +220,8 @@ Triggers:
 - `pnpm content:sync` (full, verbose)
 - On app boot — a **lightweight** pass that only stats mtimes (no hashing) and runs the full sync in the background if anything moved.
 - After every admin save (targeted, single document).
+
+A targeted save resolves the links *in* the document against the index as it stands, which is what keeps a save proportional to one document. The links *at* it are resolved in the same pass, from the other side: the document's candidate keys are looked up against `content_links.target_key` (`content_links_target_key_idx`) and any unresolved row whose spelling this document wins — decided by the same predicate the save path uses — is filled in. So a `[[reference]]` written before its target existed becomes an edge when the target is saved, not at the next full sync.
 
 The scan is bounded: `CONTENT_MAX_FILES` (default 5000) guards against a mis-mounted volume turning boot into a filesystem walk of `/`.
 
@@ -372,7 +374,7 @@ The palette (`Cmd/Ctrl+K`) queries `/api/search` (debounced, `AbortController`-c
 
 Three independent mechanisms, no AI involved.
 
-1. **Backlinks** — `content_links` rows with `kind = 'internal'` pointing at a resolved `target_id`. Reverse lookup gives "Referenced by".
+1. **Backlinks** — `content_links` rows with a non-null `target_id`, from a Markdown link or a `[[wiki]]` one. Reverse lookup gives "Referenced by".
 2. **Related content** — a weighted score over shared tags (Jaccard), same category, shared internal links, and title-keyword overlap. Computed at request time from `content_index` + tag sets; results are cached per slug.
 3. **Knowledge graph** — nodes are documents and tags; edges are `content_tags` plus `content_links`. Serialized to a compact `{nodes, edges}` payload, fetched only when `/graph` mounts, rendered on canvas with a small hand-written force layout.
 

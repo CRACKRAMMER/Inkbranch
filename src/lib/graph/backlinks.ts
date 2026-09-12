@@ -26,9 +26,12 @@ import { compareStable, isVisible } from './model'
  *
  * ## Unresolved links are not backlinks
  *
- * `target_id` is the filter, not `resolved`: the sync engine marks a wiki link
- * `resolved = true` whenever the link is not internal, whether or not it found a
- * target. A row whose `target_id` equals this document is a row that found it.
+ * `target_id` is the filter, not `resolved`. For the two kinds that have a
+ * target to find, the two columns agree — a link is stored resolved exactly
+ * when it found one — but `resolved` is `true` for the kinds that have none: an
+ * image reference or an anchor is not resolved or unresolved, it is simply not
+ * a link between documents. A row whose `target_id` equals this document is a
+ * row that found it.
  */
 
 /** A single distinct reference from one document to another. */

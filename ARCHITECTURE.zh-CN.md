@@ -138,7 +138,7 @@ Postgres。版本下限是 13，这个下限由 `gen_random_uuid()` 决定 —�
 | `content_revisions` | gzip 压缩的完整快照 + 统计。 | `content_id`、`revision_no`、`snapshot`（bytea，gzip）、`additions`、`deletions`、`author_id`、`summary` |
 | `tags` | 规范化的标签记录。 | `slug`（唯一）、`name`、`description`、`color` |
 | `content_tags` | 多对多。 | `content_id`、`tag_id` |
-| `content_links` | 已解析的内部链接 + 图片引用。驱动反向链接与"未被使用的资源"。 | `source_id`、`kind`（`internal`\|`image`\|`anchor`）、`target_slug`、`target_id`、`label` |
+| `content_links` | 已解析的内部链接 + 图片引用。驱动反向链接与"未被使用的资源"。 | `source_id`、`kind`（`internal`\|`wiki`\|`image`\|`anchor`）、`target_key`、`target_id`、`label` |
 | `assets` | 上传媒体的元数据。 | `url`、`mime`、`size`、`width`、`height`、`blur_data_url`、`sha256`、`storage` |
 | `redirects` | 旧 URL → 新 URL。用于处理 Ghost 迁移。 | `from_path`（唯一）、`to_path`、`status_code`、`enabled`、`hits` |
 | `site_settings` | 单行、类型化的设置。 | 身份信息、SEO、分析、功能开关、git、外观 |
@@ -213,6 +213,12 @@ scan content/**.md
 - `pnpm content:sync`（完整、verbose）
 - 应用启动时 —— 一次**轻量**扫描，只 stat mtime（不做哈希），如果发现有东西动过，就在后台跑完整同步。
 - 每次后台保存之后（定向的、单篇文档）。
+
+定向保存会解析**这篇文档里**的链接，用的是当时的索引 —— 一次保存的代价因此与一篇文档成正比。
+指向这篇文档的链接在同一次保存里从另一头解析：拿这篇文档的候选键去反查
+`content_links.target_key`（走 `content_links_target_key_idx`），命中且判给这篇文档的未解析行
+就补上，判定用的是保存路径同一个判定函数。于是"目标还没写就先写下"的 `[[引用]]` 会在目标被
+保存时成为一条边，而不是等到下一次全量同步。
 
 扫描是有边界的：`CONTENT_MAX_FILES`（默认 5000）防止一个挂错的卷把启动变成对 `/` 的文件系统遍历。
 
@@ -329,7 +335,7 @@ interface SearchProvider {
 
 三套彼此独立的机制，不涉及 AI。
 
-1. **反向链接** —— `content_links` 中 `kind = 'internal'` 且指向已解析 `target_id` 的行。反向查找就得到"被引用"。
+1. **反向链接** —— `content_links` 中 `target_id` 非空的行，来自 Markdown 链接或 `[[wiki]]` 链接。反向查找就得到"被引用"。
 2. **相关内容** —— 对共享标签（Jaccard）、同分类、共享内部链接和标题关键词重合度加权打分。在请求时从 `content_index` + 标签集合计算；结果按 slug 缓存。
 3. **知识图谱** —— 节点是文档和标签；边是 `content_tags` 加上 `content_links`。序列化成一个紧凑的 `{nodes, edges}` payload，只在 `/graph` 挂载时抓取，用一小段手写的力导向布局渲染到 canvas 上。
 
