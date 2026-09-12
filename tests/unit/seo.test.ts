@@ -876,6 +876,37 @@ describe('isPublic', () => {
     expect(isPublic(doc({ publishedAt: null }), now)).toBe(false)
   })
 
+  it('is live all day on the day a published document is dated', () => {
+    // The schema anchors a bare `date:` to noon UTC so that no formatter shows
+    // the previous day. Held against a clock, that anchor put a document dated
+    // *today* up to twelve hours into the future — which is how a post that was
+    // on the site and in every list stayed out of the sitemap and the feeds
+    // until 20:00 in this site's own timezone, every day.
+    const today = doc({ publishedAt: new Date('2026-09-12T12:00:00.000Z') })
+
+    // Before noon UTC, and before the anchor itself: the day has still begun.
+    expect(isPublic(today, new Date('2026-09-12T00:00:00.000Z'))).toBe(true)
+    expect(isPublic(today, new Date('2026-09-12T11:59:59.000Z'))).toBe(true)
+    expect(isPublic(today, new Date('2026-09-12T23:59:59.000Z'))).toBe(true)
+
+    // But not before the day it is dated has begun: the guard against a
+    // document dated ahead of its publication survives, at day resolution.
+    expect(isPublic(today, new Date('2026-09-11T23:59:59.000Z'))).toBe(false)
+    expect(isPublic(today, new Date('2026-09-11T12:00:00.000Z'))).toBe(false)
+  })
+
+  it('fires a schedule at the moment it names, not at the start of that day', () => {
+    // The counterpart of the test above: `publishAt` is a moment an author
+    // chose, so it is not rounded down to the day it falls in.
+    const later = doc({
+      status: 'scheduled',
+      scheduledAt: new Date('2026-09-12T12:00:00.000Z'),
+    })
+
+    expect(isPublic(later, new Date('2026-09-12T11:59:59.000Z'))).toBe(false)
+    expect(isPublic(later, new Date('2026-09-12T12:00:00.000Z'))).toBe(true)
+  })
+
   it('goes live on a schedule whose moment has passed, as the site lists do', () => {
     // The worker normally flips the row to `published`; until it runs, the post
     // is served and listed, so it belongs in the sitemap and the feed too.

@@ -190,6 +190,27 @@ export function effectivePublishedAt(doc: SeoDocument): Date | undefined {
 }
 
 /**
+ * Whether the calendar day a date names has begun, in UTC.
+ *
+ * A bare `date:` in frontmatter is anchored to UTC **noon** by the schema, and
+ * that anchor is a device for *rendering*: a written day has no timezone, and
+ * noon keeps it from sliding onto the previous day under a formatter set to
+ * some other zone. It is the wrong thing to hold a clock against. Compared as
+ * an instant, a document dated today is up to twelve hours ahead of now, so a
+ * gate built on that comparison hides every document dated today from the
+ * sitemap and the feeds until noon UTC — a post that is on the site, in every
+ * list and in the search index, invisible to crawlers and subscribers for half
+ * of every day.
+ *
+ * So a published document is gated by the *day* it is dated, not by the anchor
+ * instant: dated today is live today, at any hour. A document dated further
+ * ahead is still held back, which is the part of the date test worth keeping.
+ */
+function dayHasBegun(at: Date, now: Date): boolean {
+  return Date.UTC(at.getUTCFullYear(), at.getUTCMonth(), at.getUTCDate()) <= now.getTime()
+}
+
+/**
  * True when a document may be listed publicly: live now, and not opted out.
  *
  * This is the site's definition of public, and it is deliberately the same
@@ -203,7 +224,13 @@ export function effectivePublishedAt(doc: SeoDocument): Date | undefined {
  *
  * `status` is optional on the structural type, so an absent one resolves the way
  * the frontmatter schema resolves it: a dated file is published, an undated one
- * is a draft. The date test is what keeps a document dated in the future out.
+ * is a draft.
+ *
+ * The two statuses are gated at different resolutions, and the difference is
+ * the point. A *published* document carries a date, so it is gated by the day
+ * (see `dayHasBegun`). A *scheduled* one carries the moment its author chose,
+ * and a schedule that fired up to a day early would not be a schedule — so
+ * `publishAt` is compared as the instant it is.
  */
 export function isPublic(doc: SeoDocument, now: Date = new Date()): boolean {
   if (resolveSeoFields(doc).noindex) return false
@@ -213,7 +240,11 @@ export function isPublic(doc: SeoDocument, now: Date = new Date()): boolean {
   if (status !== 'published' && status !== 'scheduled') return false
 
   const liveAt = effectivePublishedAt(doc)
-  return liveAt !== undefined && liveAt.getTime() <= now.getTime()
+  if (liveAt === undefined) return false
+
+  return status === 'scheduled'
+    ? liveAt.getTime() <= now.getTime()
+    : dayHasBegun(liveAt, now)
 }
 
 /* -------------------------------------------------------------------------- */
