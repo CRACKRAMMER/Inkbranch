@@ -7,7 +7,7 @@ import { afterAll, describe, expect, it } from 'vitest'
 import { hasTestDatabase } from '../setup'
 
 import { UPLOAD_ROOT, assetFilePaths, storeAsset } from '@/lib/assets/storage'
-import { documentImages, renderDocument } from '@/lib/content/render'
+import { describeImage, documentImages, renderDocument } from '@/lib/content/render'
 import { renderMarkdown } from '@/lib/markdown/renderer'
 import { db } from '@/lib/db'
 import { assets } from '@/lib/db/schema'
@@ -196,5 +196,47 @@ describe.skipIf(!hasTestDatabase)('a document and its images', () => {
     // lazy-load: the layout is known before a byte of it arrives.
     expect(html).toContain(`width="${asset.width}"`)
     expect(html).toContain(`height="${asset.height}"`)
+  })
+
+  /*
+   * A cover is an image reference in frontmatter rather than in the body, so
+   * the scanner above never sees it — the page resolves it on its own. These
+   * pin the one property that makes that safe: the answer is the same one the
+   * body's images get. A second resolution path that agreed with the first
+   * about the size and disagreed about the formats would be a cover offering a
+   * URL that was never written, which is a broken image rather than a heavier
+   * one.
+   */
+  it('describes a cover exactly as it would describe the same image in a body', async () => {
+    const { asset } = await store(await noisyPng(403, 303))
+
+    const cover = await describeImage(asset.url)
+    const inBody = (await documentImages(`![A noisy fixture](${asset.url})\n`)).get(asset.url)
+
+    // `toEqual` rather than a field-by-field comparison: the claim is that the
+    // two paths agree about *everything*, so a field added to `DocumentImage`
+    // later has to show up in both or this fails.
+    expect(cover).toEqual(inBody)
+    expect(cover?.width).toBe(asset.width)
+  })
+
+  it('resolves a cover written with the legacy prefix', async () => {
+    const { asset } = await store(await noisyPng(404, 304))
+
+    // The same spelling the scanner accepts on the way in, and which the two
+    // prompts in the frontmatter schema both have to keep accepting — an author
+    // who set a cover before the route moved must not lose it.
+    expect(await describeImage(`uploads/${asset.path}`)).toEqual(
+      await describeImage(asset.url),
+    )
+  })
+
+  it('says nothing about a cover that is not ours', async () => {
+    // Null is the whole answer, and the pages render the URL as written on it.
+    expect(await describeImage('https://example.com/hero.png')).toBeNull()
+    expect(await describeImage(`/uploads/ff/ff/${'0'.repeat(64)}.png`)).toBeNull()
+    expect(await describeImage(null)).toBeNull()
+    expect(await describeImage(undefined)).toBeNull()
+    expect(await describeImage('')).toBeNull()
   })
 })

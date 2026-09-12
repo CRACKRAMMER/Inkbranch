@@ -35,6 +35,17 @@ export interface DocumentViewProps {
   html: string
   /** Rendered by the caller, inside the header, under the metadata line. */
   headerExtra?: React.ReactNode
+  /**
+   * Rendered by the caller, between the header and the prose.
+   *
+   * A slot rather than the `cover` URL itself, because rendering it needs the
+   * asset row — its intrinsic size and the other formats it was stored in — and
+   * that is a database read. This component is a server component, so it *could*
+   * make the call, but every other component here takes what it draws as props
+   * and leaves the fetching to the page. `CoverImage` is what the caller puts
+   * here.
+   */
+  cover?: React.ReactNode
   related: RelatedPost[]
   backlinks: Backlink[]
   adjacent: { newer: ContentSummary | null; older: ContentSummary | null }
@@ -47,6 +58,7 @@ export function DocumentView({
   doc,
   html,
   headerExtra,
+  cover,
   related,
   backlinks,
   adjacent,
@@ -137,6 +149,8 @@ export function DocumentView({
 
           {headerExtra}
         </header>
+
+        {cover}
 
         <ArticleBody html={html} contentKey={doc.checksum} />
 

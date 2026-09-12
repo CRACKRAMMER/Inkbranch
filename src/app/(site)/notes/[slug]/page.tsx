@@ -1,10 +1,11 @@
 import type { Metadata } from 'next'
 import { notFound } from 'next/navigation'
 
+import { CoverImage } from '@/components/content/cover-image'
 import { DocumentFacts, DocumentView } from '@/components/content/document-view'
 import { getContent, getAdjacent } from '@/lib/content/queries'
 import { readDocument } from '@/lib/content/reader'
-import { renderDocument } from '@/lib/content/render'
+import { describeImage, renderDocument } from '@/lib/content/render'
 import { getBacklinks } from '@/lib/graph/backlinks'
 import { getRelatedPosts } from '@/lib/graph/related'
 import {
@@ -50,12 +51,13 @@ export default async function NotePage({
   const doc = await getContent('note', slug)
   if (!doc) notFound()
 
-  const [file, related, backlinks, adjacent, settings] = await Promise.all([
+  const [file, related, backlinks, adjacent, settings, cover] = await Promise.all([
     readDocument(doc.path),
     getRelatedPosts(doc.id, { limit: 5 }),
     getBacklinks(doc.id),
     getAdjacent('note', doc.publishedAt, doc.slug),
     getSettings(),
+    describeImage(doc.cover),
   ])
 
   if (!file) notFound()
@@ -92,6 +94,7 @@ export default async function NotePage({
         adjacent={adjacent}
         settings={settings}
         section="/notes"
+        cover={doc.cover ? <CoverImage href={doc.cover} image={cover} /> : null}
         headerExtra={
           <DocumentFacts
             facts={[

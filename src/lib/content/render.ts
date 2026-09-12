@@ -9,7 +9,7 @@ import { assets } from '@/lib/db/schema'
 import type { DocumentImage, ImageSource } from '@/lib/markdown/rehype-enhance'
 import { renderMarkdown, type RenderOptions, type RenderResult } from '@/lib/markdown/renderer'
 
-import { extractLinks } from './links'
+import { extractLinks, normalizeImageKey } from './links'
 
 /**
  * Rendering a document's body, with its images described.
@@ -92,6 +92,48 @@ export async function documentImages(body: string): Promise<Map<string, Document
     if (written) written.push(link.href)
     else spellings.set(link.targetKey, [link.href])
   }
+
+  return describe(spellings)
+}
+
+/**
+ * One image the site stores, described from the URL as it was written.
+ *
+ * A document's cover is an image reference that is not in its body, so
+ * `documentImages` cannot find it — but it is the same kind of reference,
+ * resolved by the same `normalizeImageKey` and answered by the same row. Left
+ * to its own path it would be a bare `<img>`: no intrinsic size, so the page
+ * shifts as it loads, and no offer of the formats the asset is also stored in,
+ * so a browser downloads a PNG where it could have had an AVIF. Two behaviours
+ * for one idea is how the two drift.
+ *
+ * Null for anything not stored here — an external URL, or a path that does not
+ * resolve under the upload root. The caller renders those exactly as written,
+ * which is the right outcome for both.
+ */
+export async function describeImage(
+  href: string | null | undefined,
+): Promise<DocumentImage | null> {
+  if (!href) return null
+
+  const key = normalizeImageKey(href, env.UPLOAD_URL_PREFIX)
+  if (!key) return null
+
+  const described = await describe(new Map([[key, [href]]]))
+  return described.get(href) ?? null
+}
+
+/**
+ * The database half: storage paths in, descriptions out, keyed by every
+ * spelling the caller supplied.
+ *
+ * Split out because the two callers above disagree about where the references
+ * come from — a scanned body, or one frontmatter field — and agree about
+ * everything after that.
+ */
+async function describe(
+  spellings: Map<string, string[]>,
+): Promise<Map<string, DocumentImage>> {
   if (spellings.size === 0) return new Map()
 
   const rows = await db
