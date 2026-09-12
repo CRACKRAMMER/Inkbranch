@@ -11,7 +11,6 @@ import {
   createDocument,
   deleteDocument,
   importDocument,
-  renameDocument,
   sweepOrphanTempFiles,
   updateDocument,
   writeDocument,
@@ -378,58 +377,6 @@ describe('updateDocument', () => {
     expect(parsed.data.customField).toBe('kept')
     expect(parsed.data.another).toBe(42)
     expect(parsed.data.title).toBe('Renamed')
-  })
-})
-
-describe('renameDocument', () => {
-  it('moves the file and keeps the contents', async () => {
-    const slug = uniqueSlug()
-    const created = await createDocument({
-      type: 'post',
-      slug,
-      data: { title: 'Moving' },
-      body: 'Body.\n',
-    })
-    const target = `posts/${uniqueSlug('moved')}.md`
-    documents.push(documentPath(target))
-
-    const result = await renameDocument(created.relativePath, target)
-    expect(result?.previousContent).toContain('title: "Moving"')
-
-    await expect(fs.stat(created.absolutePath)).rejects.toThrow()
-    expect(await fs.readFile(documentPath(target), 'utf8')).toContain('Body.')
-  })
-
-  it('refuses to clobber the destination', async () => {
-    const source = await createDocument({
-      type: 'post',
-      slug: uniqueSlug('src'),
-      data: { title: 'Source' },
-      body: 'Source body.\n',
-    })
-    const destination = await createDocument({
-      type: 'post',
-      slug: uniqueSlug('dst'),
-      data: { title: 'Destination' },
-      body: 'Destination body.\n',
-    })
-    documents.push(source.absolutePath, destination.absolutePath)
-
-    await expect(
-      renameDocument(source.relativePath, destination.relativePath),
-    ).rejects.toBeInstanceOf(ContentWriteError)
-
-    // Both files survive, and neither has picked up the other's contents.
-    expect(await fs.readFile(source.absolutePath, 'utf8')).toContain('Source body.')
-    expect(await fs.readFile(destination.absolutePath, 'utf8')).toContain('Destination body.')
-  })
-
-  it('returns null for a source that does not exist', async () => {
-    const result = await renameDocument(
-      `posts/${uniqueSlug('ghost')}.md`,
-      `posts/${uniqueSlug('target')}.md`,
-    )
-    expect(result).toBeNull()
   })
 })
 

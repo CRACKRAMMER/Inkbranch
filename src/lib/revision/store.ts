@@ -132,14 +132,21 @@ export class RevisionCompareError extends RevisionError {
 /*  Policy                                                                     */
 /* -------------------------------------------------------------------------- */
 
-/** Why a revision was recorded. */
+/**
+ * Why a revision was recorded.
+ *
+ * There is no `rename`: a slug change is a frontmatter change, not a file
+ * rename — see `checkSlug` in the content actions for why the file stays where
+ * it is — so nothing in this application reaches a rename path. The value and
+ * the writer function it was written for are both gone rather than left as a
+ * branch the type says is reachable.
+ */
 export type RevisionReason =
   | 'autosave'
   | 'save'
   | 'publish'
   | 'restore'
   | 'import'
-  | 'rename'
 
 /**
  * Autosaves kept per document. An autosave every couple of seconds while
@@ -172,7 +179,7 @@ const captureSchema = z.object({
   data: z.record(z.string(), z.unknown()),
   body: z.string(),
   previousContent: z.string().nullable(),
-  reason: z.enum(['autosave', 'save', 'publish', 'restore', 'import', 'rename']),
+  reason: z.enum(['autosave', 'save', 'publish', 'restore', 'import']),
   actorId: z.uuid().nullish(),
 })
 
@@ -252,20 +259,17 @@ export async function captureRevision(
     const written = serializeFrontmatter(request.data, request.body)
     const diff = diffLines(snapshotText, written)
 
-    const snapshotFacts = readSnapshotFacts(snapshotText)
+    const oldTitle = readSnapshotFacts(snapshotText).title
     const newTitle = asText(request.data.title)
-    const newSlug = asText(request.data.slug)
     const title = clamp(
-      snapshotFacts.title || newTitle || humanizeFilename(`${request.slug}.md`),
+      oldTitle || newTitle || humanizeFilename(`${request.slug}.md`),
       300,
     )
     const summary = clamp(
       buildSummary({
         reason: request.reason,
-        oldTitle: snapshotFacts.title,
+        oldTitle,
         newTitle,
-        oldSlug: snapshotFacts.slug,
-        newSlug,
         additions: diff.stats.additions,
         deletions: diff.stats.deletions,
       }),
@@ -650,6 +654,11 @@ function failedCapture(
  * What the snapshot says about itself: the title it carries and the slug it
  * declares. Both are labels — a snapshot whose YAML no longer parses is still a
  * complete file, and it is not worth losing the whole revision over a name.
+ *
+ * The title is a label for the list; the slug is not. `restoreRevision` compares
+ * it against the document's current slug and refuses when they differ, which is
+ * the guard that stops a stale revision from putting one document's contents
+ * under another's name.
  */
 function readSnapshotFacts(content: string): { title: string; slug: string } {
   try {
@@ -664,8 +673,6 @@ function buildSummary(input: {
   reason: RevisionReason
   oldTitle: string
   newTitle: string
-  oldSlug: string
-  newSlug: string
   additions: number
   deletions: number
 }): string {
@@ -682,10 +689,6 @@ function buildSummary(input: {
       return 'Before restore'
     case 'publish':
       return 'Published'
-    case 'rename':
-      return input.oldSlug && input.newSlug && input.oldSlug !== input.newSlug
-        ? `Renamed from ${input.oldSlug}`
-        : 'Renamed'
     case 'save':
       if (input.oldTitle && input.newTitle && input.oldTitle !== input.newTitle) {
         return 'Changed title'

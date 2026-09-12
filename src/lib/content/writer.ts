@@ -381,56 +381,6 @@ export async function createDocument(
 }
 
 /**
- * Rename a document's file, e.g. when its slug changes.
- * Returns null when the source does not exist.
- */
-export async function renameDocument(
-  fromRelativePath: string,
-  toRelativePath: string,
-): Promise<{ from: string; to: string; previousContent: string } | null> {
-  const from = toPosix(fromRelativePath)
-  const to = toPosix(toRelativePath)
-  if (from === to) return null
-
-  const fromAbsolute = documentPath(from)
-  const toAbsolute = documentPath(to)
-
-  await ensureContentDirectories()
-
-  // Lock both endpoints in a stable order so two concurrent renames that cross
-  // cannot deadlock.
-  const [first, second] = [from, to].sort()
-  const lockA = await acquireLock(first as string)
-  const lockB = second === first ? null : await acquireLock(second as string)
-
-  try {
-    const previousContent = await fs.readFile(fromAbsolute, 'utf8').catch((error) => {
-      if (isNotFound(error)) return null
-      throw error
-    })
-    if (previousContent === null) return null
-
-    if (await fs.stat(toAbsolute).then(() => true).catch(() => false)) {
-      throw new ContentWriteError(
-        `Cannot rename to ${to}: a file already exists there`,
-        to,
-      )
-    }
-
-    await fs.rename(fromAbsolute, toAbsolute)
-    await fsyncDirectory(path.dirname(toAbsolute))
-
-    invalidateContentCache(from)
-    invalidateContentCache(to)
-
-    return { from, to, previousContent }
-  } finally {
-    await lockB?.release()
-    await lockA.release()
-  }
-}
-
-/**
  * Delete a document's file.
  *
  * Returns the removed contents so the caller can store a final revision — a
