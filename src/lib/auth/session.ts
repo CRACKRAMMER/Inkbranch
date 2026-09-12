@@ -176,12 +176,13 @@ function csrfCookieName(): string {
 export const LOGIN_PATH = '/admin/login'
 
 /**
- * Require a signed-in user, or redirect to the login page.
+ * Require a signed-in session, or redirect to the login page.
  *
- * Every admin page and layout calls this. It is the backstop that keeps a new
- * page from shipping unprotected because someone forgot a check.
+ * For the rare page that needs to know *which* session is asking and not only
+ * who — the settings page, which marks the row for the device in hand and
+ * spares it from the sign-out buttons. Everything else wants `requireUser`.
  */
-export async function requireUser(returnTo?: string): Promise<User> {
+export async function requireSession(returnTo?: string): Promise<ResolvedSession> {
   const session = await getCurrentSession()
   if (!session) {
     const target = returnTo
@@ -189,7 +190,17 @@ export async function requireUser(returnTo?: string): Promise<User> {
       : LOGIN_PATH
     redirect(target)
   }
-  return session.user
+  return session
+}
+
+/**
+ * Require a signed-in user, or redirect to the login page.
+ *
+ * Every admin page and layout calls this. It is the backstop that keeps a new
+ * page from shipping unprotected because someone forgot a check.
+ */
+export async function requireUser(returnTo?: string): Promise<User> {
+  return (await requireSession(returnTo)).user
 }
 
 /** Require the `owner` role. Editors can write content but not administer. */

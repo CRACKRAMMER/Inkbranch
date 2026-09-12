@@ -816,6 +816,57 @@ is a claim that nothing can go wrong" 的 note，两者并不是同一个字符�
 服务器要响应头，因为"配置读到了但没生效"是单元测试看不见的另一半。回归数字：lint 干净、typecheck
 干净、1070 单元、1202 集成、42 e2e。
 
+**再补一条，仍是查证时发现的：设备列表这块屏幕被三处注释描述过，而它并不存在。**
+`sessions.ip_hash` 的列注释写它"只用于设置页的会话列表"，于是每次登录都写、没有任何读者；
+`destroyOtherSessions` 的文档写它的调用者是"设置里的会话列表"，导出而无人调用；`sessions` 表
+自己的文档把"所有者可以审计的会话列表"列为把会话放进数据库的三个理由之一。三句话描述的是同一件
+东西，而它没有实现——一个没人用的导出与一个能用的导出在类型检查面前长得一样。同一条路上还删掉
+一个反方向的假函数：`destroyAllUserSessions` 的注释写着 "Called on password change"，既没有调用
+者，也**不该**有——改密码那条路靠的是 `session_version` 比较（`src/lib/auth/account.ts`），一次
+delete 是同一个问题的第二个答案，而且只能跑在那个事务外面；留着它，下一位读者会以为凭证退役这
+件事有两处在管。
+
+修法分三层。其一是读：`listUserSessions` 返回投影而不是 `Session`，被省掉的正是 `token_hash` 与
+`csrf_token_hash`——**一个带不出凭证的类型，比"某个调用方没有读它"强**，列表页于是既不可能渲染
+它，也不可能把它序列化进客户端 props。其二是写：`revokeSession(userId, sessionId)` 把归属判断与
+删除写成同一条语句（`where user_id = ? and id = ?`），没有"先查后删"的窗口，也没有下一位编辑可以
+顺手删掉的那句 `if (row.userId !== userId)`——会话 id 从浏览器回来，是这一功能里唯一由攻击者选择
+的输入，归属检查因此不能是一个可以被遗漏的步骤。它返回的 `false` 同时覆盖"不是你的"和"已经没了"：
+区分这两者等于回答一个调用者无权问的问题（某个不属于它的 id 是否存在），而对按钮前的人来说两者
+是同一件事——没有可登出的东西了。其三是显示：`lastSeenAt` 是**派生**的，`touchSession` 把
+`idle_expires_at` 写成"那一刻 + 空闲窗口"，减回去就是那一刻，精度受 15 分钟的
+`IDLE_TOUCH_INTERVAL_MS` 限制，从未被 touch 的会话派生成 `createdAt`；设备名由
+`src/lib/utils/device.ts` 从 UA 读出来，四条陷阱（Edge 与 Opera 都自称 `Chrome/`、iOS 上的 Chrome
+是 `CriOS/` 而所有 iOS 浏览器都自称 `Safari/`、iPhone 与 iPad 自称 `like Mac OS X`、Android 自称
+`Linux`）决定匹配必须从最具体开始；它明确不参与任何安全判断，认不出来就说 "Unrecognised device"，
+因为一个自称什么都不是的客户端本来就该得到这个答案。
+
+两个 action 里各有一个决定值得记下来。**没有限流**：限流器是用来挡猜的，这里没有可猜的东西
+（uuid 本来就是调用者自己的，两个操作幂等、且只作用于自己账户），一个桶只会用来拒绝"以为有人
+进了自己账户、正在把设备踢下线"的所有者——那是最不该回答"尝试次数过多"的时刻。**审计时会话 id
+放在 `targetId` 而不是 metadata**：`SECRET_WORDS` 里有 `session` 这个词，一个叫 `sessionId` 的
+metadata 键会被写成 `[redacted]`，那样日志会安静地丢掉这一行唯一的标识。
+
+验证：`tests/unit/device.test.ts` 6 例全部用真实 header，且主要断言冒名者（Edge 报成 Chrome、
+iPhone 报成 Mac、Android 报成 Linux、Safari 报成一切），因为每一处的错误答案都是**可信的**——只
+断言 "Chrome on Linux" 的测试对四条陷阱全反的实现照样通过；`tests/integration/session-list.test.ts`
+10 例，其中投影那条断言的是**封闭的键表**（多带一个字段就失败）而不是样板检查，`lastSeenAt` 那条
+破坏后读到的正好是 `604800000`——直接拿原始列会得到的那个数；排序那条把 `orderBy` 换成按活跃倒序
+后恰好只有它失败；IDOR 那条确认别人的 id 返回 `false` 且两行都还在。e2e
+`tests/e2e/sessions.spec.ts` 2 例 × 2 项目用真实 iPhone header 造第二台设备，所以行是**按标签**
+挑的而不是按位置——两台 Chromium 的 header 一模一样，按位置挑的断言在"标签根本不起作用"时照样
+通过。
+
+最后记一条实测，因为它是这个 spec 一开始 flaky 的全部原因（16 次里 6 次失败，而失败的那几次产品
+行为完全正确）：**Radix 的模态对话框会把对话框以外的整页标成 `aria-hidden`，而 `getByRole` 读的是
+可访问性树而不是 DOM**，所以"这一行已经不在了"在对话框还开着的时候对**任何**页面都成立——探针
+实测：同一个页面上 `getByRole('row')` 返回 0，而 `tbody tr` 仍然是两行。断言于是在动作还没提交时
+就通过，测试带着"手机还活着"往下走，最后失败在手机那条 URL 断言上，看起来像产品删错了会话。修法
+是把顺序本身变成断言的一部分：先等对话框消失（它只在 action 结束后关闭，所以等它也就是等删除），
+再问那一行。
+
+回归数字：lint 干净、typecheck 干净、1081 单元、1230 集成、50 e2e。
+
 ---
 
 ## 附录：`ARCHITECTURE.md` 的来历

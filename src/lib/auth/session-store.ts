@@ -140,21 +140,101 @@ export async function destroySessionByToken(rawToken: string): Promise<void> {
   await db.delete(sessions).where(eq(sessions.tokenHash, hashToken(rawToken)))
 }
 
-/** Revoke every session for a user. Called on password change. */
-export async function destroyAllUserSessions(userId: string): Promise<number> {
-  const deleted = await db
-    .delete(sessions)
-    .where(eq(sessions.userId, userId))
-    .returning({ id: sessions.id })
-  return deleted.length
+/**
+ * One session, as the settings page is allowed to see it.
+ *
+ * A projection rather than `Session`, and the two fields left out are the
+ * reason: `tokenHash` and `csrfTokenHash` are what makes a row authenticate, and
+ * a type that cannot carry them cannot leak them into a rendered document or a
+ * serialized client prop by accident. Everything the list shows is here and
+ * nothing else is.
+ */
+export interface SessionSummary {
+  id: string
+  userAgent: string | null
+  /** Hashed, never raw — see the `ip_hash` column. */
+  ipHash: string | null
+  createdAt: Date
+  /** The absolute end, whatever the device does. */
+  expiresAt: Date
+  /**
+   * When this device was last seen.
+   *
+   * Derived rather than stored: `touchSession` writes `idle_expires_at` as
+   * "now plus the idle window", so subtracting the window back off gives the
+   * moment of the write. Accurate to within `IDLE_TOUCH_INTERVAL_MS`, since
+   * that is how rarely the write happens — a session used a minute ago and a
+   * session used twenty minutes ago can both read as the same instant, and the
+   * label is read as "recently", which is what it is for.
+   *
+   * A session that has never been touched derives to its `createdAt`, because
+   * that is when its idle window was written.
+   */
+  lastSeenAt: Date
 }
 
-export async function listUserSessions(userId: string): Promise<Session[]> {
-  return db
-    .select()
+/**
+ * The sessions belonging to one user, oldest first.
+ *
+ * Read by the settings page. It is the only caller, which is the point of the
+ * `ip_hash` column: the address itself is never stored, so a session list is the
+ * only thing the hash can ever be shown in.
+ *
+ * Ordered by creation rather than by activity, so the list does not reshuffle
+ * under the cursor of someone about to sign a row out — and tie-broken by id,
+ * because two sessions created in the same millisecond are otherwise in
+ * whatever order the planner returns.
+ */
+export async function listUserSessions(userId: string): Promise<SessionSummary[]> {
+  const rows = await db
+    .select({
+      id: sessions.id,
+      userAgent: sessions.userAgent,
+      ipHash: sessions.ipHash,
+      createdAt: sessions.createdAt,
+      expiresAt: sessions.expiresAt,
+      idleExpiresAt: sessions.idleExpiresAt,
+    })
     .from(sessions)
     .where(eq(sessions.userId, userId))
-    .orderBy(sessions.createdAt)
+    .orderBy(sessions.createdAt, sessions.id)
+
+  return rows.map(({ idleExpiresAt, ...row }) => ({
+    ...row,
+    lastSeenAt: new Date(idleExpiresAt.getTime() - env.SESSION_IDLE_TTL * 1000),
+  }))
+}
+
+/**
+ * Sign one session out, if it is this user's.
+ *
+ * ## Why the user id is part of the delete rather than a check before it
+ *
+ * The session id arrives from the browser, so it is attacker-controlled input:
+ * a request can name any row in the table, including one belonging to somebody
+ * else. Scoping the delete by `user_id` makes the ownership check and the
+ * delete the same statement, so there is no window between deciding and doing —
+ * and no way to write the query without the check, which a separate
+ * `if (row.userId !== userId)` guard permits the next editor to drop.
+ *
+ * `false` covers both "that session is not this user's" and "that session is
+ * already gone", deliberately. Telling them apart would answer a question the
+ * caller has no business asking — the existence of a session id it does not own
+ * — for no gain, since both mean the same thing to the person pressing the
+ * button: there is nothing left to sign out.
+ *
+ * The session making the request is not special-cased. The list does not offer
+ * to sign out the device you are reading it on, but a caller that names it
+ * anyway gets a sign-out the owner can already perform from the header, so
+ * refusing would be a rule with nothing behind it.
+ */
+export async function revokeSession(userId: string, sessionId: string): Promise<boolean> {
+  const deleted = await db
+    .delete(sessions)
+    .where(and(eq(sessions.userId, userId), eq(sessions.id, sessionId)))
+    .returning({ id: sessions.id })
+
+  return deleted.length > 0
 }
 
 /** Drop expired rows. Run by the worker so the table stays small. */
@@ -168,10 +248,33 @@ export async function pruneExpiredSessions(): Promise<number> {
 }
 
 /**
- * Sign out everywhere except the current device.
+ * Sign out everywhere except one session.
  *
- * Used after a password change when the user chose not to sign themselves out,
- * and from the session list in settings.
+ * Called from the session list in settings. The session it keeps is the one
+ * that asked, because the alternative signs the owner out of the page they are
+ * standing on.
+ *
+ * ## Why the password change does not call this
+ *
+ * It used to say that it did. It does not, and it must not: that operation
+ * re-stamps the asking session inside a transaction that also bumps
+ * `users.session_version`, and a delete that ran outside it would be a second
+ * answer to a question only the version comparison can answer correctly. The
+ * two are described against each other in `lib/auth/account.ts`.
+ *
+ * ## Why this does not bump the version either
+ *
+ * They are different claims. A password change says "the credential these
+ * sessions were created with is retired", so a sign-in that read the version
+ * before the change committed and inserted its row after the delete ran must
+ * die too, and only the comparison reaches it. This says "sign out the devices
+ * signed in now". A row the sweep misses is one being inserted as it runs —
+ * `created_at` inside the click, which is a device that has just signed in
+ * rather than a survivor of an old credential — and the owner can sweep again.
+ *
+ * Bumping the version here would also require re-stamping the asking session,
+ * which is the whole password-change dance performed for a revocation that is
+ * not about a credential.
  */
 export async function destroyOtherSessions(
   userId: string,

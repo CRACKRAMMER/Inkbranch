@@ -399,7 +399,7 @@ Keeping the graph off the main bundle is a hard requirement: `/graph` is the onl
 | Area | Control |
 |------|---------|
 | Passwords | Argon2id (`@node-rs/argon2`), per-password salt, tuned memory cost. |
-| Sessions | 32 random bytes, stored **hashed** (SHA-256) in `sessions`. Cookie: `HttpOnly`, `Secure` (production), `SameSite=Lax`, `Path=/`, rotating on login. Absolute + idle expiry. |
+| Sessions | 32 random bytes, stored **hashed** (SHA-256) in `sessions`. Cookie: `HttpOnly`, `Secure` (production), `SameSite=Lax`, `Path=/`, rotating on login. Absolute + idle expiry. Being rows rather than signed cookies is what makes a device list possible: `/admin/settings` reads this account's rows (a projection that cannot carry `token_hash`) and deletes one by id, so revocation takes effect on that device's next request. `ip_hash` is written on every sign-in and read only there. |
 | CSRF | Double-submit token bound to the session, plus `Origin`/`Sec-Fetch-Site` verification on every mutating request. Server Actions get an explicit check in the shared guard. |
 | Rate limiting | Token bucket in Postgres for login (`5 / 15 min / ip_hash`) and uploads. Survives restarts, works across replicas. |
 | Path traversal | Every path is built with `path.resolve` then verified with `isInside(root, p)` using `path.relative` — never string `startsWith`. Applies to content paths, upload paths, and ZIP entries. |
