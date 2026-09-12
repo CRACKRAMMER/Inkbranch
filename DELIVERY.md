@@ -558,19 +558,39 @@ map 时输出**完全一致**）、`tests/integration/content-render.test.ts`（
 实际情况不一致，而不一致的原因指得出来**。测量对象是 Lighthouse 13.4.1、移动端形态、默认的
 `simulate` 节流；被测量的服务是 `scripts/serve-standalone.ts` 起的生产构建（`next start`
 在 `output: 'standalone'` 上会打印一条警告，但它服务这个构建是正确的——它不放松的是应用
-自己的生产姿态，见 `next.config.ts` 里那一段）。在一台空闲的机器上，四类分数的结果是：
-accessibility、best-practices、seo 在每一条路由上都是 100；performance 在列表页、标签页、
-归档页、搜索页是 98–100，在两处最重的文档路由（`/posts/atomic-writes`、`/projects`）落在
-90–95。同一份构建改用 `--throttling-method=devtools`（真实限速、指标是观测值而不是模拟值）
-之后是 **99**，LCP 1716 ms。
+自己的生产姿态，见 `next.config.ts` 里那一段）。在一台空闲的机器上（1 分钟 load 1.4–1.9，
+`vmstat` 的 CPU 空闲率 92–94%），accessibility、best-practices、seo 在每一条路由上都是
+100；performance 则**几乎只跟着页面总重走**，逐条路由测下来是这样（每个数字都是同一份构建、
+同一个已预热的进程，重复次数写在分数里）：
 
-Lighthouse 13 起这个分数要按**边界**读，不能按单次结果读。在最重的那条文档路由上连续跑同一
-份构建、同一个已预热的服务进程，交替得到 95（LCP 2874 ms）与 92（LCP 3363 ms），两次之间
-没有任何代码或资源差异。也就是说这个模型输出的不是一个可比较的测量值，而是一段会随机器负载
-漂移的区间；把它当成回归信号会追到噪声上去。
+| 路由 | 页面总重 | performance | LCP |
+| --- | --- | --- | --- |
+| `/projects`（列表） | 347–348 KB | 98、98、98 | 2413–2416 ms |
+| `/projects/shell-history-viz` | 390–391 KB | 95、95 | 2868–2874 ms |
+| `/projects/wikilink-parser` | 393–394 KB | 93、88 | 2877 ms（一次 3555） |
+| `/projects/transit-lake` | 394 KB | 95、95 | 2869–2871 ms |
+| `/projects/myblog` | 396–398 KB | 94、94 | 2869–2872 ms |
+| `/posts/atomic-writes` | 397–399 KB | 95、95、95、95、90 | 2867–2874 ms（一次 3573） |
+| `/posts/searching-chinese` | 448–449 KB | 91、91 | 3311–3312 ms |
 
-**而这个区间比"抖动几分"宽得多，它的下界是机器的属性，不是页面的属性。**同一条命令、同一份
-构建，机器空闲时是 95 / 95 / 95，机器上另外有进程吃 CPU 时（load average 7 左右，一个游戏与
+从 348 KB 到 449 KB，LCP 从 2.42 s 涨到 3.31 s，约合 **9 ms / KB**——那正是把这一页的字节在
+Slow 4G 上重下一遍的耗时。所以默认模拟器给这个站点的分数，基本就是"整页字节在 Slow 4G 上下载
+一遍"的分数，而不是"这一页何时可读"的分数。顺带纠正一处：站内最重的文档页不是
+`/posts/atomic-writes` 而是 `/posts/searching-chinese`（449 KB）——中文正文每字三字节，一篇以
+中文为主的文章天生比英文的重，而模型只看字节。
+
+同一份构建改用 `--throttling-method=devtools`（真实限速、指标是观测值而不是模拟值）之后，
+`/posts/atomic-writes` 是 **99**、LCP 1662 ms、TBT 50–53 ms，另外三类分数仍是每一条路由 100。
+
+**空闲时这个分数是按路由确定的，不是抖动的。**上表每一行的重复测量都给出同一个数字
+（98、98、98；95、95；94、94；91、91），LCP 的重复差在 10 ms 以内。空闲时想得到第二种结果，
+是**离散地跳到 2.87 s 那一段之外**，而不是连续漂移：`/posts/atomic-writes` 五次里有一次是
+90（LCP 3573 ms）、`/projects/wikilink-parser` 两次里有一次是 88（LCP 3555 ms），而这些次的
+页面总重与其它次一模一样。把它当成回归信号要小心的是另一件事：**同一份构建在机器忙起来的
+时候会整段下移**。
+
+**而机器忙起来时的下移幅度，比"抖动几分"宽得多，它的下界是机器的属性，不是页面的属性。**
+同一条命令、同一份构建，机器空闲时是 95 / 95 / 95，机器上另外有进程吃 CPU 时（load average 7 左右，一个游戏与
 两个 Wine 进程在跑）变成 85 / 89 / 83，LCP 从 2.87 s 涨到 3.72–3.80 s，TBT 从 35–45 ms 涨到
 56–269 ms，而**页面总重一模一样（397–399 KB）**。同一条件下 devtools 那一组也从 99 掉到 90
 （LCP 1716 → 1950 ms）——那一个不是模拟器的毛病：devtools 模式下 TBT 是观测值，那台机器的主
@@ -648,6 +668,15 @@ npx --yes lighthouse@13.4.1 http://127.0.0.1:3200/posts/atomic-writes \
   --output=json --output-path=/tmp/lh.json \
   --chrome-flags="--headless=new --no-sandbox --disable-dev-shm-usage" --quiet
 
+# 2b. 上表用的是这些路由，每条重复两到五次，每次记下当时的 load
+for u in /projects /projects/shell-history-viz /projects/wikilink-parser \
+         /projects/transit-lake /projects/myblog \
+         /posts/atomic-writes /posts/searching-chinese; do
+  npx --yes lighthouse@13.4.1 "http://127.0.0.1:3200$u" \
+    --output=json --output-path="/tmp/lh$(echo $u | tr / _).json" \
+    --chrome-flags="--headless=new --no-sandbox --disable-dev-shm-usage" --quiet
+done
+
 # 3. 换成观测值而不是模拟值的那一半对比
 npx --yes lighthouse@13.4.1 http://127.0.0.1:3200/posts/atomic-writes \
   --throttling-method=devtools \
@@ -660,12 +689,13 @@ URL 写即可。
 
 **功能缺口**
 
-一项：**第三十二节的 Lighthouse performance 目标**。在一台空闲机器上，它在"网络被真正塑形"的
-测量下是达成的（99），但在默认模拟器下，两条最重的文档路由停在 95 的边界上，同一份构建随机器
-负载在 83 与 95 之间漂移（见上）——列表页、标签页、归档页、搜索页则是 98–100（accessibility、
-best-practices、seo 在每一条路由上都是 100）。可走的路只有两条，都在上面写过：换掉
-JetBrains Mono（实测约 +1 分，代价是本节的排版质量），或者接受那个模拟器测的不是这个页面的
-关键路径、并按真实部署的测量来判它。两条都不该由实现者单方面决定，所以这里记成一项目未完成，
+一项：**第三十二节的 Lighthouse performance 目标**。目标写的是 Performance > 95，而在默认
+模拟器下、空闲机器上，本站的**文档路由**测出来是 88–95——没有一条真正越过 95 这条线
+（列表页 `/projects` 是 98，越过了；accessibility、best-practices、seo 在每一条路由上都是
+100）。同一份构建改用 `--throttling-method=devtools`（真实限速、观测值而非模拟值）之后，
+同一条文档路由是 99。可走的路只有两条，都在上面写过：换掉 JetBrains Mono（实测约 +1 分，
+代价是本节的排版质量），或者接受那个模拟器测的不是这个页面的关键路径、并按真实部署的测量来
+判它。两条都不该由实现者单方面决定，所以这里记成一项目未完成，
 而不是算作已完成。**除这一项之外，没有别的未完成项**；下面剩下的是两类被明确接受的东西。
 
 **架构性限制**（属于已知取舍，不是遗漏）
