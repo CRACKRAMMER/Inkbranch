@@ -91,8 +91,8 @@ void run('db:seed', async () => {
     info(style.dim('   Its password was not changed. Use the admin to change it.'))
   } else {
     const passwordHash = await hashPassword(password)
-    await db.insert(users).values({ email, name, passwordHash, role: 'owner' })
-    info(`${style.green('+')} created ${email} (owner)`)
+    await db.insert(users).values({ email, name, passwordHash })
+    info(`${style.green('+')} created ${email}`)
   }
 
   heading('Settings')

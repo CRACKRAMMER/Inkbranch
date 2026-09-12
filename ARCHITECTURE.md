@@ -139,7 +139,7 @@ Postgres. The floor is 13, and it is set by `gen_random_uuid()`, which is the ne
 
 | Table | Purpose | Key columns |
 |-------|---------|-------------|
-| `users` | Admin accounts. No open registration. | `email`, `password_hash` (Argon2id), `role`, `last_login_at` |
+| `users` | Admin accounts. No open registration. | `email`, `password_hash` (Argon2id), `last_login_at` |
 | `sessions` | Server-side sessions. | `token_hash` (SHA-256), `user_id`, `expires_at`, `user_agent`, `ip_hash` |
 | `content_index` | One row per Markdown file. Powers lists, stats, search. | `type`, `slug` (unique w/ type), `path`, `title`, `status`, `published_at`, `updated_at`, `checksum`, `word_count`, `reading_time`, `view_count` |
 | `content_revisions` | Gzipped full snapshots + stats. | `content_id`, `revision_no`, `snapshot` (bytea, gzip), `additions`, `deletions`, `author_id`, `summary` |
@@ -500,5 +500,5 @@ Recorded honestly, because a design document that only lists wins is marketing.
 2. **In-process search index** does not survive to multi-instance deployments. A second replica would either build its own copy (fine, it is cheap) or talk to an external provider.
 3. **Revisions in `bytea`** grow the database. Pruning happens in the write path rather than in a job: a named save trims the document's named revisions to `revisionsMaxPerContent` (50 by default) as soon as the new one is written, and autosaves are trimmed by the store within its own transaction to a larger bound of their own. The bound is therefore per document — deleting a document cascades its history away, and no background task has to run for the database to stay finite.
 4. **Git auto-commit** shells out to `git` and assumes the content directory is already a repository (or inside one) with a configured identity — a container needs git installed for it to do anything. It is off by default, needs two switches to agree, and never pushes. Commits are serialised within one process only; two processes committing at once contend on the index lock and the loser is logged and skipped.
-5. **No multi-author workflow.** Roles exist in the schema (`owner` / `editor`), but there is no review queue or editorial approval step.
+5. **No multi-author workflow.** One administrator account, and authorization is authentication: the only question any route asks is whether the request carries a valid session. There is no role column, no review queue and no editorial approval step.
 6. **Analytics are aggregate-only by design.** No funnels, no sessions, no cohorts — this is a deliberate product boundary, not an unfinished feature.

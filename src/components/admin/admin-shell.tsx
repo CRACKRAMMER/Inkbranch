@@ -26,7 +26,7 @@ export function AdminShell({
   signOut,
   children,
 }: {
-  user: { name: string; email: string; role: string; siteName: string }
+  user: { name: string; email: string; siteName: string }
   signOut: () => Promise<void>
   children: React.ReactNode
 }) {
@@ -138,13 +138,11 @@ function NavList({ pathname, onNavigate }: { pathname: string; onNavigate?: () =
   )
 }
 
-function SignedInAs({ user }: { user: { name: string; email: string; role: string } }) {
+function SignedInAs({ user }: { user: { name: string; email: string } }) {
   return (
     <div className="min-w-0">
       <p className="truncate text-sm text-ink">{user.name}</p>
-      <p className="truncate text-xs text-ink-subtle">
-        {user.email} · {user.role}
-      </p>
+      <p className="truncate text-xs text-ink-subtle">{user.email}</p>
     </div>
   )
 }

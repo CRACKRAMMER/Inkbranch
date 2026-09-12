@@ -38,8 +38,6 @@ export const contentStatusEnum = pgEnum('content_status', [
   'archived',
 ])
 
-export const userRoleEnum = pgEnum('user_role', ['owner', 'editor'])
-
 export const projectStatusEnum = pgEnum('project_status', [
   'active',
   'maintained',
@@ -97,7 +95,6 @@ export const users = pgTable(
     name: varchar('name', { length: 120 }).notNull(),
     /** Argon2id encoded hash — includes salt and parameters. */
     passwordHash: text('password_hash').notNull(),
-    role: userRoleEnum('role').notNull().default('owner'),
     /** Bumped on password change to invalidate every existing session. */
     sessionVersion: integer('session_version').notNull().default(1),
     lastLoginAt: timestamp('last_login_at', { withTimezone: true }),
@@ -801,4 +798,3 @@ export type ContentStatus = (typeof contentStatusEnum.enumValues)[number]
 export type ProjectStatus = (typeof projectStatusEnum.enumValues)[number]
 export type LinkKind = (typeof linkKindEnum.enumValues)[number]
 export type DeviceType = (typeof deviceTypeEnum.enumValues)[number]
-export type UserRole = (typeof userRoleEnum.enumValues)[number]

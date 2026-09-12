@@ -132,7 +132,7 @@ Postgres。版本下限是 13，这个下限由 `gen_random_uuid()` 决定 —�
 
 | 表 | 用途 | 关键列 |
 |-------|---------|-------------|
-| `users` | 管理员账号。不开放注册。 | `email`、`password_hash`（Argon2id）、`role`、`last_login_at` |
+| `users` | 管理员账号。不开放注册。 | `email`、`password_hash`（Argon2id）、`last_login_at` |
 | `sessions` | 服务端会话。 | `token_hash`（SHA-256）、`user_id`、`expires_at`、`user_agent`、`ip_hash` |
 | `content_index` | 每个 Markdown 文件一行。驱动列表、统计与搜索。 | `type`、`slug`（与 type 联合唯一）、`path`、`title`、`status`、`published_at`、`updated_at`、`checksum`、`word_count`、`reading_time`、`view_count` |
 | `content_revisions` | gzip 压缩的完整快照 + 统计。 | `content_id`、`revision_no`、`snapshot`（bytea，gzip）、`additions`、`deletions`、`author_id`、`summary` |
@@ -461,5 +461,5 @@ uploads/               媒体文件（跑 `pnpm dev` 时是 public/uploads/）
 2. **进程内搜索索引**撑不到多实例部署。第二个副本要么自己建一份（没问题，它很便宜），要么去跟外部 provider 说话。
 3. **`bytea` 里的修订**会让数据库增长。清理发生在写入路径而不是任务里：一次具名保存会在新修订写好后立即把该文档的具名修订裁到 `revisionsMaxPerContent`（默认 50），而自动保存则由 store 在自己的事务内裁到一个更大的上限。因此这个上限是按文档计的 —— 删除一篇文档会级联带走它的历史，也不需要任何后台任务运行来让数据库保持有限。
 4. **Git 自动提交**会调用 `git`，并假定内容目录已经是一个仓库（或位于某个仓库内）且配置了身份 —— 容器里得装了 git 它才能做任何事。它默认关闭，需要两个开关一致，且从不 push。提交只在一个进程内串行；两个进程同时提交会在索引锁上争抢，输的那个被记录并跳过。
-5. **没有多作者工作流。** schema 里有角色（`owner` / `editor`），但没有审阅队列或编辑审批环节。
+5. **没有多作者工作流。** 只有一个管理员账号，而且授权就是认证：任何路由问的唯一问题都是"这个请求带没带一个有效的会话"。没有角色列，也没有审阅队列或编辑审批环节。
 6. **分析数据在设计上只有聚合。** 没有漏斗、没有会话、没有人群分群 —— 这是一条刻意的产品边界，不是一个没做完的功能。

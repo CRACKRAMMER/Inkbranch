@@ -42,7 +42,6 @@ export default async function DashboardLayout({ children }: { children: React.Re
       user={{
         name: user.name,
         email: user.email,
-        role: user.role,
         siteName: settings.siteName,
       }}
       signOut={logoutAction}

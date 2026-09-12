@@ -737,7 +737,8 @@ URL 写即可。
     自动保存由存储层在自己的事务里按 `AUTOSAVE_REVISIONS_KEPT` 单独裁剪
     （`src/lib/revision/store.ts`）。裁剪按文档进行，且总在写入之后——删掉文档，修订随之
     级联删除；没有任何 worker 任务参与这一步（`JOB_KINDS` 里没有 revision 相关类型）。
-4. 没有多作者工作流：schema 里有 `owner` / `editor` 角色，但没有评审队列或编辑审批。
+4. 没有多作者工作流：只有一个管理员账号，schema 里也没有角色——`owner` / `editor` 那一列连枚举
+   在 `0002` 迁移里删掉了（理由记在第十节末尾），评审队列与编辑审批同样不存在。
 5. 图片的 `<source>` 列表只有格式协商，没有宽度描述符：一张 4000px 宽的照片在手机上仍然下载
    4000px 的 avif——比原图小，但比该显示宽度该有的小图大。要做得对，得在入库时为若干显示宽度
    各生成一份并写进 `variants`，而那会改变 `variants` 的语义（现在是"同一张图、另一种格式"，
@@ -866,6 +867,33 @@ iPhone 报成 Mac、Android 报成 Linux、Safari 报成一切），因为每一
 再问那一行。
 
 回归数字：lint 干净、typecheck 干净、1081 单元、1230 集成、50 e2e。
+
+**再补一条，仍是查证时发现的：权限系统只装了一半，而剩下的那一半只是后台页脚里的一个词。**
+`users.role`（`owner` / `editor`）从 `0000` 初始迁移就在，`requireOwner` 从安全那次提交就在，两边
+各说了半句话：guard 的注释是现在时的规则——"Editors can write content but not administer"，
+`seed.ts` 写 `role: 'owner'`，`admin-shell.tsx` 把角色渲染在页脚（`email · owner`）。查证结果是
+这条轴**两头都是死的**：没有任何路径能创建 editor（seed 是唯一的写入方，而且只写那个常量），也
+没有任何代码读这一列去**决定**什么——唯一的读者是页脚，而页脚只是显示；`requireOwner` 没有任何
+调用者，它要重定向到的 `/admin?error=insufficient_role` 也没有任何页面读那个参数。
+
+为什么是删而不是接上：`project.md` 里没有角色或多作者的要求，`ARCHITECTURE.md` 第十三条把"没有
+多作者工作流"记成已接受的限制。要"接上"，得先发明一套产品策略——编辑器能进哪些后台页面？内容能
+写，那么设置、任务队列、导入、资源、系统算不算"管理"？那是发明需求，不是补实现。另一种做法是留着
+并披露（`site_settings.googleVerification` 那种"没有读取方"），但那条先例的门槛是**这是用户能编辑
+的旋钮**，删掉会毁掉用户输入；角色列不是旋钮：它没有输入框、只有一个常量，而它唯一的界面是一句
+看起来像权限的名字。
+
+于是整条轴删掉：`userRoleEnum`、`users.role`、`UserRole`、`requireOwner`、页脚里的角色、seed 里的
+`role: 'owner'`。迁移 `0002_flashy_vision.sql` 是这个仓库的第一条**破坏性**迁移（`DROP COLUMN` 加
+`DROP TYPE`）——它在文件里可审，并且在任何人跑 `db:migrate` 之前都不生效。同一次里删掉同一模块
+另外两个"有文档、没有调用方"的导出：`isAuthenticated()`（注释说"True when the request carries a
+valid session"）与 `cookiesAreSecure()`（注释写 "Mirrors the env flag, for docs"，而没有任何文档
+提到它；`isProd` 这个 import 随它一起走）。
+
+验证靠在两处，各承一半：`tsc` 是"没有人读它"的**结构性**证明——删掉列之后每一个读者都必须被逐个
+处理，`requireOwner`、layout、admin-shell、seed 全是编译器点名点出来的，不需要人去 grep；而 e2e 的
+`global-setup.ts` 会重置数据库、再跑真正的 `migrate.ts` 与 `seed.ts`，所以 50 条 e2e 通过就是这条
+迁移在空库上跑通的证据。回归数字：lint 干净、typecheck 干净、1081 单元、1230 集成、50 e2e。
 
 ---
 

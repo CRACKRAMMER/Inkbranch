@@ -1,7 +1,7 @@
 import { cache } from 'react'
 import { cookies, headers } from 'next/headers'
 import { redirect } from 'next/navigation'
-import { env, isProd } from '@/env'
+import { env } from '@/env'
 import type { Session, User } from '@/lib/db/schema'
 import { hashIp } from './tokens'
 import {
@@ -75,11 +75,6 @@ export const getCurrentUser = cache(async (): Promise<User | null> => {
   const session = await getCurrentSession()
   return session?.user ?? null
 })
-
-/** True when the request carries a valid session. */
-export async function isAuthenticated(): Promise<boolean> {
-  return (await getCurrentSession()) !== null
-}
 
 /* -------------------------------------------------------------------------- */
 /*  Cookie plumbing                                                            */
@@ -203,15 +198,6 @@ export async function requireUser(returnTo?: string): Promise<User> {
   return (await requireSession(returnTo)).user
 }
 
-/** Require the `owner` role. Editors can write content but not administer. */
-export async function requireOwner(returnTo?: string): Promise<User> {
-  const user = await requireUser(returnTo)
-  if (user.role !== 'owner') {
-    redirect('/admin?error=insufficient_role')
-  }
-  return user
-}
-
 export interface ActionContext {
   user: User
   session: Session
@@ -236,11 +222,6 @@ export async function requireActionContext(): Promise<ActionContext> {
 
   const request = await getRequestContext()
   return { user: session.user, session: session.session, request }
-}
-
-/** True when cookies should carry `Secure`. Mirrors the env flag, for docs. */
-export function cookiesAreSecure(): boolean {
-  return env.COOKIE_SECURE || isProd
 }
 
 /**

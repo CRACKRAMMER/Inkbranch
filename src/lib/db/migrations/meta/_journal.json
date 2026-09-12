@@ -15,6 +15,13 @@
       "when": 1789153683190,
       "tag": "0001_swift_golden_guardian",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1789225325440,
+      "tag": "0002_flashy_vision",
+      "breakpoints": true
     }
   ]
 }
