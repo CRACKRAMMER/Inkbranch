@@ -108,6 +108,20 @@ test('the graph draws the documents, their link, and the tag they share', async 
     await publish(page, { ...alpha, body: 'The first half of the pair.', tag: tagName })
   })
 
+  await test.step('serves the forward-written link to a reader as a link', async () => {
+    // The same reference the graph counted, read where a reader reads it. The
+    // site renders per request, so the document it named exists by now — and
+    // what arrives has to be an anchor pointing at it rather than the brackets
+    // the author typed. The admin cannot show this: the editor is a textarea,
+    // and the preview shares the page's renderer, so a wiki link that never
+    // resolved looks the same in both places.
+    await page.goto(`/posts/${beta.slug}`)
+
+    const link = page.getByRole('link', { name: alpha.slug, exact: true })
+    await expect(link).toHaveAttribute('href', `/posts/${alpha.slug}`)
+    await expect(link).toHaveText(alpha.slug)
+  })
+
   await test.step('waits for the index the page is drawn from to catch up', async () => {
     await expect
       .poll(

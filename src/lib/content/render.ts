@@ -9,10 +9,11 @@ import { assets } from '@/lib/db/schema'
 import type { DocumentImage, ImageSource } from '@/lib/markdown/rehype-enhance'
 import { renderMarkdown, type RenderOptions, type RenderResult } from '@/lib/markdown/renderer'
 
-import { extractLinks, normalizeImageKey } from './links'
+import { extractLinks, normalizeImageKey, rewriteWikiLinks, scanWikiLinks } from './links'
+import { resolveWikiTargets } from './resolve'
 
 /**
- * Rendering a document's body, with its images described.
+ * Rendering a document's body: its images described, its wiki links resolved.
  *
  * ## Why this is a module and not one line in each page
  *
@@ -28,12 +29,19 @@ import { extractLinks, normalizeImageKey } from './links'
  * is a rule that will differ in three places, and the one that differs will be
  * the one nobody looks at.
  *
+ * The second reason is the same argument with a sharper edge. `[[why-not-catch]]`
+ * is how an author names a document they have no URL for, and only the content
+ * index knows what it names — so a wiki link that stays a wiki link on the page
+ * is a link the backlink graph counts and the reader cannot click. Four calling
+ * pages plus two previews is six chances to forget; there is one funnel instead.
+ *
  * ## What it costs
  *
- * One indexed query, by storage path, for a document that has images — and
- * nothing at all for one that does not, because the extractor runs first and a
- * body with no image references never reaches the database. That is the price
- * of the alternative being a full-size download.
+ * One indexed query per kind of thing a document actually uses — by storage path
+ * for its images, by slug and path for its wiki links — and nothing at all for a
+ * body that has neither, because the scanners run first and a document that
+ * needs nothing from the database never reaches it. That is the price of the
+ * alternative being a full-size download and a dead link.
  */
 
 /**
@@ -53,9 +61,46 @@ export async function renderDocument(
   body: string,
   options: RenderOptions = {},
 ): Promise<RenderResult> {
-  const images = await documentImages(body)
+  // Independent of each other, so they are asked at the same time rather than
+  // one after the other — a document with both images and wiki links used to be
+  // two round trips of latency on every request that renders it.
+  const [images, body2] = await Promise.all([documentImages(body), linkifyWikiLinks(body)])
 
-  return renderMarkdown(body, images.size > 0 ? { ...options, images } : options)
+  return renderMarkdown(body2, images.size > 0 ? { ...options, images } : options)
+}
+
+/**
+ * Turn the document's wiki links into ordinary Markdown links.
+ *
+ * `[[why-not-catch]]` is how an author names a document they have no URL for,
+ * and until this ran it reached the reader as those fifteen characters: the
+ * index held an edge, the page held punctuation. Both halves now come from the
+ * same scanner and the same resolver, so a wiki link the backlink graph counts
+ * is a wiki link the reader can click.
+ *
+ * A target the index does not know is left exactly as written. There is nothing
+ * to point at, so a link would be a claim about the corpus that is not true —
+ * and the literal text is also what the author typed, which is the thing they
+ * can act on. `pnpm content:links` lists those same targets.
+ *
+ * One query, and only for a body that contains a wiki link at all: the scanner
+ * runs first, and a document with no `[[…]]` in it never reaches the database.
+ */
+async function linkifyWikiLinks(body: string): Promise<string> {
+  const refs = scanWikiLinks(body)
+  if (refs.length === 0) return body
+
+  const resolved = await resolveWikiTargets(refs.map((ref) => ref.key))
+  if (resolved.size === 0) return body
+
+  return rewriteWikiLinks(body, refs, (ref) => {
+    const target = resolved.get(ref.key)
+    if (!target) return null
+    // The fragment is kept and encoded the way `enhanceHeading` encodes the id
+    // it points at, so `[[note#Some Heading]]` lands on the heading a reader
+    // would have reached from the table of contents.
+    return ref.hash ? `${target.url}#${encodeURIComponent(ref.hash)}` : target.url
+  })
 }
 
 /**

@@ -3,8 +3,11 @@ import {
   extractLinks,
   normalizeImageKey,
   parseInternalTarget,
+  parseWikiTarget,
   referencedImageKeys,
   referencedTargets,
+  rewriteWikiLinks,
+  scanWikiLinks,
   targetKeyToUrl,
   wikiTargetCandidates,
 } from '@/lib/content/links'
@@ -306,8 +309,8 @@ describe('extractLinks — wiki links', () => {
   it('keeps a bare slug, which is the Obsidian spelling', () => {
     // A bare slug cannot be narrowed to a type here, because this module never
     // sees the content index. It is reported unresolved rather than dropped:
-    // the link renders for the reader either way, so dropping it would hide
-    // the missing backlink from the only person who could fix it.
+    // the characters are on the page either way, so dropping the reference
+    // would hide the missing backlink from the only person who could fix it.
     expect(find('[[bare-slug]]\n')[0]).toMatchObject({
       kind: 'wiki',
       targetKey: 'bare-slug',
@@ -384,6 +387,114 @@ describe('wikiTargetCandidates', () => {
 
   it('offers nothing for an empty target', () => {
     expect(wikiTargetCandidates('   ')).toEqual([])
+  })
+})
+
+describe('parseWikiTarget', () => {
+  it('splits a target from the heading it names', () => {
+    expect(parseWikiTarget('note#Some Heading')).toEqual({ key: 'note', hash: 'Some Heading' })
+    expect(parseWikiTarget('note')).toEqual({ key: 'note', hash: null })
+  })
+
+  it('treats a heading on its own as naming no document', () => {
+    // `[[#section]]` points into the note it is written in. There is nothing
+    // for the content index to resolve, which is what makes it an anchor
+    // rather than a wiki link — see `extractLinks` above.
+    expect(parseWikiTarget('#section')).toBeNull()
+    expect(parseWikiTarget('   ')).toBeNull()
+  })
+
+  it('drops a query string, as an internal link does', () => {
+    expect(parseWikiTarget('note?utm_source=x')).toEqual({ key: 'note', hash: null })
+  })
+})
+
+describe('scanWikiLinks', () => {
+  it('reports the offsets that cut the link out of the document', () => {
+    const body = 'one\n\ntwo [[posts/x]] and [[y]]\n'
+    const refs = scanWikiLinks(body)
+
+    expect(refs.map((ref) => body.slice(ref.start, ref.end))).toEqual(['[[posts/x]]', '[[y]]'])
+    expect(refs.map((ref) => ref.line)).toEqual([3, 3])
+  })
+
+  it('sees the prose that extractLinks sees, and no more', () => {
+    const body = ['```md', '[[in-a-fence]]', '```', '', '`[[in-a-span]]` and [[real]]', ''].join(
+      '\n',
+    )
+
+    // The same walk, so the page and the index agree about what a link is. A
+    // `[[…]]` the author is *writing about* must not become one on the page —
+    // and a document about wiki-link parsing is exactly where that shows up.
+    expect(scanWikiLinks(body).map((ref) => ref.key)).toEqual(['real'])
+    expect(extractLinks(body).links.map((link) => link.targetKey)).toEqual(['real'])
+  })
+
+  it('takes the display text from the label, and defaults it to the target', () => {
+    expect(scanWikiLinks('[[posts/x|See also]]\n')[0]).toMatchObject({
+      key: 'posts/x',
+      target: 'posts/x',
+      label: 'See also',
+    })
+    expect(scanWikiLinks('[[bare]]\n')[0]).toMatchObject({ label: 'bare' })
+  })
+
+  it('reports nothing for a target that names only a heading', () => {
+    expect(scanWikiLinks('[[#section]]\n')).toEqual([])
+  })
+})
+
+describe('rewriteWikiLinks', () => {
+  const urls: Record<string, string> = {
+    a: '/notes/a-longer-path',
+    b: '/n/b',
+    'why-not-catch': '/notes/why-not-catch',
+  }
+
+  const rewrite = (markdown: string) =>
+    rewriteWikiLinks(markdown, scanWikiLinks(markdown), (ref) => urls[ref.key] ?? null)
+
+  it('replaces a link the resolver answered, and leaves the rest of the line alone', () => {
+    expect(rewrite('See [[why-not-catch]] for the rest.\n')).toBe(
+      'See [why-not-catch](/notes/why-not-catch) for the rest.\n',
+    )
+  })
+
+  it('keeps the words the author chose', () => {
+    expect(rewrite('[[why-not-catch|the empty catch note]]\n')).toBe(
+      '[the empty catch note](/notes/why-not-catch)\n',
+    )
+  })
+
+  it('rewrites from the end, so a longer link cannot move a later one', () => {
+    // The first replacement is sixteen characters longer than what it replaced.
+    // Offsets are into the document as written, so a left-to-right splice would
+    // leave the second link pointing into the middle of the first.
+    expect(rewrite('[[a]] and [[b]]\n')).toBe('[a](/notes/a-longer-path) and [b](/n/b)\n')
+  })
+
+  it('leaves an unresolved target as the text it was written as', () => {
+    const body = 'a [[nobody]] here\n'
+    // Identity, not equality: nothing was rewritten, so the string it returns
+    // should be the string it was handed.
+    expect(rewrite(body)).toBe(body)
+  })
+
+  it('escapes a bracket in the label rather than emitting a broken link', () => {
+    // The scanner admits a `[` in a target, so this is reachable. Unescaped it
+    // would leave an unbalanced bracket, the link would not parse, and the
+    // reader would be shown `[a[b](…)` — worse than the text it replaced.
+    expect(rewriteWikiLinks('[[a[b]]\n', scanWikiLinks('[[a[b]]\n'), () => '/notes/x')).toBe(
+      '[a\\[b](/notes/x)\n',
+    )
+  })
+
+  it('percent-encodes the parentheses a slug may contain', () => {
+    // `encodeURIComponent` leaves `(` and `)` alone, and one unbalanced paren
+    // ends a Markdown destination early.
+    expect(rewriteWikiLinks('[[a(b]]\n', scanWikiLinks('[[a(b]]\n'), () => '/notes/a(b')).toBe(
+      '[a(b](/notes/a%28b)\n',
+    )
   })
 })
 

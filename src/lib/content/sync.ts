@@ -1,4 +1,4 @@
-import { and, count, eq, inArray, isNull, or, sql } from 'drizzle-orm'
+import { and, count, eq, inArray, isNull, sql } from 'drizzle-orm'
 import { env } from '@/env'
 import { db } from '@/lib/db'
 import {
@@ -11,20 +11,16 @@ import {
 import { SEARCH_INDEX_VERSION } from '@/lib/search/provider'
 import { tagSlug } from '@/lib/utils/slug'
 import { normalizeTagName } from '@/lib/utils/text'
-import {
-  extractLinks,
-  parseInternalTarget,
-  wikiTargetCandidates,
-  type ExtractedLinkKind,
-} from './links'
+import { extractLinks, wikiTargetCandidates, type ExtractedLinkKind } from './links'
 import {
   type ContentDocument,
   parseDocument,
   scanContentFiles,
   type ContentFileStat,
 } from './reader'
+import { documentUrl } from './paths'
+import { incomingKeys, pickTarget, resolveTargetKeys } from './resolve'
 import type { ContentType } from './schema'
-import { CONTENT_TYPE_DIRS, documentUrl, MARKDOWN_EXTENSIONS } from './paths'
 
 /**
  * Content Sync Engine.
@@ -567,7 +563,7 @@ async function syncLinks(
       if (seen.has(dedupe)) continue
       seen.add(dedupe)
 
-      const targetId = resolveLinkTarget(link, targetIdByKey)
+      const targetId = pickTarget(link, targetIdByKey)?.id ?? null
 
       // Only these two kinds have a target to resolve. Images point at assets
       // and anchors at a heading in the same document, so neither can be
@@ -606,65 +602,6 @@ async function syncLinks(
 }
 
 /**
- * Which document a link points at, given the index.
- *
- * One expression, used from both directions: when a document is saved it
- * settles the links *in* that document, and when a document appears it settles
- * the links *at* it (`resolveIncomingLinks`). They have to agree. When two
- * predicates disagreed, a broken wiki link was counted as broken and stored as
- * resolved, and the backlink graph claimed a target that did not exist.
- *
- * A wiki target may name its type or may be a bare slug, and only this layer
- * has the index needed to settle a bare one — hence the lookup rather than a
- * direct `get`.
- */
-function resolveLinkTarget(
-  link: { kind: ExtractedLinkKind; targetKey: string },
-  targetIdByKey: Map<string, string>,
-): string | null {
-  if (link.kind === 'internal') return targetIdByKey.get(link.targetKey) ?? null
-  if (link.kind !== 'wiki') return null
-  return (
-    wikiTargetCandidates(link.targetKey)
-      .map((key) => targetIdByKey.get(key))
-      .find((id) => id !== undefined) ?? null
-  )
-}
-
-/** A document's path without its Markdown extension. */
-function pathStem(path: string): string {
-  return path.replace(/\.(md|markdown)$/i, '')
-}
-
-/**
- * The `content_links.target_key` strings that could be naming this document.
- *
- * The two spellings `resolveTargetKeys` registers for a row — the `type/slug`
- * an internal link is written as, and the path without its extension — plus the
- * bare slug on its own, which is how wiki links are usually written and which
- * the resolver reads as a candidate list rather than as a key.
- *
- * Both halves of each spelling are emitted because a directory-qualified link
- * and a bare one are different strings in the column, and an index can only be
- * asked for strings.
- */
-function incomingKeys(row: Pick<ContentRow, 'type' | 'slug' | 'path'>): string[] {
-  const dir = CONTENT_TYPE_DIRS[row.type]
-  const stem = pathStem(row.path)
-  const tails = new Set([
-    row.slug,
-    stem.startsWith(`${dir}/`) ? stem.slice(dir.length + 1) : stem,
-  ])
-
-  const keys = new Set<string>()
-  for (const tail of tails) {
-    keys.add(`${dir}/${tail}`)
-    keys.add(tail)
-  }
-  return [...keys]
-}
-
-/**
  * Resolve the links that were written before their target existed.
  *
  * A save resolves the links *in* the document being saved against the index as
@@ -678,8 +615,8 @@ function incomingKeys(row: Pick<ContentRow, 'type' | 'slug' | 'path'>): string[]
  * The lookup is the reverse of the one above, and it uses
  * `content_links_target_key_idx`: find the unresolved rows whose spelling could
  * name this document, then keep the ones this document *wins*, by asking
- * `resolveLinkTarget` — the same function the save path uses, so the two
- * directions cannot drift apart. A row that already names a document is never
+ * `pickTarget` — the same function the save path and the renderer use, so the
+ * three cannot drift apart. A row that already names a document is never
  * revisited: this fills nulls, it does not re-decide.
  *
  * What it cannot do is see a document that has not been indexed yet. A bare
@@ -729,7 +666,7 @@ async function resolveIncomingLinks(
   const targetIdByKey = await resolveTargetKeys([...wanted])
 
   const winners = pending
-    .filter((link) => resolveLinkTarget(link, targetIdByKey) === row.id)
+    .filter((link) => pickTarget(link, targetIdByKey)?.id === row.id)
     .map((link) => link.id)
 
   if (winners.length === 0) return
@@ -738,68 +675,6 @@ async function resolveIncomingLinks(
     .update(contentLinks)
     .set({ targetId: row.id, resolved: true })
     .where(inArray(contentLinks.id, winners))
-}
-
-/**
- * Map `posts/foo` keys to content ids in a single query.
- *
- * A key resolves against **two** names for the same document, because the two
- * are both natural to write and they are not the same string. A document's slug
- * is derived from its title (see `deriveContent`), while its filename is what
- * the author sees in the directory listing. For a note titled "An empty catch
- * block is a claim that nothing can go wrong" the slug is the whole sentence
- * and the filename is `why-not-catch`.
- *
- * Matching only the slug means `[[why-not-catch]]` — the obvious link to write
- * — resolves to nothing and renders as plain text, with no error and no
- * backlink. Matching only the filename would break every link that used the
- * slug. Both keys are registered instead, so either spelling works and neither
- * silently wins.
- */
-async function resolveTargetKeys(keys: string[]): Promise<Map<string, string>> {
-  const result = new Map<string, string>()
-  if (keys.length === 0) return result
-
-  const byType = new Map<ContentType, Array<{ name: string; path: string }>>()
-  for (const key of keys) {
-    const parsed = parseInternalTarget(`/${key}`)
-    if (!parsed) continue
-    const dir = CONTENT_TYPE_DIRS[parsed.type]
-    const list = byType.get(parsed.type) ?? []
-    for (const ext of MARKDOWN_EXTENSIONS) {
-      list.push({ name: parsed.slug, path: `${dir}/${parsed.slug}${ext}` })
-    }
-    byType.set(parsed.type, list)
-  }
-
-  for (const [type, entries] of byType) {
-    const slugs = entries.map((entry) => entry.name)
-    const paths = entries.map((entry) => entry.path)
-
-    const rows = await db
-      .select({ id: contentIndex.id, slug: contentIndex.slug, path: contentIndex.path })
-      .from(contentIndex)
-      .where(
-        and(
-          eq(contentIndex.type, type),
-          or(
-            inArray(contentIndex.slug, slugs),
-            inArray(contentIndex.path, paths),
-          ),
-        ),
-      )
-
-    const prefix = CONTENT_TYPE_DIRS[type]
-    for (const row of rows) {
-      result.set(`${prefix}/${row.slug}`, row.id)
-      // The filename key — how a wiki link names it. The same helper builds the
-      // keys `resolveIncomingLinks` searches for, so the two agree by
-      // construction rather than by review.
-      result.set(pathStem(row.path), row.id)
-    }
-  }
-
-  return result
 }
 
 /* -------------------------------------------------------------------------- */

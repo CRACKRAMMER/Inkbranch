@@ -2,19 +2,21 @@ import { randomBytes } from 'node:crypto'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import sharp from 'sharp'
-import { afterAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
-import { hasTestDatabase } from '../setup'
+import { hasTestDatabase, testContentRoot } from '../setup'
 
 import { UPLOAD_ROOT, assetFilePaths, storeAsset } from '@/lib/assets/storage'
+import { readDocument } from '@/lib/content/reader'
 import { describeImage, documentImages, renderDocument } from '@/lib/content/render'
 import { renderMarkdown } from '@/lib/markdown/renderer'
 import { db } from '@/lib/db'
-import { assets } from '@/lib/db/schema'
+import { assets, contentIndex } from '@/lib/db/schema'
 import { inArray } from 'drizzle-orm'
 
 /**
- * A document's images, joined to what the site knows about them.
+ * A document rendered with what the database knows about it: its images, and
+ * the documents its wiki links name.
  *
  * ## Why this is an integration test
  *
@@ -27,6 +29,14 @@ import { inArray } from 'drizzle-orm'
  * they guard against is silent: a picture offering a URL that 404s looks like a
  * picture, and a `width` that is merely plausible keeps the layout from
  * jumping in a test and lets it jump in production.
+ *
+ * The wiki links below are here for a sharper version of the same reason. The
+ * rule they follow — `[[why-not-catch]]` names a document whose *slug* is a
+ * whole sentence, because the file is what a person goes looking for — is one
+ * the sync engine has to apply when it writes the edge and the renderer has to
+ * apply when it writes the anchor. Those two are the same function now, and the
+ * only way to prove it is to let the engine index a real file and then render
+ * what comes back.
  *
  * ## The fixture
  *
@@ -240,3 +250,126 @@ describe.skipIf(!hasTestDatabase)('a document and its images', () => {
     expect(await describeImage('')).toBeNull()
   })
 })
+
+/* -------------------------------------------------------------------------- */
+/*  Wiki links                                                                 */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The note is named for the *file*, and its slug is derived from the title.
+ *
+ * That gap is the whole fixture. Every human writing a link to this note writes
+ * `why-not-catch` — the name of the file sitting in the directory — while the
+ * route that serves it is the sentence. Only an index holding both spellings
+ * can turn the first into the second, and only a real sync can show that it
+ * does.
+ */
+const NOTE_TITLE = 'An empty catch block is a claim that nothing can go wrong'
+const NOTE_SLUG = 'an-empty-catch-block-is-a-claim-that-nothing-can-go-wrong'
+
+const WIKI_POST = `---
+title: Wiki Source
+slug: wiki-source
+date: 2026-09-01
+---
+
+The same argument as [[why-not-catch]], one level down. This one names nothing
+at all — [[nobody-wrote-this]] — and stays as it was typed. And this is an
+example of a wiki link rather than one:
+
+\`\`\`md
+[[why-not-catch]]
+\`\`\`
+`
+
+const WIKI_NOTE = `---
+title: ${NOTE_TITLE}
+date: 2026-09-02
+---
+
+Swallowing an error deletes information at the one moment it exists.
+`
+
+const WIKI_PATHS = ['posts/wiki-source.md', 'posts/why-not-catch.md']
+
+describe.skipIf(!hasTestDatabase)('a document and its wiki links', () => {
+  beforeAll(async () => {
+    const dir = path.join(testContentRoot, 'posts')
+    await fs.mkdir(dir, { recursive: true })
+    await fs.writeFile(path.join(dir, 'wiki-source.md'), WIKI_POST, 'utf8')
+    await fs.writeFile(path.join(dir, 'why-not-catch.md'), WIKI_NOTE, 'utf8')
+
+    // The real engine, one document at a time: the index rows this test renders
+    // from are the rows `syncOneDocument` writes, not ones the test typed.
+    const { syncOneDocument } = await import('@/lib/content/sync')
+    for (const relativePath of WIKI_PATHS) {
+      expect(await syncOneDocument(relativePath)).not.toBeNull()
+    }
+  })
+
+  afterAll(async () => {
+    await db.delete(contentIndex).where(inArray(contentIndex.path, WIKI_PATHS))
+    await fs.rm(path.join(testContentRoot, 'posts'), { recursive: true, force: true })
+  })
+
+  /** The body of the fixture post, as the page reads it off disk. */
+  async function wikiPostBody(): Promise<string> {
+    const document = await readDocument('posts/wiki-source.md')
+    expect(document).not.toBeNull()
+    return document?.body ?? ''
+  }
+
+  it('turns a wiki link into a link to the document the index says it names', async () => {
+    const { html } = await renderDocument(await wikiPostBody())
+
+    // One link, and it is the right one. Asserted as the whole list rather than
+    // as a `toContain`, because the interesting failures are extra links: the
+    // example inside the fence being rewritten, or the target nobody wrote
+    // being turned into a link to a 404.
+    expect(hrefsToPosts(html)).toEqual([`/posts/${NOTE_SLUG}`])
+    // And the words are the author's, not the slug's.
+    expect(html).toContain('>why-not-catch</a>')
+  })
+
+  it('leaves a wiki link that names nothing as the text it was written as', async () => {
+    const { html } = await renderDocument(await wikiPostBody())
+
+    expect(html).toContain('[[nobody-wrote-this]]')
+    expect(html).not.toContain('nobody-wrote-this</a>')
+  })
+
+  it('leaves an example inside a fence as an example', async () => {
+    const { html } = await renderDocument(await wikiPostBody())
+
+    // The example names the same document the prose link above does, so the
+    // only reason it is not a link is that the scanner skipped it — and the
+    // count in the first test is what proves that. This one says the characters
+    // are still on the page: read as text, because the highlighter wraps every
+    // token in a `<span>` and the literal is not contiguous in the HTML.
+    expect(textOf(html)).toContain('[[why-not-catch]]')
+  })
+
+  it('renders the same body unchanged when there is nothing to resolve', async () => {
+    // The loader's silence leaves the output untouched, the same claim the
+    // image half makes: a document with no wiki link in it must come out of
+    // `renderDocument` exactly as it came out of `renderMarkdown`.
+    const body = 'No links here, only [[ and ]] separately.\n'
+    const loaded = await renderDocument(body)
+    const plain = await renderMarkdown(body)
+    expect(loaded.html).toBe(plain.html)
+  })
+})
+
+/** Every site-relative document URL in a rendered document, in order. */
+function hrefsToPosts(html: string): string[] {
+  return [...html.matchAll(/href="(\/posts\/[^"]*)"/g)].map((match) => match[1] ?? '')
+}
+
+/**
+ * Rendered HTML with its tags removed — what the page says, rather than how it
+ * is marked up. Syntax highlighting puts a `<span>` around every token, so the
+ * literal text of a code block is not contiguous in the HTML.
+ */
+function textOf(html: string): string {
+  return html.replace(/<[^>]*>/g, '')
+}

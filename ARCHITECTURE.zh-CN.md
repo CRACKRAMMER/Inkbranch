@@ -176,7 +176,9 @@ Postgres。版本下限是 13，这个下限由 `gen_random_uuid()` 决定 —�
 | `writer.ts` | 原子写入：lock → tmp → fsync → rename → fsync(dir)。 |
 | `sync.ts` | 按 checksum 把文件系统与 `content_index` 对齐。 |
 | `links.ts` | 从文档中抽取内部链接与图片引用。 |
+| `resolve.ts` | 在给定内容索引的前提下，判定一条链接指向哪篇文档。同步引擎与渲染器共用。 |
 | `derive.ts` | slug、摘要、字数、阅读时长、标题树。 |
+| `render.ts` | 渲染文档正文 —— 描述图片、解析 wiki 链接 —— 再交给管线。 |
 
 ### 原子写入契约
 
@@ -287,6 +289,16 @@ raw markdown
 这份清单里的插件名就是 `package.json` 里的那些；标了 *(ours)* 的处理在 `src/lib/markdown/` 里。这里没有 `rehype-pretty-code`，没有 `rehype-slug`，也没有 `rehype-autolink-headings` —— 能力都在，只是它们由本项目自己的处理实现，而正是这一点让它们能按下面的顺序运行。
 
 **顺序承载了两个决定。** 第一，`rehype-sanitize` 跑在那些产出本站标记的变换器*之前*，而不是之后：它下游的一切（`rehypeEnhance`、`rehypeCode`、`rehypeKatex`）产出的都是本项目自己掌控的标记，所以没有什么需要再消毒，而 `rehypeEnhance` 也就可以产出一个不在白名单里的 `<picture>`。第二，`rehypeCaptureCodeMeta` 跑在 `rehype-raw` 之前，因为 parse5 的往返带不了节点上的 data。
+
+### Wiki 链接
+
+`[[目标]]` 是在管线**之前**解析的，不是管线里的一个插件。解析是一次数据库读取，而管线是纯的 —— `renderMarkdown` 收一个字符串、返回一个字符串，不碰数据库也不碰文件系统 —— 所以由 `renderDocument` 先把正文改写掉，等 `[[why-not-catch]]` 到达 `remark-parse` 时，它已经是一个普通的 Markdown 链接。正文里没有 wiki 链接时原样返回，因此常见情形除了一遍扫描不付任何代价。
+
+**一个扫描器，一个判定函数。** `src/lib/content/links.ts` 里的 `proseLines` 只走一遍文档，一边跟踪围栏（围栏块里的 `[[x]]` 于是仍是内容），一边把行内代码挖空（被引用的 `[[x]]` 于是仍是引用）。应用的两半都通过它来读 `[[…]]`：`extractLinks` 由它写入 `content_links`，`scanWikiLinks` 由它改写正文，而两者都用 `src/lib/content/resolve.ts` 里同一个 `pickTarget` 来断定目标是谁。两个扫描器一旦各说各话，就会出现页面上有链接、数据库记成坏链，或者图上有一条边、读者点不动的情况；这样的事出过一次，而这个共用模块的意义正在于它不会再出。
+
+**目标可以写 slug，也可以写文件名。** 文档的 slug 由标题推导，文件名则是作者在目录列表里看到的那个；对于标题是 "An empty catch block is a claim that nothing can go wrong" 的 note，两者并不是同一个字符串 —— 文件叫 `why-not-catch.md`。两种拼写都会注册成键，所以 `[[why-not-catch]]` 与 `[[the-whole-sentence]]` 各自都能解析，谁也不会无声地输给另一个。不带 `/` 的目标依次在 `posts/`、`notes/`、`projects/` 下尝试，第一个存在的胜出。
+
+**解析不到的目标原样留下。** `[[nobody-wrote-this]]` 到达读者眼前的就是这几个字符 —— 不是指向 404 的链接，也不是指向空处的反链。这是作者唯一能得到的信号，而它与编辑器预览里看到的是同一个，因为预览走的是同一条管线。
 
 **Shiki 在服务端的构建 / 渲染期运行。** 客户端收到的是预先高亮好的 HTML，带成对的 `--shiki-light` / `--shiki-dark` CSS 变量。切换主题只是改一个 CSS class —— 不重新高亮，客户端也没有 highlighter 包。
 

@@ -183,7 +183,9 @@ Retention: `revisions.max_per_content` (default 50) is enforced by a scheduled j
 | `writer.ts` | Atomic write: lock → tmp → fsync → rename → fsync(dir). |
 | `sync.ts` | Reconcile the filesystem against `content_index` by checksum. |
 | `links.ts` | Extract internal links and image references from a document. |
+| `resolve.ts` | Which document a link names, given the content index. Shared by the sync engine and the renderer. |
 | `derive.ts` | Slug, excerpt, word count, reading time, heading tree. |
+| `render.ts` | Render a document's body — images described, wiki links resolved — through the pipeline. |
 
 ### Atomic write contract
 
@@ -326,6 +328,16 @@ raw markdown
 Plugin names in this list are the ones in `package.json`; the passes marked *(ours)* are in `src/lib/markdown/`. There is no `rehype-pretty-code`, no `rehype-slug` and no `rehype-autolink-headings` here — the capabilities are present, but they are this project's own passes, which is what allows them to run in the order below.
 
 **Order carries two decisions.** First, `rehype-sanitize` runs *before* the transformers that emit this site's markup, not after: everything downstream of it (`rehypeEnhance`, `rehypeCode`, `rehypeKatex`) produces markup this project controls, so there is nothing left to sanitise and `rehypeEnhance` may emit a `<picture>` the allow-list does not carry. Second, `rehypeCaptureCodeMeta` runs before `rehype-raw`, because the parse5 round trip cannot carry data on the node.
+
+### Wiki links
+
+`[[target]]` is resolved *before* the pipeline runs, not by a plugin inside it. Resolution is a database read and the pipeline is pure — `renderMarkdown` takes a string and returns a string, with no database and no filesystem — so `renderDocument` rewrites the body first and `[[why-not-catch]]` reaches `remark-parse` as an ordinary Markdown link. A body with no wiki links is returned unchanged, so the common case pays nothing but a scan.
+
+**One scanner, one resolver.** `proseLines` in `src/lib/content/links.ts` walks the document once, tracking fences so that `[[x]]` inside a fenced block stays content, and blanking inline code so that a quoted `[[x]]` is a quotation. Both halves of the application read `[[…]]` through it: `extractLinks` writes `content_links` from it and `scanWikiLinks` rewrites the body from it, and both settle a target with the same `pickTarget` in `src/lib/content/resolve.ts`. Two scanners that disagreed would put a link on the page the database counts as broken, or a resolved edge the reader cannot click; they did once, and the point of the shared module is that they cannot.
+
+**A target may be a slug or a filename.** A document's slug is derived from its title, while its filename is what the author sees in the directory listing, and for a note titled "An empty catch block is a claim that nothing can go wrong" the two are not the same string — the file is `why-not-catch.md`. Both spellings are registered as keys, so `[[why-not-catch]]` and `[[the-whole-sentence]]` each resolve, and neither silently loses to the other. A target written without a `/` is tried under `posts/`, then `notes/`, then `projects/`, and the first that exists wins.
+
+**An unresolved target is left exactly as written.** `[[nobody-wrote-this]]` reaches the reader as those characters — not as a link to a 404, and not as a backlink to nothing. It is the only signal the author gets, and it is the same one the editor's preview shows, because the preview renders through the same funnel.
 
 **Shiki runs at build/render time on the server.** The client receives pre-highlighted HTML with dual `--shiki-light` / `--shiki-dark` CSS variables. Theme switching is a CSS class change — no re-highlight, no highlighter bundle on the client.
 
