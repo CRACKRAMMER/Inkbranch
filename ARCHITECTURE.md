@@ -1,5 +1,7 @@
 # Architecture
 
+[简体中文](./ARCHITECTURE.zh-CN.md)
+
 > A personal knowledge system and publishing platform.
 > Markdown files are the source of truth. The database is an index, not a vault.
 

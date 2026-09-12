@@ -1,5 +1,7 @@
 # Deployment
 
+[简体中文](./DEPLOYMENT.zh-CN.md)
+
 Docker Compose on a single host. The application is one Node process, its
 database is one Postgres, and everything it serves that is not code lives in two
 directories you can open. There is nothing else to install: search is

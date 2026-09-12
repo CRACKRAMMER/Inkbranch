@@ -1,5 +1,7 @@
 # MyBlog
 
+[简体中文](./README.zh-CN.md)
+
 A personal knowledge system and publishing platform: a public reading site, a
 full content management backend, and a content pipeline in which **Markdown
 files on disk are the source of truth**.
