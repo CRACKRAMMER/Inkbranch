@@ -56,7 +56,14 @@ export const AUDIT_ACTIONS = [
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[number]
 
-/** `denied` records an attempt that was refused — a failed login, a rejected CSRF token. */
+/**
+ * `denied` records an attempt that was refused — a sign-in that failed, a
+ * delete refused because the asset is still referenced.
+ *
+ * Not every refusal reaches this table. A request the CSRF guard turns away is
+ * reported to the caller and written to the server log, and records nothing
+ * here: no action in the union above describes it.
+ */
 export const AUDIT_OUTCOMES = ['ok', 'denied'] as const
 export type AuditOutcome = (typeof AUDIT_OUTCOMES)[number]
 

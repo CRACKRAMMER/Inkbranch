@@ -299,9 +299,11 @@ export default async function SystemPage({
         <div id="audit" className="scroll-mt-24" />
         {audit.rows.length === 0 ? (
           <InlineNote>
-            {actionFilter
-              ? `No ${actionFilter} entries.`
-              : 'Nothing has been recorded yet. Signing in, saving a document, uploading an asset and changing a setting all write a row here.'}
+            {audit.total > 0
+              ? `That is past the last page. There ${audit.total === 1 ? 'is 1 entry' : `are ${audit.total} entries`}${actionFilter ? ` for ${actionFilter}` : ''} in the log.`
+              : actionFilter
+                ? `No ${actionFilter} entries.`
+                : 'Nothing has been recorded yet. Signing in, saving a document, uploading an asset and changing a setting all write a row here.'}
           </InlineNote>
         ) : (
           <>
@@ -361,24 +363,31 @@ export default async function SystemPage({
                 </tbody>
               </table>
             </div>
-
-            <div className="mt-6">
-              <Pagination
-                page={auditPage}
-                pageCount={auditPageCount}
-                total={audit.total}
-                noun="entry"
-                hrefFor={(next) => {
-                  const params = new URLSearchParams()
-                  if (actionFilter) params.set('action', actionFilter)
-                  if (next > 1) params.set('audit', String(next))
-                  const suffix = params.toString()
-                  return suffix ? `/admin/system?${suffix}` : '/admin/system'
-                }}
-              />
-            </div>
           </>
         )}
+
+        {/* Keyed on the total, not on this page's rows, like the redirects and
+            assets tables: a page past the end is empty while the log is not,
+            and it is the count that says which of the two the reader is looking
+            at — plus, once the log is long enough to paginate, the links back. */}
+        {audit.total > 0 ? (
+          <div className="mt-6">
+            <Pagination
+              page={auditPage}
+              pageCount={auditPageCount}
+              total={audit.total}
+              noun="entry"
+              plural="entries"
+              hrefFor={(next) => {
+                const params = new URLSearchParams()
+                if (actionFilter) params.set('action', actionFilter)
+                if (next > 1) params.set('audit', String(next))
+                const suffix = params.toString()
+                return suffix ? `/admin/system?${suffix}` : '/admin/system'
+              }}
+            />
+          </div>
+        ) : null}
 
         <p className="mt-6 text-xs leading-relaxed text-ink-subtle">
           Credentials are replaced with <span className="font-mono">[redacted]</span> before a row is

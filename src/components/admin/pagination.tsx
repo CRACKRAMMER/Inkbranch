@@ -15,6 +15,7 @@ export function Pagination({
   total,
   hrefFor,
   noun = 'document',
+  plural,
 }: {
   page: number
   pageCount: number
@@ -22,8 +23,15 @@ export function Pagination({
   hrefFor: (page: number) => string
   /** What is being counted, so the count line does not call an asset a document. */
   noun?: string
+  /**
+   * The same word for several of them, for the nouns where appending an `s`
+   * writes a word nobody wrote — `entry` is the one that exists today, and the
+   * count line read "12 entrys" until it was spelled out. `TYPE_GROUP_LABELS`
+   * makes the same call for the content types, and gives the same reason.
+   */
+  plural?: string
 }) {
-  const counted = `${total} ${noun}${total === 1 ? '' : 's'}`
+  const counted = `${total} ${total === 1 ? noun : (plural ?? `${noun}s`)}`
 
   if (pageCount <= 1) {
     return <p className="text-xs tabular text-ink-subtle">{counted}</p>

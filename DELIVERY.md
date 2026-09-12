@@ -1148,6 +1148,28 @@ e2e 测接线——发两篇带标签的文档，断言句子里是**并集**（
 
 ---
 
+**这一批的入口是一条自己承认该被测试、却一条测试都没有的安全控制。** `src/lib/audit.ts` 的 `redactAuditMetadata` 文档里写着它存在的理由：这个函数"exported so a caller can assert on what will be written — and so the rule is testable without a database"；而它守的是后台那张表——分析页与 `/admin/system` 都渲染它，`/admin/system` 那段说明还向操作者保证凭据会被抹掉。整个 `src/lib/audit.ts`、以及写它的 `recordAudit` 与读它的 `listAuditLogs`，此前**一条测试都没有**：`tests/unit/audit.test.ts` 是本项目里第一个读这个模块的测试文件，51 条。
+
+写测试之前先做的是**核账，而不是补账**，因为这类模块最容易出的错是"测试描述了一个模块并不做的行为"。三件事分开量：
+
+其一，**词表里有没有死条目**。把 `recordAudit` 的 31 个调用点全部导出、逐个核对 `action`：22 个声明全部有调用点写下，没有一个是"声明了但没人写"的。其二，**四处 `auth.login_failed` 是不是都带了 `outcome: 'denied'`**——是，四处全带。其三，**读的那一半接上了没有**。这里差点写出一条假结论：我按 `auditLogs|audit_logs|auditLog` 找读表的人，得到"三处索引、零个读者"，看上去又是一条"写了没人看"的发现；改用 `listAuditLogs`（大写 L）再找，读者立刻出现——分析页与 `/admin/system`。**case-sensitive 的 grep 差点让我把一个健康的读层报成缺陷**，这条记在这里，因为它是这一批唯一一次差点输出错误结论的地方。
+
+补上来的 51 条分四段。`isSecretKey` 16 正 10 负（外加限定词那条）；`redactAuditMetadata` 守的是**标记而非丢弃**（`[redacted]` 必须留下，键不能消失——一条被删掉的键和一条被抹掉的值，在事后取证里含义完全不同）、嵌套遍历、普通字段不动、不改原对象、以及**JSON 可序列化**这一整组（`10n` → `'10'`、NaN → null、Date → ISO、函数/符号/undefined 被丢、数组里的 undefined → null、循环引用以 `'[truncated]'` 终止而不是死循环、深嵌套里那个 `hunter2` 一次都不许漏出来，另配一条"浅对象不被截断"的反向守卫）；`the vocabulary` 那一组**读源码而不导入**——房子的写法，`tests/unit/contrast.test.ts` 读 `globals.css` 时已经写过为什么——断言每个声明的动作都在某处被写下（`lib/audit.ts` 自己豁免，理由是"那份声明本身就是这些字面量的清单"），再加一条扫描守卫（`callSites >= 20`、`files.length > 100`）和一条 `expect(writers.map((f) => f.path)).toEqual(['lib/audit.ts'])`；`recordAudit` 与 `listAuditLogs` 的纯函数行为各一组（非法 action 与非 uuid 的 actor 都 resolve 并 `console.error`，用 `vi.spyOn` 且 `finally` 里还原；limit 0/201/1.5 与 offset −1 抛 `AuditQueryError`，词表外的 action 给 `{ code: 'AUDIT_QUERY' }`）；最后 `describeWithDatabase('audit storage')` 7 条，按房子的门（`describe.skipIf(!hasTestDatabase)` + `beforeAll(runMigrations)`）挂在 `TEST_DATABASE_URL` 上，用一个 `crypto.randomUUID()` 的 marker 落在 `targetId` 上，所以它们和同一个库里别的套件互不干扰。
+
+**写测试的过程中改了两处注释，而不是加两处词汇。** 一处是 `AUDIT_OUTCOMES` 的文档：它写着 `denied` 记的是"a failed login, a rejected CSRF token"。前半句是真的，后半句不是——CSRF 被挡下来的请求由 `describeActionError` 报给调用方、写进服务端日志，**一条审计行都不写**，因为词表里根本没有描述它的动作。改后的文档把真的一半留下、把假的一半说清楚（"no action in the union above describes it"），并**没有**为了这句话去加一个动作——那句话描述的是设计，加动作才是改设计。另一处更小：`schema.ts` 里 audit 动作列的注释举例是 `content.update`，而词表里没有这个值（真实的是 `post.update`）。例子改成词表里真有的两个。这两处属于同一类：**注释在描述一个不存在的东西**，而修法是改注释。
+
+**真正动手修的是一个用户可见的谎，是核读层时撞上的。** `/admin/system` 的审计表由 `listAuditLogs` 渲染，它一次返回**一页行**和**整个筛选的总数**；页面只读了行。于是行一空，页面就印出"Nothing has been recorded yet. Signing in, saving a document, uploading an asset and changing a setting all write a row here"——**一句关于整本日志的话，是从"这一页没有行"这个事实推出来的**。两种状态不是一回事，而且分不清它们的正是操作者："什么都没记下来"回答的是"审计在工作吗"，"你翻过了最后一页"回答的是"我是不是点错了页码"。把后者说成前者是更坏的一种错，因为它是让人放心的那一种。分页也跟着挪了位：它原本渲染在非空分支**里面**，于是最需要一条回到第一页的路的那个页面，恰好是唯一没有这条路的那一个；现在它按总数（而不是按本页行数）判定，与重定向和资源那两张表一致。空态改成一个三分支条件：有总数就报总数（`That is past the last page. There are N entries…`，带筛选时把筛选也说上），无总数但有筛选就说"没有该动作的条目"，都不是才是原来那句。
+
+**同一次 e2e 里，新测试又抓出第二个用户可见的缺陷：计数行印的是 "12 entrys"。** `Pagination` 按 `${noun}s` 造复数，那条规则对它所接过的每一个名词都成立——直到这一页给它 `entry`。修法是给组件加一个可选的 `plural`，并在文档里点名这一个是它存在的原因（`TYPE_GROUP_LABELS` 对内容类型做过同一个判断、给过同一个理由）。测试里那个模式**照原样留着**并注明它抓到了什么：断言写的是 `/^\d+ entr(y|ies)$/`，把词拼全而不是宽松匹配，正是因为它是发现这件事的那条断言。
+
+**第三次红是我的测试自己错了，而错法值得记。** 再跑一遍独立 spec 时，桌面端绿、移动端红：`getByRole('table').getByText('auth.login')` 命中两个元素，playwright 报 strict mode violation。审计表是**累积**的，而桌面与移动两个 project 跑在同一个数据库上、各自登录一次，于是这一页上合理地有两行 `auth.login`。页面从没承诺过那一行只出现一次，**是断言凭空假设了唯一性**。加 `.first()`，并把这个理由写进注释（这条断言说的是"渲染了什么"，不是"渲染了几行"）。三处修复的顺序值得记下来：一个用户可见的谎、一个用户可见的拼写、一个测试自己的假设——**只有前两个是产品的缺陷，第三个是测量的缺陷**，而三者的发现顺序恰好是从"补上缺的那一半测试"开始的。
+
+回归数字：lint 干净、typecheck 干净、**1185 单元 / 106 跳过（1291，35 个文件）**、**1352 集成 / 4 跳过（1356，43 个文件）**、**66 e2e**。上一批那一行是 1141 单元 / 99 跳过、1301 集成、64 e2e，所以这一批净增 51 条（1141 + 44 = 1185，99 + 7 = 106——51 条里 7 条按房子的门挂在 `TEST_DATABASE_URL` 上）；集成多 51 条，同样是"同一批单元用例被两个套件各跑一次"（集成配置的 include 同时收 `tests/integration/**` 与 `tests/unit/**`）；e2e 多 2 条 = 一个 spec 文件在两个 project 各跑一次。**单元的 1185 是去掉 `TEST_DATABASE_URL` 量的**（`env -u TEST_DATABASE_URL`），与上一批那一行可比；带着这个变量量出来是 1287 / 4，总数不变而分区改变，理由与上一批记的相同。
+
+留在这里没动、也不打算在这一批动的一条：**标签操作只在它改写了文档时才留下痕迹。** `rewriteTag` 的 `recordAudit` 写在逐文档的循环里（`action: 'post.update'`，`metadata.via: 'tag.rename'`），所以一次改名/合并/删除会为**每一个被改写的文档**写一行；而当这个标签当前没有任何文档时（源码里那句注释自己就点名了这种状态："a delete of a tag that no document carries still has a row to drop"），循环一次都不进，**整条操作一行都不留**——同一批代码里，改一条 URL 重定向都会写 `redirect.create`。词表里没有 `tag.*` 这一族，而词表自己的文档写着"Adding an action is a deliberate edit here"：这是设计，所以这一条要么补一族动作（一次刻意的编辑），要么把"每个写操作一行"那句承诺改窄。**正在查，结论写在下一批。**
+
+---
+
 ## 附录：`ARCHITECTURE.md` 的来历
 
 `ARCHITECTURE.md` 是按 project.md 的要求**先于实现**写成的，因此在实现过程中被推翻了若干条

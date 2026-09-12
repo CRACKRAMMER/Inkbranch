@@ -656,7 +656,7 @@ export const auditLogs = pgTable(
     userId: uuid('user_id').references(() => users.id, {
       onDelete: 'set null',
     }),
-    /** Stable machine key, e.g. `content.update`, `auth.login`. */
+    /** Stable machine key, one of `AUDIT_ACTIONS`, e.g. `post.update`, `auth.login`. */
     action: varchar('action', { length: 80 }).notNull(),
     targetType: varchar('target_type', { length: 40 }),
     targetId: varchar('target_id', { length: 200 }),
