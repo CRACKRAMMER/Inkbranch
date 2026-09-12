@@ -326,7 +326,8 @@ export async function failJob(
               status: 'failed' as const,
               finishedAt: new Date(),
               // `locked_at` and `locked_by` are left alone: which worker last
-              // ran it is the only provenance a failed row has.
+              // ran it is the only provenance a failed row has, and the queue
+              // table on `/admin/system` is where that is read.
             }),
       })
       .where(eq(scheduledJobs.id, id))

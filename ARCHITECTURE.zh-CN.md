@@ -139,14 +139,14 @@ Postgres。版本下限是 13，这个下限由 `gen_random_uuid()` 决定 —�
 | `tags` | 规范化的标签记录。 | `slug`（唯一）、`name`、`description`、`color` |
 | `content_tags` | 多对多。 | `content_id`、`tag_id` |
 | `content_links` | 已解析的内部链接 + 图片引用。驱动反向链接与"未被使用的资源"。 | `source_id`、`kind`（`internal`\|`wiki`\|`image`\|`anchor`）、`target_key`、`target_id`、`label` |
-| `assets` | 上传媒体的元数据。 | `path`、`url`、`mime`、`size`、`width`、`height`、`variants`、`thumbnail`、`blur_data_url`、`alt` |
+| `assets` | 上传媒体的元数据。 | `path`、`url`、`mime`、`size`、`width`、`height`、`sha256`（内容哈希，上传去重用它）、`variants`、`thumbnail`、`blur_data_url`、`alt` |
 | `redirects` | 旧 URL → 新 URL。用于处理 Ghost 迁移。 | `from_path`（唯一）、`to_path`、`status_code`、`enabled`、`hits` |
 | `site_settings` | 单行、类型化的设置。 | 身份信息、SEO、功能开关、git、修订、关于页、自定义 |
 | `navigation` | 页头 / 页脚 / 社交菜单。 | `location`、`label`、`href`、`position`、`visible`、`external`、`icon` |
 | `analytics_daily` | 按天预聚合。 | `day`、`path`、`content_id`、`views`、`visitors`、`referrer_domain`、`device`、`country` |
 | `analytics_events` | 原始事件，短期保留，**不存 IP**。 | `created_at`、`path`、`content_id`、`referrer_domain`、`device`、`visitor_hash` |
 | `audit_logs` | 每一次会改数据的后台操作。 | `user_id`、`action`、`target_type`、`target_id`、`meta`（jsonb）、`ip_hash` |
-| `scheduled_jobs` | 定时发布、内容同步、重建索引、分析聚合与保留任务的持久队列。 | `type`、`run_at`、`status`、`attempts`、`locked_at`、`last_error` |
+| `scheduled_jobs` | 定时发布、内容同步、重建索引、分析聚合与保留任务的持久队列。 | `type`、`run_at`、`status`、`attempts`、`max_attempts`、`last_error`、`locked_at`、`locked_by`、`dedupe_key`（与 `type` 联合唯一，只在 pending 行上） |
 
 **刻意缺席的：** `posts.body` 列。文章正文只存在于一个地方 —— 那个 `.md` 文件。
 

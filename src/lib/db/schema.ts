@@ -684,6 +684,14 @@ export const scheduledJobs = pgTable(
     maxAttempts: integer('max_attempts').notNull().default(5),
     lastError: text('last_error'),
     lockedAt: timestamp('locked_at', { withTimezone: true }),
+    /**
+     * The worker holding the claim, as `worker-<hostname>-<pid>`.
+     *
+     * Left in place when a job finishes or fails and cleared only when it goes
+     * back to the queue, so the column answers "which process last held this?"
+     * for everything a worker has touched. Read by the queue table on
+     * `/admin/system`, which is why a failed row keeps it.
+     */
     lockedBy: varchar('locked_by', { length: 80 }),
     /** Deduplicates: at most one pending job per (type, key). */
     dedupeKey: varchar('dedupe_key', { length: 200 }),

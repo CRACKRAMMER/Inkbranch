@@ -202,6 +202,9 @@ export default async function SystemPage({
                     <th scope="col" className="py-2 pr-3 font-medium text-ink-muted">
                       Run at
                     </th>
+                    <th scope="col" className="py-2 pr-3 font-medium text-ink-muted">
+                      Worker
+                    </th>
                     <th scope="col" className="py-2 font-medium text-ink-muted">
                       Last error
                     </th>
@@ -240,6 +243,9 @@ export default async function SystemPage({
                           </span>
                         ) : null}
                       </td>
+                      <td className="py-2.5 pr-3 font-mono text-xs text-ink-muted">
+                        {job.lockedBy ?? '—'}
+                      </td>
                       <td className="py-2.5 text-xs text-ink-muted">
                         {job.lastError ?? '—'}
                       </td>
@@ -252,6 +258,9 @@ export default async function SystemPage({
             <p className="mt-4 text-xs leading-relaxed text-ink-subtle">
               A job that failed is retried with a growing delay until it runs out of attempts; the
               count above is how many it has used. Retrying one by hand means queueing it again.
+              Worker is the process that last held the job — its host and its pid — and it is empty
+              for a job no worker has taken yet. A failure keeps it: which process gave up is the
+              only provenance the row has.
             </p>
           </>
         )}

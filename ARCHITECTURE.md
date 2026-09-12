@@ -146,14 +146,14 @@ Postgres. The floor is 13, and it is set by `gen_random_uuid()`, which is the ne
 | `tags` | Canonical tag records. | `slug` (unique), `name`, `description`, `color` |
 | `content_tags` | Many-to-many. | `content_id`, `tag_id` |
 | `content_links` | Resolved internal links + image refs. Drives backlinks and "unused asset". | `source_id`, `kind` (`internal`\|`wiki`\|`image`\|`anchor`), `target_key`, `target_id`, `label` |
-| `assets` | Uploaded media metadata. | `path`, `url`, `mime`, `size`, `width`, `height`, `variants`, `thumbnail`, `blur_data_url`, `alt` |
+| `assets` | Uploaded media metadata. | `path`, `url`, `mime`, `size`, `width`, `height`, `sha256` (content hash; dedupes uploads), `variants`, `thumbnail`, `blur_data_url`, `alt` |
 | `redirects` | Legacy URL → new URL. Handles the Ghost migration. | `from_path` (unique), `to_path`, `status_code`, `enabled`, `hits` |
 | `site_settings` | Single-row typed settings. | identity, SEO, features, git, revisions, about, custom |
 | `navigation` | Header / footer / social menus. | `location`, `label`, `href`, `position`, `visible`, `external`, `icon` |
 | `analytics_daily` | Pre-aggregated by day. | `day`, `path`, `content_id`, `views`, `visitors`, `referrer_domain`, `device`, `country` |
 | `analytics_events` | Raw events, short retention, **no IP**. | `created_at`, `path`, `content_id`, `referrer_domain`, `device`, `visitor_hash` |
 | `audit_logs` | Every mutating admin action. | `user_id`, `action`, `target_type`, `target_id`, `meta` (jsonb), `ip_hash` |
-| `scheduled_jobs` | Durable queue for scheduled publishing, content sync, reindexing, analytics aggregation and retention. | `type`, `run_at`, `status`, `attempts`, `locked_at`, `last_error` |
+| `scheduled_jobs` | Durable queue for scheduled publishing, content sync, reindexing, analytics aggregation and retention. | `type`, `run_at`, `status`, `attempts`, `max_attempts`, `last_error`, `locked_at`, `locked_by`, `dedupe_key` (unique with `type`, pending rows only) |
 
 **Deliberately absent:** a `posts.body` column. Article text exists in exactly one place — the `.md` file.
 

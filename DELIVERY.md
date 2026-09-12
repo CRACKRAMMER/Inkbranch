@@ -120,14 +120,14 @@ Postgres + Drizzle ORM，SQL 迁移签入仓库（`src/lib/db/migrations/`，由
 | `content_revisions` | gzip 压缩的全文快照 + 增删行数 | `content_id`、`revision_no`、`snapshot`（bytea）、`additions`、`deletions`、`byte_size`、`author_id`、`summary` |
 | `tags` / `content_tags` | 标签与其多对多关系 | `slug`（唯一）、`name`、`description`、`color` |
 | `content_links` | 已解析的内链、锚点与图片引用，驱动反链与"未被引用" | `source_id`、`kind`、`href`、`target_key`、`target_id`、`asset_id`、`label`、`resolved` |
-| `assets` | 上传媒体元数据 | `path`、`url`、`filename`、`mime`、`size`、`width`、`height`、`blur_data_url`、`variants`（webp/avif 派生物）、`thumbnail`（网格用的缩小副本）、`alt`、`uploaded_by` |
+| `assets` | 上传媒体元数据 | `path`、`url`、`filename`、`mime`、`size`、`width`、`height`、`blur_data_url`、`sha256`（内容哈希，上传去重按它查）、`variants`（webp/avif 派生物）、`thumbnail`（网格用的缩小副本）、`alt`、`uploaded_by` |
 | `redirects` | 旧 URL → 新 URL（Ghost 迁移用） | `from_path`（唯一）、`to_path`、`status_code`、`enabled`、`hits` |
 | `site_settings` | 单行类型化设置（用 check 约束保证单行） | 站点标识、SEO、analytics/search/graph/rss/comments 开关、git、修订策略、About 内容 |
 | `navigation` | 头部/底部/社交菜单 | `location`、`label`、`href`、`position`、`visible`、`external`、`icon` |
 | `analytics_daily` | 按日预聚合 | `day`、`path`、`content_id`、`views`、`visitors`、`referrer_domain`、`device`、`country` |
 | `analytics_events` | 原始事件，短期留存，**不含 IP** | `created_at`、`path`、`content_id`、`referrer_domain`、`device`、`visitor_hash` |
 | `audit_logs` | 所有后台写操作 | `user_id`、`action`、`target_type`、`target_id`、`meta`、`ip_hash`、`outcome` |
-| `scheduled_jobs` | 持久化任务队列 | `type`、`run_at`、`status`、`attempts`、`locked_at`、`last_error` |
+| `scheduled_jobs` | 持久化任务队列 | `type`、`run_at`、`status`、`attempts`、`max_attempts`、`last_error`、`locked_at`、`locked_by`（持有或最后持有它的 worker）、`dedupe_key`（与 `type` 联合唯一，只在 pending 行上） |
 | `rate_limits` | 限流令牌桶（登录、上传、搜索） | `key`、`tokens`、`last_refill_at`、`expires_at` |
 
 对照设定稿第三十六节要求的最少表集合，全部具备；额外增加了 `content_links`、
@@ -771,6 +771,11 @@ URL 写即可。
     页面"。另有 `SETTINGS_CACHE_TAG`，后台的"清除缓存"动作会 `updateTag` 它，但当前没有
     `'use cache'` 消费者（`getSettings` 是每请求 memo）——这同样写在
     `src/app/admin/actions/system.ts` 的注释里，按钮的回复也照实说。
+7. `assets.uploaded_by` 写得上、没有读取点，也是有意保留。它记的是"谁上传的"，而这件事在第 4 条
+    的账上：本产品只有一个管理员账号，`pnpm db:seed` 是唯一能建账号的地方，所以这一列永远只有
+    一个可能的值；同一件事在 `audit_logs` 里还有一份（创建行时那次 `asset.upload` 带 `actorId`）。
+    不删的理由是它记的是**上传那一刻**才知道的事实，而那一刻不会再来：留着是零成本，删掉要一次
+    破坏性迁移，换来的只是少一列。
 
 **本节最后一条记的是一件已补上的事，而不是缺口：第十一节的 wiki 链接，此前只有"边"那一半。**
 它不是设定稿列出的缺口，是查证时发现的。
@@ -914,6 +919,40 @@ best-effort 加 `console.error`，和 `touchSession`（`src/lib/auth/session.ts`
 action 里、读在一次渲染里，两者只在真实请求里相遇。
 
 回归数字：lint 干净、typecheck 干净、1126 单元、1286 集成、62 e2e。
+
+**再补一条，这次错的不是代码，是"证据"本身：上一批那次列名订正，删掉了一个真实的列。**
+判据是"从 `schema.ts` 抽出真实列名，再逐行比对文档"，而那个抽取脚本的正则漏掉了**键里带
+数字**的列——`sha256` 恰好是唯一一个。于是 `assets.sha256`（`not null`、有索引、上传去重
+正是按它查的那一列）被以"文档写了、schema 里没有"为由删掉，和确实不存在的 `average_color`
+与 `storage` 一起被删了：三个里两个是真错，一个是我造的错。
+
+这一批的判据换成了**活库**：`information_schema.columns`。重写后的抽取器与它逐表逐列对了
+一遍：16 张表、每一列都对得上。差异只有两处，而且都不是解析器读错了——`__drizzle_migrations`
+是 drizzle 自己的记账表，本来就不在 `schema.ts` 里；`users.role` 则反过来，`schema.ts` 里已经
+没有它了（`0002` 迁移干的就是删它），而这台开发库还没应用那条迁移，所以库里还留着。两边对
+同一个问题给了不同答案，而各自都对：一个说的是代码期待的形状，一个说的是这台库此刻的样子
+——顺带说明这台开发库还差一次 `0002`。
+
+方法留在这里：**产出证据的东西，要对着一个不依赖它的东西校验过**。两个脚本两个 bug，性质
+相同——一个是正则漏掉键里的数字，一个是 `pgTable(` 与 `{` 同行的表。
+
+同批接上了 `scheduled_jobs.locked_by`。它的三处决定都写在代码里：claim 时写、失败时**故意
+留着**、回队列时清掉；失败那条的注释写着"哪个 worker 最后跑过它是失败行唯一的来历"——而
+"唯一的来历"在界面上从未出现过。接在 `/admin/system` 的队列表上、排在最后错误之前，显示
+`worker-<host>-<pid>`；没人领过的行显示破折号（pending 行和失败后回队列的行含义相同：还没有
+worker 碰过它）。判据与设备列表、登录时间那两条一致。
+
+证据分层：claim 那一半本来就有——`tests/unit/jobs.test.ts` 断言 `claimNextJob` 回来的
+`lockedBy`；新增的 `tests/e2e/queue.spec.ts` 在真实页面上断两件事：列在（按表头找而不按位置，
+所以插一列不会让它悄悄变成对另一个格子的断言），以及队列里那个没人领的任务那格是破折号。
+**有值的那一半这个套件造不出来**：跑 Playwright 时没有 worker 进程，"有 worker 的行长什么样"
+只能由那一行表达式自己负责——这条限制连同理由写在 spec 的文件头，不写就是让下一个人以为
+覆盖到了。
+
+剩下那列 `assets.uploaded_by` 没有接，而是写进了上面第 7 条：它记的值只有一个可能（第 4 条：
+本产品只有一个管理员账号），删它却要一次破坏性迁移。
+
+回归数字：lint 干净、typecheck 干净、1126 单元、1286 集成、64 e2e。
 
 **再补一条，仍是查证时发现的：权限系统只装了一半，而剩下的那一半只是后台页脚里的一个词。**
 `users.role`（`owner` / `editor`）从 `0000` 初始迁移就在，`requireOwner` 从安全那次提交就在，两边
