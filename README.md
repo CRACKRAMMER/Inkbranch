@@ -52,7 +52,7 @@ codebase:
 |-------------|-------|
 | Node.js 22+ | `engines.node` is `>=22`. The Docker image is `node:22-alpine`. |
 | pnpm | `packageManager` pins `pnpm@12.3.4`; Corepack reads it. `corepack enable` is enough. |
-| PostgreSQL | `docker-compose.yml` pins `postgres:17-alpine`. The schema uses nothing newer than Postgres 16, which ARCHITECTURE.md cites as the floor. |
+| PostgreSQL | `docker-compose.yml` pins `postgres:17-alpine`, and 17 is what this is tested against. The floor is 13 — `gen_random_uuid()` is the newest thing the schema asks for (ARCHITECTURE.md §4). |
 
 No Redis, no Meilisearch, no message queue. Search is an in-process index,
 sessions live in Postgres, and scheduled work is a worker loop.

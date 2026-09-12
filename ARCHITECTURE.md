@@ -133,7 +133,7 @@ Notes accept a missing `title` (derived from the first heading or first line), a
 
 ## 4. Database Schema
 
-Postgres 16+. Drizzle ORM, SQL migrations checked in.
+Postgres. The floor is 13, and it is set by `gen_random_uuid()`, which is the newest thing the schema asks for; `docker-compose.yml` pins `postgres:17-alpine`, and 17 is what this is tested against. Drizzle ORM, SQL migrations checked in under `src/lib/db/migrations/`.
 
 | Table | Purpose | Key columns |
 |-------|---------|-------------|
@@ -296,22 +296,32 @@ would pass against a status line that lies.
 
 ## 6. Markdown Pipeline
 
-Server-side only. Zero client JS for rendering.
+Server-side only. Zero client JS for rendering. Frontmatter is not part of this pipeline: `src/lib/content/frontmatter.ts` splits it off and parses it before any Markdown is rendered.
 
 ```
 raw markdown
   → remark-parse
-  → remark-gfm          tables, task lists, footnotes, strikethrough
-  → remark-frontmatter  (consumed by our own parser, stripped here)
-  → remark-math         $inline$ and $$block$$
-  → remark-directive    :::note / :::warning containers
-  → custom: file trees, tabs, keys, details, callouts
-  → rehype-slug + rehype-autolink-headings
+  → remark-gfm            tables, task lists, footnotes, strikethrough
+  → remark-deflist        definition lists
+  → remark-math           $inline$ and $$block$$
+  → remark-directive      :::note containers
+  → remark-blocks         file trees, tabs, keys, details (ours)
+  → remark-alerts         > [!NOTE] GitHub alerts (ours)
+  → remark-display-math   rewrites $$-fenced inline math into a display node (ours)
+  → mdast → hast          remark-rehype, allowDangerousHtml, our own handlers
+  → rehype-capture-code-meta   moves fence meta off the node before rehype-raw (ours)
+  → rehype-raw
+  → rehype-sanitize       explicit allow-list, extended for the nodes above
+  → rehype-enhance        heading ids, table wrappers, link policy, <picture> (ours)
+  → rehype-code           Shiki, dual themes, diff and line highlights (ours)
   → rehype-katex
-  → rehype-pretty-code (Shiki, dual themes, line/word highlight, diff)
-  → rehype-sanitize     (schema extended for our own nodes)
+  → feature collection    what the page must know about its own markup (ours)
   → rehype-stringify
 ```
+
+Plugin names in this list are the ones in `package.json`; the passes marked *(ours)* are in `src/lib/markdown/`. There is no `rehype-pretty-code`, no `rehype-slug` and no `rehype-autolink-headings` here — the capabilities are present, but they are this project's own passes, which is what allows them to run in the order below.
+
+**Order carries two decisions.** First, `rehype-sanitize` runs *before* the transformers that emit this site's markup, not after: everything downstream of it (`rehypeEnhance`, `rehypeCode`, `rehypeKatex`) produces markup this project controls, so there is nothing left to sanitise and `rehypeEnhance` may emit a `<picture>` the allow-list does not carry. Second, `rehypeCaptureCodeMeta` runs before `rehype-raw`, because the parse5 round trip cannot carry data on the node.
 
 **Shiki runs at build/render time on the server.** The client receives pre-highlighted HTML with dual `--shiki-light` / `--shiki-dark` CSS variables. Theme switching is a CSS class change — no re-highlight, no highlighter bundle on the client.
 
@@ -323,7 +333,11 @@ Headings · tables · blockquotes · task lists · footnotes · KaTeX · Mermaid
 
 ### Security
 
-`rehype-sanitize` runs last with an explicit allow-list. Raw HTML is permitted only for tags we know. `iframe` is restricted to a configured origin allow-list. This closes the Markdown-XSS vector from `dangerouslySetInnerHTML`.
+`rehype-sanitize` runs early, with an explicit allow-list, over everything the author wrote: raw HTML survives only for tags on that list and only with the attributes listed for them, so `script`, `style` and event handlers do not. What runs after it is this project's own code, emitting markup the author influences only through the inputs it was handed — which is why nothing downstream is sanitised again.
+
+An `iframe` is on the allow-list, but two things have to be true at once: the sanitiser keeps the element with a restricted attribute set, and `rehypeEnhance` then removes any whose source is not on `ALLOWED_EMBED_ORIGINS`. Two checks rather than one, because the sanitiser cannot know which origins this site trusts.
+
+Together these close the Markdown-XSS vector at `dangerouslySetInnerHTML`.
 
 ---
 
@@ -331,22 +345,22 @@ Headings · tables · blockquotes · task lists · footnotes · KaTeX · Mermaid
 
 `src/lib/search/` exposes a `SearchProvider` interface so Meilisearch can be swapped in later without touching call sites.
 
-```
+```ts
 interface SearchProvider {
-  search(q: string, opts): Promise<SearchHit[]>
-  upsert(doc: SearchDocument): Promise<void>
-  remove(id: string): Promise<void>
-  rebuild(docs: SearchDocument[]): Promise<void>
+  readonly name: string
+  search(query: SearchQuery): Promise<SearchResult>
 }
 ```
 
+**Two methods, and the interface is small on purpose.** An earlier shape also carried `upsert`, `remove` and `rebuild`, which were dropped: those are the shape of a *local* store — a thing that holds the index and has to be told about every edit — and requiring them of a remote implementation would push a local store's bookkeeping onto a service that keeps its own. A provider that needs to know a document changed can hear it from `src/lib/admin/revalidate.ts`, which is where the shipped one hears it.
+
 The shipped provider is **local, in-process, BM25**:
 
-- **Tokenization:** ASCII words (lowercased, stem-free, length ≥ 2) **plus CJK bigrams**. Bigrams give useful Chinese recall without a dictionary-based segmenter and without a native dependency.
-- **Fields:** `title` (boost 5), `tags` + `category` (boost 3), `description` (boost 2), `body` (boost 1).
-- **Persistence:** `.cache/search-index.json`, keyed by each document's checksum. Rebuild only touches changed documents.
-- **Lifetime:** a module-level singleton, lazily built on first query, invalidated by the content engine on write.
-- **Query syntax:** `tag:linux`, `type:note`, `before:2026-01`, `after:2025-06`, plus plain terms.
+- **Tokenization:** ASCII words **plus CJK bigrams**. Bigrams give useful Chinese recall without a dictionary-based segmenter and without a native dependency. Words are reduced to a conservative stem (`render`, `renders` and `rendering` are one term) and there is no length floor — the index stores both the written form and its stem, so `postgres` → `postgre` costs nothing in recall.
+- **Fields:** `title` (weight 8), `tags` (6), `category` (5), `description` (4), `headings` (3), `body` (1) — `FIELD_WEIGHTS` in `src/lib/search/local.ts`, which records why `category` sits between `tags` and `description`.
+- **Persistence:** none. There is no index file. The index is built in-process from the content tree, and a tree fingerprint decides whether to rebuild — checked at most once every `FINGERPRINT_TTL_MS` (5 s), so a burst of queries walks the tree once.
+- **Lifetime:** a module-level singleton, lazily built on first query, explicitly invalidated on write by `src/lib/admin/revalidate.ts`.
+- **Query syntax:** `type:note`, `tag:linux` / `tags:linux`, `category:engineering` / `categories:engineering`, quoted phrases, and plain terms. An unrecognised `name:value` is not silently ignored: it comes back in `ParsedQuery.unsupported` and the search page and the palette both tell the reader which filter was not applied. `before:` and `after:` are in that category — they are not implemented, and the reader is told so rather than being handed unfiltered results.
 
 The palette (`Cmd/Ctrl+K`) queries `/api/search` (debounced, `AbortController`-cancelled). The response is small JSON; the palette renders it. Command mode (`>theme`, `>admin`, `>rss`) is resolved entirely on the client — no round-trip.
 
@@ -360,7 +374,7 @@ Three independent mechanisms, no AI involved.
 2. **Related content** — a weighted score over shared tags (Jaccard), same category, shared internal links, and title-keyword overlap. Computed at request time from `content_index` + tag sets; results are cached per slug.
 3. **Knowledge graph** — nodes are documents and tags; edges are `content_tags` plus `content_links`. Serialized to a compact `{nodes, edges}` payload, fetched only when `/graph` mounts, rendered on canvas with a small hand-written force layout.
 
-Keeping the graph off the main bundle is a hard requirement: `/graph` is the only route that imports it, and the route is `dynamic = 'force-static'` with client-side fetch of `/api/graph`.
+Keeping the graph off the main bundle is a hard requirement: `/graph` is the only route that imports it, and the route renders a client component that fetches `/api/graph` from the browser. The page itself declares no caching of its own — it sits under the public layout, which is `force-dynamic` (§10) — and it is the `/api/graph` response that carries the cache headers: `public, max-age=300, s-maxage=3600, stale-while-revalidate=86400`.
 
 ---
 
@@ -384,15 +398,21 @@ Secrets (`SESSION_SECRET`, `DATABASE_URL`) are validated at boot by `src/env.ts`
 
 ## 10. Rendering & Caching
 
-| Route class | Strategy | Revalidation |
-|-------------|----------|--------------|
-| `/`, `/posts`, `/notes`, `/projects`, `/archive`, `/tags` | Dynamic RSC, data from the content cache | `revalidatePath` on save + tag-based `revalidateTag('content')` |
-| `/posts/[slug]`, `/notes/[slug]`, `/projects/[slug]` | Dynamic RSC — no `generateStaticParams`, and the body is read from the file on every request | On-demand revalidation from the write path |
-| `/graph`, `/admin/*` | Client-heavy, never prerendered | — |
+**The public reading tree is `force-dynamic`.** There is no `generateStaticParams`, no `revalidate` export, and no ISR anywhere in `src/app/(site)/` — one export on the layout covers the whole group.
+
+| Route class | Strategy | Freshness |
+|-------------|----------|-----------|
+| `/`, `/posts`, `/notes`, `/projects`, `/archive`, `/tags`, `/search` | Dynamic RSC, rendered per request | `revalidateContentChange` on save, clearing the client router cache for the affected paths |
+| `/posts/[slug]`, `/notes/[slug]`, `/projects/[slug]` | Dynamic RSC — the body is read from the file on every request | Same |
+| `/graph`, `/admin/*` | Rendered per request, never prerendered — `/graph` renders a client component that fetches `/api/graph` | — |
 | `/rss.xml`, `/atom.xml`, `/rss/[tag]`, `/rss/category/[category]`, `/sitemap.xml` | Route handlers, `force-dynamic` — the build has no database to read | Nothing to invalidate: rendered per request, then cached by shared caches |
 | `/robots.txt` | `MetadataRoute`, prerendered — it reads `SITE_URL` and nothing else | A rebuild |
 
-Public pages are served with `s-maxage=3600, stale-while-revalidate=86400`. The feeds set their own — `public, max-age=600, s-maxage=3600, stale-while-revalidate=86400` — because a feed is cheap to render and the reader being served is an aggregator that polls on its own schedule; a subscriber may be a few minutes behind a publish without anything being wrong.
+**Why the reading tree is dynamic** (`src/app/(site)/layout.tsx` argues it at length): the content tree is a volume, and the image is meant to be byte-identical whatever is published alongside it. A build that reads the content tree bakes the published state into the image, which fails quietly and in the wrong direction. Rendering on demand costs a handful of indexed queries against a local Postgres per request and buys three things: a publish is visible immediately, the build needs no database, and the image cannot contain content. It also covers the changes that never pass through the admin — a file dropped into `content/`, a `content:sync`, the worker flipping a scheduled post to published. None of those call `revalidatePath`, and under a time-based cache each would be invisible until the window elapsed.
+
+What is left to invalidate is the *client* router cache: without it, a client-side navigation back to a list page would serve the router's cached copy. That is `revalidateContentChange` in `src/lib/admin/revalidate.ts`, and it is the whole of the freshness mechanism.
+
+**Public pages carry no `Cache-Control` of their own.** Three routes set one, and only three: the feeds (`public, max-age=600, s-maxage=3600, stale-while-revalidate=86400` — a feed is cheap to render and the reader is an aggregator that polls on its own schedule, so a subscriber a few minutes behind a publish is not a problem), `/api/graph` (`max-age=300, s-maxage=3600, stale-while-revalidate=86400`), and the OG image route. Documentation elsewhere may describe a blanket `s-maxage` on article routes; there is none, and there should not be one on a tree that is deliberately dynamic.
 
 ### Feeds
 
@@ -416,7 +436,9 @@ Documents are matched by the stored string (`doc.category === name`, tag name me
 
 ## 11. Observability
 
-`/admin/system` reports: content index freshness (rows vs. files), search index state, upload directory size, DB size, pending scheduled jobs, failed jobs, and the last 50 audit entries. `src/lib/health.ts` exposes the same checks for `docker healthcheck`.
+`/admin/system` reports: content index freshness (rows vs. files), search index state, upload directory size, DB size, pending scheduled jobs, failed jobs, and the last 50 audit entries.
+
+`docker healthcheck` uses a narrower surface: `GET /api/health` (`src/app/api/health/route.ts`) checks the database and the content-index drift, and answers 503 only when the database is unreachable. Drift alone is `degraded` with a 200 — a build that comes up before the sync job has run is not a container that should be restarted, and saying so is the difference between a healthcheck that reports and one that flaps.
 
 ---
 
