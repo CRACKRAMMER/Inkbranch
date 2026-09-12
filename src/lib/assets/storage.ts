@@ -353,7 +353,6 @@ export interface PersistedAsset {
   filename: string
   /** False when these exact bytes were already on disk; nothing was rewritten. */
   created: boolean
-  averageColor: string | null
   /** What SVG sanitisation removed. Empty for every other format. */
   sanitizationRemoved: string[]
   skippedDerivatives: SkippedDerivative[]
@@ -483,7 +482,6 @@ export async function persistAsset(
     thumbnail,
     filename: metadataFilename(input.originalFilename, relativePath),
     created: written.includes(relativePath),
-    averageColor: prepared.averageColor,
     sanitizationRemoved: prepared.sanitizationRemoved,
     skippedDerivatives: prepared.skippedDerivatives,
     notes: prepared.notes,
@@ -508,7 +506,6 @@ function prepareSvgAsset(buffer: Buffer): ProcessedImage {
     width: null,
     height: null,
     blurDataUrl: null,
-    averageColor: null,
     derivatives: [],
     skippedDerivatives: [],
     thumbnail: null,
@@ -549,7 +546,6 @@ export interface StoreAssetResult {
   asset: AssetRow
   /** False when identical bytes were already stored; the existing row is returned. */
   created: boolean
-  averageColor: string | null
   /** What SVG sanitisation removed, for the admin to see. */
   sanitizationRemoved: string[]
   skippedDerivatives: SkippedDerivative[]
@@ -645,7 +641,6 @@ function resultFrom(
   return {
     asset,
     created,
-    averageColor: persisted.averageColor,
     sanitizationRemoved: persisted.sanitizationRemoved,
     skippedDerivatives: persisted.skippedDerivatives,
     notes: persisted.notes,

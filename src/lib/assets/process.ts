@@ -10,7 +10,7 @@ import { formatBytes } from '@/lib/utils/format'
  *
  * Bytes in, bytes out. Nothing here touches the filesystem, the database, or a
  * URL, which is what lets the decisions below — how to orient, when a
- * derivative is not worth producing, how small a blur placeholder has to be —
+ * derivative is not worth producing, when a thumbnail is not worth writing —
  * be exercised without a server.
  *
  * The one rule that shapes the whole module: **the bytes produced here are the
@@ -134,7 +134,6 @@ export interface ProcessedImage {
   width: number | null
   height: number | null
   blurDataUrl: string | null
-  averageColor: string | null
   derivatives: EncodedDerivative[]
   skippedDerivatives: SkippedDerivative[]
   /** Null when the image is already no larger than one, or could not be scaled. */
@@ -191,7 +190,6 @@ export async function processImage(
       width: null,
       height: null,
       blurDataUrl: null,
-      averageColor: null,
       derivatives: [],
       skippedDerivatives: [],
       thumbnail: null,
@@ -221,7 +219,6 @@ export async function processImage(
       width: metadata.width ?? null,
       height: metadata.height ?? null,
       blurDataUrl: null,
-      averageColor: null,
       derivatives: [],
       skippedDerivatives: [],
       thumbnail: null,
@@ -321,7 +318,6 @@ async function processStill(
 
   const notes: string[] = []
   const blurDataUrl = await blurPlaceholder(bytes, notes)
-  const averageColor = await averageColorOf(bytes)
   const thumbnail = await thumbnailOf(bytes, width, height, notes)
 
   return {
@@ -329,7 +325,6 @@ async function processStill(
     width,
     height,
     blurDataUrl,
-    averageColor,
     derivatives,
     skippedDerivatives,
     thumbnail,
@@ -431,35 +426,6 @@ async function blurPlaceholder(
   }
 
   return dataUrl
-}
-
-/**
- * Average colour, as `#rrggbb`.
- *
- * Transparent pixels are composited onto white first: the frontend paints this
- * behind the image, and an averaged alpha channel is a colour nobody ever sees.
- */
-async function averageColorOf(bytes: Buffer): Promise<string> {
-  const pixel = await sharp(bytes)
-    .flatten({ background: '#ffffff' })
-    .resize(1, 1, { fit: 'fill' })
-    .raw()
-    .toBuffer()
-    .catch((error: unknown) => {
-      throw new ImageProcessingError(
-        `Failed to reduce the image to its average colour: ${messageOf(error)}`,
-        error,
-      )
-    })
-
-  if (pixel.length < 3) {
-    throw new ImageProcessingError(
-      `Expected at least 3 channels from a 1x1 reduction, received ${pixel.length}`,
-    )
-  }
-
-  const [r, g, b] = [pixel[0] ?? 0, pixel[1] ?? 0, pixel[2] ?? 0]
-  return `#${[r, g, b].map((channel) => channel.toString(16).padStart(2, '0')).join('')}`
 }
 
 function messageOf(error: unknown): string {

@@ -440,15 +440,6 @@ describe('derivatives and placeholder', () => {
     expect(meta.width).toBe(12)
     expect(meta.height).toBe(12)
   })
-
-  it('reports the average colour of the image', async () => {
-    const stored = await persistAsset({
-      buffer: await makePng(24, 24, { r: 200, g: 40, b: 90 }),
-      originalFilename: 'flat.png',
-    })
-    // 200, 40, 90 is #c8285a.
-    expect(stored.averageColor).toBe('#c8285a')
-  })
 })
 
 /* -------------------------------------------------------------------------- */
@@ -634,7 +625,6 @@ describe('SVG sanitisation', () => {
     })
 
     expect(stored.blurDataUrl).toBeNull()
-    expect(stored.averageColor).toBeNull()
     expect(stored.variants).toEqual([])
     // Rasterising a vector to 480px would turn the one form that is sharp at
     // every size into a form that is sharp at one.
