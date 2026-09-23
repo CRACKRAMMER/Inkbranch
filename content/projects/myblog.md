@@ -1,5 +1,5 @@
 ---
-title: MyBlog
+title: Inkbranch
 slug: myblog
 description: The site you are reading. Markdown files as the source of truth, a Postgres index, and no CMS in the critical path.
 date: 2026-09-11
@@ -8,7 +8,7 @@ tags: [Next.js, Postgres, TypeScript, Search]
 category: Engineering
 projectStatus: active
 stack: [Next.js, TypeScript, PostgreSQL, Drizzle, Tailwind]
-repo: https://github.com/example/myblog
+repo: https://github.com/CRACKRAMMER/Inkbranch
 featured: true
 ---
 

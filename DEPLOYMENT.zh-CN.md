@@ -11,7 +11,7 @@
 ## 1. 受支持的路径
 
 ```bash
-git clone <repo> myblog && cd myblog
+git clone <repo> inkbranch && cd inkbranch
 cp .env.example .env             # compose 读取的是 .env，而不是 .env.local
 $EDITOR .env                     # POSTGRES_PASSWORD, SESSION_SECRET, SITE_URL, COOKIE_SECURE
 sudo chown -R 1001:1001 content uploads   # 见 §6 —— bind mount 会保留宿主的属主

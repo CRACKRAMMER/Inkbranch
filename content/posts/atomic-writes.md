@@ -121,5 +121,5 @@ Which is the same argument as [[why-not-catch]], applied one level down. A
 failure that is recorded as a failure can be acted on; a failure that is
 swallowed has to be rediscovered from its symptoms.
 
-This is the write path under [[MyBlog]] — see the project page for how the lock,
+This is the write path under [[projects/myblog|Inkbranch]] — see the project page for how the lock,
 the revision store and the rename fit together.

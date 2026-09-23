@@ -1,4 +1,4 @@
-# MyBlog
+# Inkbranch · 墨枝
 
 [English](./README.md)
 

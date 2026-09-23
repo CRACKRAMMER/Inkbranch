@@ -15,7 +15,7 @@ system is shaped this way; this document is the runbook.
 ## 1. The supported path
 
 ```bash
-git clone <repo> myblog && cd myblog
+git clone <repo> inkbranch && cd inkbranch
 cp .env.example .env             # compose reads .env, not .env.local
 $EDITOR .env                     # POSTGRES_PASSWORD, SESSION_SECRET, SITE_URL, COOKIE_SECURE
 sudo chown -R 1001:1001 content uploads   # see §6 — a bind mount keeps host ownership

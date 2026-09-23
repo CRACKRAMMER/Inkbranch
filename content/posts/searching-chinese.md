@@ -139,6 +139,6 @@ one implementation, not a function called from twenty places.
 The switch should cost one file and one environment variable. If it costs more
 than that, the abstraction was in the wrong place.
 
-This is the search layer of [[MyBlog]]; [[reading-time-cjk]] is the same problem
+This is the search layer of [[projects/myblog|Inkbranch]]; [[reading-time-cjk]] is the same problem
 — whitespace tokenisation applied to a language that does not use it — showing
 up in a much smaller piece of code.
