@@ -62,6 +62,7 @@
 #   BACKUP_LABEL   appended to the filename, e.g. `pre-upgrade`
 
 set -euo pipefail
+umask 077
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
@@ -74,55 +75,23 @@ BACKUP_ROOT="${1:-$REPO_ROOT/backups}"
 BACKUP_KEEP="${BACKUP_KEEP:-14}"
 BACKUP_LABEL="${BACKUP_LABEL:-}"
 
-CONTENT_DIR="${CONTENT_DIR:-$REPO_ROOT/content}"
+source "$REPO_ROOT/scripts/lib/backup-common.sh"
+load_backup_configuration
 
-# Which uploads directory to archive.
-#
-# There are two, and they belong to different ways of running the site: a local
-# `pnpm dev` writes to `public/uploads` (the path Next serves with no
-# configuration) while the compose deployment bind-mounts `./uploads` over the
-# container's `/app/public/uploads`. `UPLOAD_DIR` decides, and it is the same
-# variable the application reads, so a deploy that sets it gets the right
-# directory backed up without anyone having to remember which mode they are in.
-# The default is a guess between the two, and it prefers `uploads/` when it
-# exists because that is the deployment.
-UPLOAD_DIR="${UPLOAD_DIR:-}"
-if [[ -z "$UPLOAD_DIR" ]]; then
-  if [[ -d "$REPO_ROOT/uploads" && ! -d "$REPO_ROOT/public/uploads" ]]; then
-    UPLOAD_DIR="$REPO_ROOT/uploads"
-  elif [[ -d "$REPO_ROOT/public/uploads" && ! -d "$REPO_ROOT/uploads" ]]; then
-    UPLOAD_DIR="$REPO_ROOT/public/uploads"
-  elif [[ -d "$REPO_ROOT/uploads" ]]; then
-    UPLOAD_DIR="$REPO_ROOT/uploads"
-  else
-    UPLOAD_DIR="$REPO_ROOT/public/uploads"
-  fi
-fi
+[[ "$BACKUP_KEEP" =~ ^[0-9]+$ ]] || { echo "error: BACKUP_KEEP must be a non-negative integer" >&2; exit 2; }
+[[ "$BACKUP_LABEL" =~ ^[A-Za-z0-9_-]*$ ]] || { echo "error: BACKUP_LABEL may contain only letters, digits, underscores and hyphens" >&2; exit 2; }
 
-# The environment files, in the order they are loaded. `.env` is what compose
-# reads and `.env.local` is what the application and the CLI read; a deployment
-# has at least one and often both.
 CONFIG_FILES=()
 for candidate in .env .env.local; do
   [[ -f "$REPO_ROOT/$candidate" ]] && CONFIG_FILES+=("$candidate")
 done
 
-# Read `DATABASE_URL` from `.env.local` when the caller has not already set it.
-# Deliberately not `source`: the file may contain values with characters the
-# shell would interpret, and only one variable is wanted.
-if [[ -z "${DATABASE_URL:-}" && -f "$REPO_ROOT/.env.local" ]]; then
-  DATABASE_URL="$(grep -E '^DATABASE_URL=' "$REPO_ROOT/.env.local" | head -1 | cut -d= -f2-)"
-  DATABASE_URL="${DATABASE_URL%\"}"
-  DATABASE_URL="${DATABASE_URL#\"}"
-  export DATABASE_URL
-fi
-
 if [[ -z "${DATABASE_URL:-}" ]]; then
-  echo "error: DATABASE_URL is not set and could not be read from .env.local" >&2
+  echo "error: DATABASE_URL is not set and could not be read from .env.local or .env" >&2
   exit 1
 fi
 
-for tool in pg_dump pg_restore zstd tar; do
+for tool in pg_dump pg_restore zstd tar realpath flock; do
   if ! command -v "$tool" >/dev/null 2>&1; then
     echo "error: $tool not found. Install postgresql-client and zstd, or run this" >&2
     echo "       inside the compose network with:" >&2
@@ -145,6 +114,10 @@ STAMP="$(date -u +%Y-%m-%d)"
 # the operator choose between the two; overwriting it would destroy the first.
 # So the name is the date, and a name already taken gets the next free suffix.
 mkdir -p "$BACKUP_ROOT"
+# Reserve the destination namespace while choosing a name and pruning. Two
+# concurrent backups must never publish or remove each other's archive.
+exec 9>"$BACKUP_ROOT/.backup.lock"
+flock -n 9 || { echo 'error: another backup is running in this destination' >&2; exit 1; }
 SUFFIX=""
 index=1
 while :; do
@@ -215,32 +188,31 @@ fi
 # The trees
 # ---------------------------------------------------------------------------
 
-# Counted with `find` rather than read back out of the archive: the manifest is
-# assembled before the archive exists, and a file count is a number an operator
-# can compare between two backups to see whether something went missing.
-TREE_PATHS=()
-
-if [[ -d "$CONTENT_DIR" ]]; then
-  TREE_PATHS+=(-C "$(dirname "$CONTENT_DIR")" "$(basename "$CONTENT_DIR")")
-  CONTENT_FILES="$(find "$CONTENT_DIR" -type f | wc -l)"
-else
-  echo "warning: no content directory at $CONTENT_DIR" >&2
-  CONTENT_FILES=0
-fi
-
-if [[ -d "$UPLOAD_DIR" ]]; then
-  TREE_PATHS+=(-C "$(dirname "$UPLOAD_DIR")" "$(basename "$UPLOAD_DIR")")
-  UPLOAD_FILES="$(find "$UPLOAD_DIR" -type f | wc -l)"
-else
-  echo "warning: no uploads directory at $UPLOAD_DIR" >&2
-  UPLOAD_FILES=0
-fi
+# Copy into stable archive member names; custom source basenames may collide.
+# Stop application/worker writes and external edits for a coherent snapshot.
+# Refuse missing trees and symlinks instead of creating an incomplete backup.
+for tree in "$CONTENT_DIR" "$UPLOAD_DIR"; do
+  [[ -d "$tree" && ! -L "$tree" ]] || { echo "error: missing or symlinked data directory: $tree" >&2; exit 1; }
+  if [[ -n "$(find "$tree" -type l -print -quit)" ]]; then
+    echo "error: symlinks are not supported in backup data: $tree" >&2
+    exit 1
+  fi
+done
+cp -a -- "$CONTENT_DIR" "$STAGING/content"
+cp -a -- "$UPLOAD_DIR" "$STAGING/uploads"
+rm -rf -- "$STAGING/content/.locks" "$STAGING/content/.tmp"
+CONTENT_FILES="$(find "$STAGING/content" -type f | wc -l)"
+UPLOAD_FILES="$(find "$STAGING/uploads" -type f | wc -l)"
+STAGED_MEMBERS+=(content uploads)
 
 # ---------------------------------------------------------------------------
 # Manifest
 # ---------------------------------------------------------------------------
 
 {
+  echo "archive_version=2"
+  echo "content_member=content"
+  echo "upload_member=uploads"
   echo "created_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   # `uname -n` rather than `hostname`, which is not present in every
   # environment this runs in — a container built from a minimal base has
@@ -253,7 +225,7 @@ fi
   echo "config_files=${CONFIG_FILES[*]:-none}"
   # The URL without its password. A manifest is a file that gets copied around,
   # mailed, and dropped in a ticket; a credential in it outlives the incident.
-  echo "database=$(printf '%s' "$DATABASE_URL" | sed -E 's#(://[^:]+):[^@]*@#\1:***@#')"
+  echo "database=$(redact_dsn "$DATABASE_URL")"
   echo "postgres_version=$(pg_dump --version | head -1)"
   echo "content_files=$CONTENT_FILES"
   echo "upload_files=$UPLOAD_FILES"
@@ -268,10 +240,10 @@ echo "  archiving…"
 # anything for Markdown and JSON, and still fast enough that a nightly job is
 # not a nightly wait.
 tar --create \
-    --one-file-system \
+    --format=pax \
+    --hard-dereference \
     --use-compress-program="zstd -9 -T0" \
     --file="$ARCHIVE.partial" \
-    "${TREE_PATHS[@]}" \
     -C "$STAGING" "${STAGED_MEMBERS[@]}"
 
 # A backup nobody has read back is a hope, not a backup. `zstd -t` verifies the
@@ -321,7 +293,7 @@ if [[ "$BACKUP_KEEP" -gt 0 ]]; then
   mapfile -t OLD < <(
     find "$BACKUP_ROOT" -mindepth 1 -maxdepth 1 -type f \
       -regextype posix-extended -regex '.*/backup-[0-9]{4}-[0-9]{2}-[0-9]{2}.*\.tar\.zst' \
-      | sort -r | tail -n "+$((BACKUP_KEEP + 1))"
+      -printf '%T@ %p\n' | sort -nr | tail -n "+$((BACKUP_KEEP + 1))" | cut -d' ' -f2-
   )
 
   if [[ ${#OLD[@]} -gt 0 ]]; then

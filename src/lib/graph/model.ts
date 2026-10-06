@@ -42,7 +42,9 @@ export interface RelationNode {
   url: string
   description: string
   status: ContentStatus
+  category: string | null
   series: string | null
+  scheduledAt: Date | null
   publishedAt: Date | null
   updatedAt: Date
   /** Heading text, in document order. */
@@ -83,15 +85,15 @@ export interface SortableNode {
  * search box refuses to find.
  */
 export function isVisible(
-  node: Pick<RelationNode, 'status' | 'publishedAt'>,
+  node: Pick<RelationNode, 'status' | 'scheduledAt'>,
   statuses: ReadonlySet<ContentStatus>,
 ): boolean {
   if (statuses.has(node.status)) return true
   return (
     statuses.has('published') &&
     node.status === 'scheduled' &&
-    node.publishedAt !== null &&
-    node.publishedAt.getTime() <= Date.now()
+    node.scheduledAt !== null &&
+    node.scheduledAt.getTime() <= Date.now()
   )
 }
 
@@ -271,6 +273,8 @@ export interface RelatedSignals {
   backlink: number
   /** Same series. */
   series: number
+  /** Same category. */
+  category: number
   /** Shared vocabulary in headings and description. */
   terms: number
 }
@@ -295,7 +299,8 @@ export const SIGNAL_WEIGHTS: Record<keyof RelatedSignals, number> = {
   // A direct reference is one relationship, however the two documents otherwise
   // compare, so it is worth a fixed amount rather than a computed one.
   backlink: 0.15,
-  series: 0.1,
+  series: 0.05,
+  category: 0.05,
   terms: 0.1,
 }
 
@@ -316,6 +321,7 @@ export function scoreRelated(
     links: linkAffinity(subject.outgoing, candidate.outgoing),
     backlink: linksDirectly(subject, candidate) ? 1 : 0,
     series: sameSeries(subject, candidate) ? 1 : 0,
+    category: subject.category !== null && subject.category === candidate.category ? 1 : 0,
     terms: termOverlap(subject, candidate),
   }
 

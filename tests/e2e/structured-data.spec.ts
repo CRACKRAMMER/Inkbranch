@@ -32,6 +32,15 @@ test.skip(
   'TEST_DATABASE_URL is not set, so the E2E suite has no database to run against.',
 )
 
+test('robots advertises the configured public origin and protects private routes', async ({ request }) => {
+  const response = await request.get('/robots.txt')
+  expect(response.status()).toBe(200)
+  const body = await response.text()
+  expect(body).toContain(`Host: ${SITE_ORIGIN}`)
+  expect(body).toContain(`Sitemap: ${SITE_ORIGIN}/sitemap.xml`)
+  for (const route of ['/admin', '/api/', '/preview/']) expect(body).toContain(`Disallow: ${route}`)
+})
+
 test('the home page describes the site and offers the search a crawler can use', async ({ page }) => {
   const response = await page.goto('/')
   expect(response?.status()).toBe(200)

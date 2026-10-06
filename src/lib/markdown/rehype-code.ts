@@ -227,14 +227,14 @@ async function buildCodeFigure(input: BuildCodeInput): Promise<Element> {
 /** Fallback for an unknown language: still styled, just not tokenised. */
 function plainTextHast(source: string, meta: ReturnType<typeof parseCodeFenceMeta>): Root {
   const lines = source.replace(/\n$/, '').split('\n')
-  const children: ElementContent[] = lines.map((line, index) => {
+  const children: ElementContent[] = lines.flatMap((line, index): ElementContent[] => {
     const displayNumber = meta.startLine + index
     const classes = new Set<string>(['code-line'])
     if (meta.highlightLines.includes(displayNumber)) classes.add('is-highlighted')
     if (meta.isDiff && line.startsWith('+')) classes.add('is-diff-add')
     else if (meta.isDiff && line.startsWith('-')) classes.add('is-diff-remove')
 
-    return element(
+    const span = element(
       'span',
       {
         className: [...classes].join(' '),
@@ -242,6 +242,11 @@ function plainTextHast(source: string, meta: ReturnType<typeof parseCodeFenceMet
       },
       line ? [{ type: 'text', value: line }] : [],
     )
+    // Copy reads textContent, so the visual line boxes also need real newline
+    // text, including the source's trailing newline, just as Shiki emits it.
+    return [span, ...(index < lines.length - 1 || source.endsWith('\n')
+      ? [{ type: 'text' as const, value: '\n' }]
+      : [])]
   })
 
   return {
@@ -383,7 +388,9 @@ function applyWordHighlights(root: Element, words: string[]): void {
 
   for (const target of textNodes.reverse()) {
     const parts = splitOnMatches(target.node.value, matcher)
-    if (parts.length === 1) continue
+    // Shiki commonly emits an identifier as its own text node. A single part
+    // can therefore be the entire highlighted token, rather than no match.
+    if (!parts.some((part) => part.highlighted)) continue
 
     const replacement: ElementContent[] = parts.map((part) =>
       part.highlighted

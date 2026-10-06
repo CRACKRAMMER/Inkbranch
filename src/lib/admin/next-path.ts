@@ -1,4 +1,5 @@
 import { LOGIN_PATH } from '@/lib/auth/session'
+import { internalPathProblem } from '@/lib/security/urls'
 
 /**
  * The destination to send someone to after signing in.
@@ -14,7 +15,7 @@ import { LOGIN_PATH } from '@/lib/auth/session'
  */
 export function safeNext(value: string | undefined | null): string {
   if (!value) return '/admin'
-  if (!value.startsWith('/') || value.startsWith('//')) return '/admin'
+  if (internalPathProblem(value) !== null) return '/admin'
   // Signing in and landing back on the sign-in page is a loop, not a redirect.
   if (value.startsWith(LOGIN_PATH)) return '/admin'
   return value

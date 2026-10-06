@@ -1,4 +1,5 @@
 import { and, count, eq, inArray, isNull, sql } from 'drizzle-orm'
+import { randomUUID } from 'node:crypto'
 import { env } from '@/env'
 import { db } from '@/lib/db'
 import {
@@ -16,10 +17,14 @@ import {
   type ContentDocument,
   parseDocument,
   scanContentFiles,
+  statContentFile,
   type ContentFileStat,
 } from './reader'
 import { incomingKeys, pickTarget, resolveTargetKeys } from './resolve'
 import type { ContentType } from './schema'
+import { withContentIndexLock } from './writer'
+import { CONTENT_ROOT } from './paths'
+import { assertNoSymlinkPath } from '@/lib/security/paths'
 
 /**
  * Content Sync Engine.
@@ -56,9 +61,9 @@ export interface SyncReport {
 
 export interface SyncOptions {
   /**
-   * When false, files whose mtime *and* size match the index are trusted and
-   * not hashed. Used by the boot check, where reading every file would delay
-   * the first request.
+   * Force a bookkeeping refresh even when checksums and file stats match.
+   * A sync parses files to reconcile tags and links; `checkContentDrift` is
+   * the cheap, stat-only check used before scheduling that work at startup.
    */
   hashAll?: boolean
   maxFiles?: number
@@ -78,6 +83,10 @@ export type SyncEvent =
 /* -------------------------------------------------------------------------- */
 
 export async function syncContent(options: SyncOptions = {}): Promise<SyncReport> {
+  return withContentIndexLock(() => syncContentUnlocked(options))
+}
+
+async function syncContentUnlocked(options: SyncOptions): Promise<SyncReport> {
   const started = Date.now()
   const emit = options.onEvent ?? (() => undefined)
 
@@ -95,44 +104,77 @@ export async function syncContent(options: SyncOptions = {}): Promise<SyncReport
     truncated: false,
   }
 
-  const files = await scanContentFiles(
-    options.maxFiles !== undefined ? { maxFiles: options.maxFiles } : {},
-  )
+  const maxFiles = options.maxFiles ?? env.CONTENT_MAX_FILES
+  const scanned = await scanContentFiles({ maxFiles: maxFiles + 1 })
+  const files = scanned.slice(0, maxFiles)
   report.scanned = files.length
-  report.truncated = files.length >= (options.maxFiles ?? env.CONTENT_MAX_FILES)
+  report.truncated = scanned.length > maxFiles
 
   const existing = await db.select().from(contentIndex)
   const byPath = new Map(existing.map((row) => [row.path, row]))
+  const bySlug = new Map(existing.map((row) => [`${row.type}/${row.slug}`, row]))
+  const scannedPaths = new Set(files.map((file) => file.relativePath))
+  const retainedIds = new Set<string>()
 
   const seenPaths = new Set<string>()
   /** Documents parsed this run, reused for the tag and link passes. */
   const parsed: { document: ContentDocument; row: ContentRow }[] = []
 
+  // All files were already read for tag/link reconciliation, including those
+  // with unchanged mtimes. Parse once up front so valid slug transfers are
+  // resolved independently of directory order, without another filesystem walk.
+  const documents = new Map<string, ContentDocument>()
   for (const file of files) {
     seenPaths.add(file.relativePath)
-    const current = byPath.get(file.relativePath)
+    try {
+      const document = await parseFile(file)
+      if (document) documents.set(file.relativePath, document)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      report.errors.push({ path: file.relativePath, message })
+      emit({ kind: 'error', path: file.relativePath, message })
+    }
+  }
+  const reassigned = await reassignChangedSlugs(documents, byPath, bySlug)
+
+  for (const file of files) {
+    let current = byPath.get(file.relativePath)
 
     try {
+      const document = documents.get(file.relativePath)
+      if (!document) continue
+      const reassignedRow = current ? reassigned.get(current.id) : undefined
+      if (reassignedRow) {
+        report.updated += 1
+        emit({ kind: 'updated', path: document.relativePath, title: document.title })
+        parsed.push({ document, row: reassignedRow })
+        continue
+      }
       const needsWork =
         !current ||
         current.checksum === '' ||
+        current.checksum !== document.checksum ||
         options.hashAll === true ||
         current.byteSize !== file.size ||
         !sameInstant(current.fileMtime, file.mtime)
 
       if (!needsWork && current) {
         report.unchanged += 1
-        parsed.push({ document: await loadForLinks(file, report), row: current })
+        parsed.push({ document, row: current })
         continue
       }
 
-      const document = await parseFile(file)
-      if (!document) {
-        report.unchanged += 1
-        continue
+      // A filesystem rename keeps the document and its revision history.
+      // Adopt its old row only when the former file is demonstrably absent.
+      if (!current && !report.truncated) {
+        const previous = bySlug.get(`${document.type}/${document.slug}`)
+        if (previous && !scannedPaths.has(previous.path) && !(await statContentFile(previous.path))) {
+          current = previous
+          retainedIds.add(previous.id)
+        }
       }
 
-      if (current && current.checksum === document.checksum) {
+      if (current && current.path === document.relativePath && current.checksum === document.checksum) {
         // Content is identical; only the mtime moved. Refresh the bookkeeping
         // columns without pretending the document changed.
         const [refreshed] = await db
@@ -171,7 +213,15 @@ export async function syncContent(options: SyncOptions = {}): Promise<SyncReport
   }
 
   // Anything indexed but no longer on disk.
-  const missing = existing.filter((row) => !seenPaths.has(row.path))
+  const missing: ContentRow[] = []
+  // A partial walk cannot prove deletion. Files may also appear after a scan.
+  if (!report.truncated) {
+    for (const row of existing) {
+      if (!seenPaths.has(row.path) && !retainedIds.has(row.id) && !(await statContentFile(row.path))) {
+        missing.push(row)
+      }
+    }
+  }
   if (missing.length > 0) {
     await markIncomingUnresolved(missing.map((row) => row.id))
     await db.delete(contentIndex).where(
@@ -193,6 +243,57 @@ export async function syncContent(options: SyncOptions = {}): Promise<SyncReport
 
   report.durationMs = Date.now() - started
   return report
+}
+
+/**
+ * Move changed live slugs together, including swaps, without exposing temporary
+ * names to readers. IDs, revision history and link associations remain intact.
+ * A duplicate live slug or a target held by an unreadable/unscanned file is
+ * excluded: those conflicts still produce the ordinary sync error.
+ */
+async function reassignChangedSlugs(
+  documents: Map<string, ContentDocument>,
+  byPath: Map<string, ContentRow>,
+  bySlug: Map<string, ContentRow>,
+): Promise<Map<string, ContentRow>> {
+  const liveCounts = new Map<string, number>()
+  const moves = new Map<string, { document: ContentDocument; row: ContentRow }>()
+  for (const document of documents.values()) {
+    const key = `${document.type}/${document.slug}`
+    liveCounts.set(key, (liveCounts.get(key) ?? 0) + 1)
+    const row = byPath.get(document.relativePath)
+    if (row && row.slug !== document.slug) moves.set(row.id, { document, row })
+  }
+  let changed = true
+  while (changed) {
+    changed = false
+    for (const [id, { document }] of moves) {
+      const key = `${document.type}/${document.slug}`
+      const owner = bySlug.get(key)
+      if (liveCounts.get(key) !== 1 || (owner && !moves.has(owner.id))) {
+        moves.delete(id)
+        changed = true
+      }
+    }
+  }
+  if (moves.size === 0) return new Map()
+
+  return db.transaction(async (transaction) => {
+    for (const { row } of moves.values()) {
+      await transaction.update(contentIndex)
+        .set({ slug: `__sync-${randomUUID()}` })
+        .where(eq(contentIndex.id, row.id))
+    }
+    const updated = new Map<string, ContentRow>()
+    for (const { document, row } of moves.values()) {
+      const [result] = await transaction.update(contentIndex)
+        .set(toRowValues(document))
+        .where(eq(contentIndex.id, row.id)).returning()
+      if (!result) throw new Error(`The content index row for ${document.relativePath} disappeared during sync`)
+      updated.set(result.id, result)
+    }
+    return updated
+  })
 }
 
 /* -------------------------------------------------------------------------- */
@@ -280,12 +381,12 @@ export interface BootCheckResult {
  * timestamps — and a full sync is scheduled in the background when it trips.
  */
 export async function checkContentDrift(): Promise<BootCheckResult> {
-  const files = await scanContentFiles()
+  const files = await scanContentFiles({ maxFiles: env.CONTENT_MAX_FILES + 1 })
   const rows = await db
     .select({ path: contentIndex.path, mtime: contentIndex.fileMtime, size: contentIndex.byteSize })
     .from(contentIndex)
 
-  if (files.length !== rows.length) {
+  if (files.length > env.CONTENT_MAX_FILES || files.length !== rows.length) {
     return { drift: true, scanned: files.length, indexed: rows.length }
   }
 
@@ -312,12 +413,17 @@ export async function checkContentDrift(): Promise<BootCheckResult> {
 export async function syncOneDocument(
   relativePath: string,
 ): Promise<{ row: ContentRow; document: ContentDocument } | null> {
-  const files = await scanContentFiles()
-  const file = files.find((f) => f.relativePath === relativePath)
+  return withContentIndexLock(() => syncOneDocumentUnlocked(relativePath))
+}
+
+async function syncOneDocumentUnlocked(
+  relativePath: string,
+): Promise<{ row: ContentRow; document: ContentDocument } | null> {
+  const file = await statContentFile(relativePath)
   if (!file) {
     // The file is gone; drop the row, and leave the links that pointed at it
     // looking as broken as they now are.
-    await removeFromIndex(relativePath)
+    await removeFromIndexUnlocked(relativePath)
     return null
   }
 
@@ -357,6 +463,10 @@ export async function syncOneDocument(
 
 /** Remove a document from the index and from every derived table. */
 export async function removeFromIndex(relativePath: string): Promise<void> {
+  return withContentIndexLock(() => removeFromIndexUnlocked(relativePath))
+}
+
+async function removeFromIndexUnlocked(relativePath: string): Promise<void> {
   const [row] = await db
     .select({ id: contentIndex.id })
     .from(contentIndex)
@@ -730,6 +840,7 @@ function toRowValues(document: ContentDocument) {
 
 async function parseFile(file: ContentFileStat): Promise<ContentDocument | null> {
   const fs = await import('node:fs/promises')
+  await assertNoSymlinkPath(CONTENT_ROOT, file.absolutePath, 'document')
   const raw = await fs.readFile(file.absolutePath, 'utf8')
   return parseDocument({
     relativePath: file.relativePath,
@@ -739,71 +850,8 @@ async function parseFile(file: ContentFileStat): Promise<ContentDocument | null>
   })
 }
 
-/** Read a document during the unchanged path, tolerating a parse failure. */
-async function loadForLinks(
-  file: ContentFileStat,
-  report: SyncReport,
-): Promise<ContentDocument> {
-  try {
-    const document = await parseFile(file)
-    if (document) return document
-  } catch (error) {
-    report.errors.push({
-      path: file.relativePath,
-      message: error instanceof Error ? error.message : String(error),
-    })
-  }
-  // A placeholder keeps the batch aligned; its links simply resolve to nothing.
-  return placeholderDocument(file)
-}
-
-function placeholderDocument(file: ContentFileStat): ContentDocument {
-  return {
-    type: file.type,
-    relativePath: file.relativePath,
-    absolutePath: file.absolutePath,
-    filename: file.filename,
-    slug: file.filename.replace(/\.(md|markdown)$/i, ''),
-    title: file.filename,
-    description: '',
-    status: 'draft',
-    category: null,
-    tags: [],
-    series: null,
-    lang: 'en',
-    publishedAt: null,
-    scheduledAt: null,
-    updatedAt: file.mtime,
-    fileMtime: file.mtime,
-    cover: null,
-    featured: false,
-    toc: false,
-    seo: {
-      title: null,
-      description: null,
-      canonical: null,
-      ogImage: null,
-      noindex: true,
-    },
-    headings: [],
-    wordCount: 0,
-    readingTime: 0,
-    projectStatus: null,
-    startedAt: null,
-    repoUrl: null,
-    websiteUrl: null,
-    techStack: [],
-    extra: {},
-    body: '',
-    raw: '',
-    plainText: '',
-    checksum: '',
-    byteSize: file.size,
-  }
-}
-
-/** Compare two instants at second resolution; Postgres timestamps have µs. */
+/** JS Dates retain millisecond precision on both sides of the database. */
 function sameInstant(a: Date | null | undefined, b: Date | null | undefined): boolean {
   if (!a || !b) return a === b
-  return Math.abs(a.getTime() - b.getTime()) < 1000
+  return a.getTime() === b.getTime()
 }

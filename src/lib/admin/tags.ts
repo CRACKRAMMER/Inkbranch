@@ -6,6 +6,7 @@ import { recordAudit, type AuditAction } from '@/lib/audit'
 import { parseFrontmatter } from '@/lib/content/frontmatter'
 import { pruneOrphanTags, syncContent } from '@/lib/content/sync'
 import { updateDocument } from '@/lib/content/writer'
+import { discardRecoverySnapshot } from '@/lib/content/recovery'
 import { db } from '@/lib/db'
 import { contentIndex, contentTags, tags, type ContentType, type ContentStatus } from '@/lib/db/schema'
 import { tagSlug } from '@/lib/utils/slug'
@@ -231,6 +232,7 @@ export async function rewriteTag(options: TagRewriteOptions): Promise<TagRewrite
     const written: { next: { data: Record<string, unknown>; body: string } | null } = {
       next: null,
     }
+    let recoveryPath: string | undefined
 
     try {
       const result = await updateDocument(document.path, (current) => {
@@ -255,7 +257,8 @@ export async function rewriteTag(options: TagRewriteOptions): Promise<TagRewrite
 
         written.next = { data, body: parsed.content }
         return { data, body: parsed.content }
-      })
+      }, { preservePrevious: true })
+      recoveryPath = result.recoveryPath
 
       report.written.push({
         path: document.path,
@@ -264,7 +267,7 @@ export async function rewriteTag(options: TagRewriteOptions): Promise<TagRewrite
         slug: document.slug,
       })
 
-      await captureWithPolicy({
+      const revision = await captureWithPolicy({
         contentId: document.id,
         type: document.type,
         slug: document.slug,
@@ -274,6 +277,7 @@ export async function rewriteTag(options: TagRewriteOptions): Promise<TagRewrite
         reason: 'save',
         actorId: actorId ?? null,
       })
+      if (revision.error) throw new Error(`Markdown was saved but revision capture failed. Previous bytes: ${result.recoveryPath ?? 'none'}`)
 
       await recordAudit({
         action: 'post.update',
@@ -293,6 +297,7 @@ export async function rewriteTag(options: TagRewriteOptions): Promise<TagRewrite
           ...(to ? { to: to.slug } : {}),
         },
       })
+      await discardRecoverySnapshot(result.recoveryPath)
     } catch (error) {
       if (isUnchanged(error)) {
         report.unchanged += 1
@@ -301,7 +306,7 @@ export async function rewriteTag(options: TagRewriteOptions): Promise<TagRewrite
       report.failed.push({
         path: document.path,
         title: document.title,
-        message: error instanceof Error ? error.message : String(error),
+        message: `${error instanceof Error ? error.message : String(error)}${recoveryPath ? ` Markdown was saved; previous bytes are retained at ${recoveryPath}.` : ''}`,
       })
     }
   }

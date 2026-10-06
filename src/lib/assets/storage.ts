@@ -14,6 +14,7 @@ import { assets, type AssetRow, type AssetThumbnail } from '@/lib/db/schema'
 import { sniffMime } from '@/lib/security/mime'
 import {
   joinRuntimePath,
+  assertNoSymlinkPath,
   resolveRelative,
   sanitizeFilename,
 } from '@/lib/security/paths'
@@ -203,12 +204,22 @@ export function storedRelativePath(sha256: string, ext: string): string {
 let directoriesReady: Promise<void> | null = null
 
 /** Create the upload directories once per process. */
-export function ensureUploadDirectories(): Promise<void> {
+export async function ensureUploadDirectories(): Promise<void> {
   directoriesReady ??= (async () => {
+    await assertNoSymlinkPath(UPLOAD_ROOT, UPLOAD_TMP_DIR, 'upload temporary directory')
     await fs.mkdir(UPLOAD_ROOT, { recursive: true })
     await fs.mkdir(UPLOAD_TMP_DIR, { recursive: true })
   })()
-  return directoriesReady
+  const initialization = directoriesReady
+  try {
+    await initialization
+  } catch (error) {
+    // A corrected mount or permission must be usable without restarting the
+    // process; keep concurrent callers on the same attempt but allow a retry.
+    if (directoriesReady === initialization) directoriesReady = null
+    throw error
+  }
+  await assertNoSymlinkPath(UPLOAD_ROOT, UPLOAD_TMP_DIR, 'upload temporary directory')
 }
 
 /**
@@ -250,7 +261,9 @@ async function writeAssetFile(
   bytes: Buffer,
 ): Promise<{ created: boolean }> {
   const target = resolveAssetFile(relativePath)
+  await assertNoSymlinkPath(UPLOAD_ROOT, target, 'asset')
   await fs.mkdir(path.dirname(target), { recursive: true })
+  await assertNoSymlinkPath(UPLOAD_ROOT, target, 'asset')
 
   // The name is the hash of these bytes, so a file already at this path holds
   // exactly them and the write is a no-op — which is what makes two uploads of
@@ -262,6 +275,12 @@ async function writeAssetFile(
     return { created: false }
   }
 
+  // Restore/maintenance can recreate the upload root during a running process.
+  // Initialization is cached, so ensure the staging directory before each write.
+  await assertNoSymlinkPath(UPLOAD_ROOT, UPLOAD_TMP_DIR, 'upload temporary directory')
+  await fs.mkdir(UPLOAD_TMP_DIR, { recursive: true })
+  await assertNoSymlinkPath(UPLOAD_ROOT, UPLOAD_TMP_DIR, 'upload temporary directory')
+
   const tmp = resolveRelative(
     UPLOAD_TMP_DIR,
     `${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}.tmp`,
@@ -269,7 +288,9 @@ async function writeAssetFile(
 
   let handle: Awaited<ReturnType<typeof fs.open>> | undefined
   try {
-    handle = await fs.open(tmp, 'wx', 0o644)
+    await assertNoSymlinkPath(UPLOAD_ROOT, tmp, 'temporary asset')
+    handle = await fs.open(tmp, fs.constants.O_WRONLY | fs.constants.O_CREAT |
+      fs.constants.O_EXCL | fs.constants.O_NOFOLLOW, 0o644)
     await handle.writeFile(bytes)
     await handle.sync()
     await handle.close()
@@ -301,7 +322,9 @@ export async function removeStoredFile(relativePath: string): Promise<{
   error?: string
 }> {
   try {
-    await fs.unlink(resolveAssetFile(relativePath))
+    const target = resolveAssetFile(relativePath)
+    await assertNoSymlinkPath(UPLOAD_ROOT, target, 'asset')
+    await fs.unlink(target)
     return { removed: true }
   } catch (error) {
     if (isNotFound(error)) return { removed: false }

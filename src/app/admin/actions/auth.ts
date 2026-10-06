@@ -1,6 +1,6 @@
 'use server'
 
-import { eq, sql } from 'drizzle-orm'
+import { and, eq, sql } from 'drizzle-orm'
 import { redirect } from 'next/navigation'
 import { z } from 'zod'
 
@@ -26,7 +26,7 @@ import {
   setCsrfCookie,
   setSessionCookie,
 } from '@/lib/auth/session'
-import { createSession, destroySession } from '@/lib/auth/session-store'
+import { CredentialChangedError, createSession, destroySession } from '@/lib/auth/session-store'
 import { hashToken } from '@/lib/auth/tokens'
 import { safeNext } from '@/lib/admin/next-path'
 import { db } from '@/lib/db'
@@ -148,16 +148,32 @@ export async function loginAction(
   // moment the plaintext is available to upgrade them.
   if (needsRehash(user.passwordHash)) {
     const upgraded = await hashPassword(password)
-    await db
+    const upgradedRows = await db
       .update(users)
       .set({ passwordHash: upgraded, updatedAt: sql`now()` })
-      .where(eq(users.id, user.id))
+      .where(and(
+        eq(users.id, user.id),
+        eq(users.passwordHash, user.passwordHash),
+        eq(users.sessionVersion, user.sessionVersion),
+      ))
+      .returning({ id: users.id })
+    if (upgradedRows.length === 0) {
+      return { error: 'The account credential changed during sign-in. Try again.' }
+    }
   }
 
-  const { token, csrfToken, expiresAt } = await createSession(user.id, {
-    ip: request.ip,
-    userAgent: request.userAgent,
-  })
+  let created
+  try {
+    created = await createSession(user.id, {
+      ip: request.ip,
+      userAgent: request.userAgent,
+      expectedSessionVersion: user.sessionVersion,
+    })
+  } catch (error) {
+    if (error instanceof CredentialChangedError) return { error: error.message }
+    throw error
+  }
+  const { token, csrfToken, expiresAt } = created
 
   await setSessionCookie({ token, expiresAt })
   await setCsrfCookie(csrfToken)

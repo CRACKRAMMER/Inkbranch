@@ -17,11 +17,8 @@ import { getRelationsIndex, scoringContext } from './relations'
  * this index can answer for itself — see `SIGNAL_WEIGHTS` in `./model` for the
  * weights and for why each exists.
  *
- * Two of project.md's four inputs are deliberately not signals of their own.
- * `category` is a coarser version of `series`: the same one-value-per-document
- * bucket pointing at the same kind of relationship, and counting it twice would
- * only let a document with both outrank one with the stronger of the two.
- * Keywords are the heading and description overlap, which is as close to
+ * Category and series share the small membership weight. Keywords are the
+ * heading and description overlap, which is as close to
  * "keywords" as an index without the body gets; see `termOverlap`.
  *
  * Everything runs against the in-memory relation index, so a page render costs
@@ -56,6 +53,8 @@ export interface RelatedPost {
    * the way search reports the fields a query matched.
    */
   signals: RelatedSignals
+  /** A relationship shared with the subject, rather than a candidate label. */
+  reason: string
 }
 
 export interface RelatedOptions {
@@ -92,13 +91,20 @@ export async function getRelatedPosts(
   const ranked = rankRelated(subject, candidates, scoringContext(index))
   const limit = clampLimit(options.limit, DEFAULT_RELATED_LIMIT, MAX_RELATED_LIMIT)
 
-  return ranked.slice(0, limit).map((entry) => toRelatedPost(entry.node, entry.score))
+  return ranked.slice(0, limit).map((entry) => toRelatedPost(subject, entry.node, entry.score))
 }
 
 function toRelatedPost(
+  subject: RelationNode,
   node: RelationNode,
   score: { total: number; signals: RelatedSignals },
 ): RelatedPost {
+  const sharedTag = node.tags.find((tag) => subject.tags.includes(tag))
+  const reason = score.signals.series && node.series ? node.series :
+    sharedTag ? `#${sharedTag}` :
+    score.signals.category && node.category ? node.category :
+    score.signals.backlink ? 'linked document' :
+    score.signals.links ? 'shared references' : 'similar topics'
   return {
     id: node.id,
     type: node.type,
@@ -111,5 +117,6 @@ function toRelatedPost(
     publishedAt: node.publishedAt,
     score: score.total,
     signals: score.signals,
+    reason,
   }
 }

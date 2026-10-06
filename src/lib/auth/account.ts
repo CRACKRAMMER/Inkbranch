@@ -43,7 +43,7 @@ import { hashPassword, verifyPassword } from './password'
  * the comparison rejects it — and only the comparison does.
  */
 
-export type PasswordChangeRefusal = 'wrong-password' | 'unchanged'
+export type PasswordChangeRefusal = 'wrong-password' | 'unchanged' | 'credential-changed'
 
 export class PasswordChangeError extends Error {
   readonly code = 'PASSWORD_CHANGE'
@@ -91,7 +91,7 @@ export async function changePassword(
   actor: { ipHash: string | null },
 ): Promise<PasswordChangeOutcome> {
   const [user] = await db
-    .select({ passwordHash: users.passwordHash })
+    .select({ passwordHash: users.passwordHash, sessionVersion: users.sessionVersion })
     .from(users)
     .where(eq(users.id, input.userId))
     .limit(1)
@@ -132,10 +132,19 @@ export async function changePassword(
         sessionVersion: sql`${users.sessionVersion} + 1`,
         updatedAt: sql`now()`,
       })
-      .where(eq(users.id, input.userId))
+      .where(and(
+        eq(users.id, input.userId),
+        eq(users.passwordHash, user.passwordHash),
+        eq(users.sessionVersion, user.sessionVersion),
+      ))
       .returning({ sessionVersion: users.sessionVersion })
 
-    if (!updated) throw new Error(`User ${input.userId} disappeared mid-transaction`)
+    if (!updated) {
+      throw new PasswordChangeError(
+        'credential-changed',
+        'The account credential changed during this request. Sign in again before retrying.',
+      )
+    }
 
     // The session that made the change carries the new version, so it survives
     // the comparison that is about to kill every other one. A row left at the

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { documentUrl } from '@/lib/content/paths'
 import { type ContentDocument, readDocument, scanContentFiles } from '@/lib/content/reader'
 import type { ContentStatus, ContentType } from '@/lib/content/schema'
@@ -34,8 +35,8 @@ import { indexTerms, queryGroups, stem, tokenize } from './tokenize'
  *
  * Rebuilding reads every Markdown file. On a blog of a few hundred articles
  * that is a few megabytes and a few milliseconds, so it is done lazily and
- * cached against a cheap filesystem fingerprint — file count, total size, newest
- * mtime and a hash of the path set — with a short time-to-live so a burst of
+ * cached against a fingerprint of each path, size and mtime — with a short
+ * time-to-live so a burst of
  * requests walks the tree once rather than once per request.
  *
  * ## Ranking
@@ -104,6 +105,7 @@ interface IndexedDocument {
   body: string
   status: ContentStatus
   publishedAt: Date | null
+  scheduledAt: Date | null
   updatedAt: Date
   /** Weighted length, precomputed for BM25 length normalisation. */
   length: number
@@ -138,22 +140,11 @@ let building: Promise<Index> | null = null
  */
 async function contentFingerprint(): Promise<string> {
   const files = await scanContentFiles()
-  let totalSize = 0
-  let newest = 0
-  let pathHash = 0
-
-  for (const file of files) {
-    totalSize += file.size
-    const mtime = file.mtime.getTime()
-    if (mtime > newest) newest = mtime
-    // Rolling hash over the path set, so a rename that keeps the file count and
-    // total size identical still invalidates.
-    for (let i = 0; i < file.relativePath.length; i += 1) {
-      pathHash = (pathHash * 31 + file.relativePath.charCodeAt(i)) | 0
-    }
+  const fingerprint = createHash('sha256')
+  for (const file of files.sort((a, b) => a.relativePath.localeCompare(b.relativePath))) {
+    fingerprint.update(JSON.stringify([file.relativePath, file.size, file.mtime.getTime()]))
   }
-
-  return `${files.length}:${totalSize}:${newest}:${pathHash}`
+  return fingerprint.digest('hex')
 }
 
 /**
@@ -299,6 +290,7 @@ function toIndexedDocument(document: ContentDocument): IndexedDocument {
     body: document.plainText,
     status: document.status,
     publishedAt: document.publishedAt,
+    scheduledAt: document.scheduledAt,
     updatedAt: document.updatedAt,
     length: Math.max(1, length),
     terms,
@@ -500,8 +492,8 @@ function isVisible(doc: IndexedDocument, statuses: Set<ContentStatus>): boolean 
   if (
     statuses.has('published') &&
     doc.status === 'scheduled' &&
-    doc.publishedAt !== null &&
-    doc.publishedAt.getTime() <= Date.now()
+    doc.scheduledAt !== null &&
+    doc.scheduledAt.getTime() <= Date.now()
   ) {
     return true
   }

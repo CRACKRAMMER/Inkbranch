@@ -8,6 +8,7 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
 
 import { Kbd } from '@/components/ui/kbd'
+import { Toaster } from '@/components/ui/toaster'
 import type { ContentType } from '@/lib/db/schema'
 import { groupHits } from '@/lib/search/group'
 import { cn } from '@/lib/utils/cn'
@@ -410,6 +411,8 @@ export function CommandPaletteDialog({
 
   return (
     <DialogPrimitive.Root open={open} onOpenChange={onOpenChange}>
+      {/* Keep feedback mounted after closing; ordinary pages load it only with the palette. */}
+      <Toaster />
       <DialogPrimitive.Portal>
         <DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-black/40" />
         <DialogPrimitive.Content

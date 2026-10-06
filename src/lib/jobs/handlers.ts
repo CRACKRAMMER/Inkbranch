@@ -17,6 +17,7 @@ import { db } from '@/lib/db'
 import { contentIndex, type ScheduledJobRow } from '@/lib/db/schema'
 import { parseFrontmatter } from '@/lib/content/frontmatter'
 import { updateDocument } from '@/lib/content/writer'
+import { discardRecoverySnapshot } from '@/lib/content/recovery'
 import {
   checkContentDrift,
   findStaleSearchRows,
@@ -160,9 +161,8 @@ async function runContentSync({ log }: JobContext): Promise<JobResult> {
   const report = await syncContent()
 
   if (report.truncated) {
-    // The scan stopped at CONTENT_MAX_FILES, which means every file past the
-    // cap looked absent and its index row was just deleted. Loud, because the
-    // next full sync will not bring those rows back on its own.
+    // Rows outside the partial scan remain intact, but this is not a complete
+    // reconciliation and requires the operator to increase the configured cap.
     log.error({
       event: 'job.content-sync.truncated',
       limit: env.CONTENT_MAX_FILES,
@@ -198,6 +198,13 @@ async function runContentSync({ log }: JobContext): Promise<JobResult> {
     truncated: report.truncated,
     errorCount: report.errors.length,
   })
+
+  if (report.truncated || report.errors.length > 0) {
+    const detail = report.truncated
+      ? `scan exceeded CONTENT_MAX_FILES=${env.CONTENT_MAX_FILES}; unscanned rows were retained`
+      : `${report.errors.length} file(s) failed; ${report.errors[0]?.path}: ${report.errors[0]?.message}`
+    throw new JobHandlerError('content.sync', `Content sync incomplete: ${detail}`)
+  }
 
   return result
 }
@@ -338,6 +345,10 @@ async function runPublishScheduled({ log }: JobContext): Promise<JobResult> {
       count: errors.length,
       first: errors[0],
     })
+    throw new JobHandlerError(
+      'content.publish-scheduled',
+      `Scheduled publish incomplete: ${errors.length} file(s) failed; ${errors[0]?.path}: ${errors[0]?.message}`,
+    )
   }
 
   return result
@@ -452,48 +463,57 @@ async function publishDocument(relativePath: string, now: Date): Promise<void> {
       current.scheduledAt,
       now,
     )
-  })
+  }, { preservePrevious: true })
 
-  const synced = await syncOneDocument(relativePath)
-  if (!synced || write.previousContent === null) return
+  try {
+    const synced = await syncOneDocument(relativePath)
+    if (!synced) throw new JobHandlerError('content.publish-scheduled', `The file was published but could not be indexed; previous bytes: ${write.recoveryPath ?? 'no previous file'}`)
+    if (write.previousContent === null) return
 
-  // `previousContent` is the text the callback was handed, and `ContentDocument.body`
-  // is `parseFrontmatter(raw).content` — the reader's own derivation — so this is
-  // the same pair the writer was given, not a second reading of it.
-  const before = parseFrontmatter(write.previousContent)
-  const after = publishedFrontmatter(
-    before.data,
-    before.content,
-    synced.document.scheduledAt,
-    now,
-  )
+    // `previousContent` is the text the callback was handed, and `ContentDocument.body`
+    // is `parseFrontmatter(raw).content` — the reader's own derivation — so this is
+    // the same pair the writer was given, not a second reading of it.
+    const before = parseFrontmatter(write.previousContent)
+    const after = publishedFrontmatter(
+      before.data,
+      before.content,
+      synced.document.scheduledAt,
+      now,
+    )
 
-  await captureWithPolicy({
-    contentId: synced.row.id,
-    type: synced.document.type,
-    slug: synced.document.slug,
-    data: after.data,
-    body: after.body,
-    previousContent: write.previousContent,
-    reason: 'publish',
-    // No actor: a job is not a person, and naming one would make the log say
-    // somebody published this on purpose.
-    actorId: null,
-  })
-
-  await recordAudit({
-    action: 'post.publish',
-    actorId: null,
-    targetType: 'content',
-    targetId: relativePath,
-    metadata: {
-      // The same action the admin's publish button writes, distinguished by this
-      // field rather than by a second action meaning the same thing.
-      via: 'schedule',
+    const revision = await captureWithPolicy({
+      contentId: synced.row.id,
       type: synced.document.type,
       slug: synced.document.slug,
-    },
-  })
+      data: after.data,
+      body: after.body,
+      previousContent: write.previousContent,
+      reason: 'publish',
+      // No actor: a job is not a person, and naming one would make the log say
+      // somebody published this on purpose.
+      actorId: null,
+    })
+    if (revision.error) throw new JobHandlerError('content.publish-scheduled', `The file was published but its revision could not be captured; previous bytes: ${write.recoveryPath ?? 'no previous file'}`)
+
+    await recordAudit({
+      action: 'post.publish',
+      actorId: null,
+      targetType: 'content',
+      targetId: relativePath,
+      metadata: {
+        // The same action the admin's publish button writes, distinguished by this
+        // field rather than by a second action meaning the same thing.
+        via: 'schedule',
+        type: synced.document.type,
+        slug: synced.document.slug,
+      },
+    })
+    await discardRecoverySnapshot(write.recoveryPath)
+  } catch (error) {
+    throw new JobHandlerError('content.publish-scheduled',
+      `The file was published but follow-up processing failed; previous bytes: ${write.recoveryPath ?? 'no previous file'}. ${error instanceof Error ? error.message : String(error)}`,
+      { cause: error })
+  }
 }
 
 /* -------------------------------------------------------------------------- */

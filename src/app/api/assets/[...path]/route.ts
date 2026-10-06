@@ -1,7 +1,8 @@
-import { readFile } from 'node:fs/promises'
+import { open } from 'node:fs/promises'
+import { constants } from 'node:fs'
 
-import { resolveAssetFile } from '@/lib/assets/storage'
-import { PathSecurityError } from '@/lib/security/paths'
+import { UPLOAD_ROOT, resolveAssetFile } from '@/lib/assets/storage'
+import { assertNoSymlinkPath, PathSecurityError } from '@/lib/security/paths'
 import { sniffMime } from '@/lib/security/mime'
 
 /**
@@ -9,15 +10,10 @@ import { sniffMime } from '@/lib/security/mime'
  *
  * ## Why this route exists at all
  *
- * `UPLOAD_DIR` defaults to `./public/uploads`, and a deployment that leaves both
- * that and `UPLOAD_URL_PREFIX` at their defaults serves these files through
- * Next's static handler under `/uploads/**`. That path exists, and this route
- * does not replace it. What this route is for is the deployment that sets
- * `UPLOAD_URL_PREFIX=/api/assets` — or any deployment that wants the headers
- * below to be a property of the code rather than of the platform's static file
- * handler, which is the thing `@/lib/assets/svg` counts on when it says the
- * serving route *must* send a sandboxing `Content-Security-Policy` and must
- * never serve an SVG as `text/html`.
+ * Both `/api/assets/**` and the default `/uploads/**` URL are served here.
+ * `next.config.ts` rewrites the latter before static-file lookup, so even a
+ * directory under `public/` cannot bypass private-path and symlink checks or
+ * the SVG sandbox. A custom storage root gets the same serving policy.
  *
  * ## The three rules
  *
@@ -42,7 +38,7 @@ import { sniffMime } from '@/lib/security/mime'
  * sends `default-src 'none'; sandbox`; the site-wide rule sends
  * `default-src 'self'`, which would permit a served SVG to load same-origin
  * resources if a browser ever navigated to one directly. The config therefore
- * scopes its rule with a negative lookahead — `/((?!api/assets).*)` — so the
+ * excludes both upload URL prefixes with a negative lookahead, so the
  * policy below is the one this path is actually served with.
  *
  * That leaves two independent mitigations rather than one: the sniffer, which
@@ -127,6 +123,10 @@ export async function GET(
     // a separator or a parent reference; the containment check is on the joined
     // path, which is why it is this function and not a segment check here.
     absolute = resolveAssetFile(segments.join('/'))
+    if (segments.join('/').replace(/\\/g, '/').split('/').some((part) => part.startsWith('.'))) {
+      return textResponse('No such asset.', 404)
+    }
+    await assertNoSymlinkPath(UPLOAD_ROOT, absolute, 'asset')
   } catch (error) {
     if (error instanceof PathSecurityError) {
       return textResponse('That path is not a valid asset path.', 400)
@@ -142,7 +142,13 @@ export async function GET(
   }
 
   try {
-    const bytes = await readFile(absolute)
+    const handle = await open(absolute, constants.O_RDONLY | constants.O_NOFOLLOW)
+    let bytes: Buffer
+    try {
+      bytes = await handle.readFile()
+    } finally {
+      await handle.close()
+    }
     const sniffed = sniffMime(bytes)
 
     const headers: Record<string, string> = {

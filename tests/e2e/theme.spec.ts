@@ -1,0 +1,30 @@
+import { expect, test } from '@playwright/test'
+import { hasE2eDatabase } from './environment'
+
+test.skip(!hasE2eDatabase, 'TEST_DATABASE_URL is required for the isolated E2E database.')
+
+test('theme choices support radio keyboard navigation and persist across reload', async ({ page }) => {
+  await page.goto('/')
+  const menu = page.getByRole('button', { name: 'Open navigation' })
+  const mobile = await menu.isVisible()
+  if (mobile) await menu.click()
+  const dark = page.getByRole('radio', { name: 'Dark theme' })
+  await dark.click()
+  await expect(page.locator('html')).toHaveClass(/dark/)
+  await dark.press('ArrowRight')
+  const system = page.getByRole('radio', { name: 'System theme' })
+  await expect(system).toBeFocused()
+  await expect(system).toHaveAttribute('aria-checked', 'true')
+  await system.press('Home')
+  const light = page.getByRole('radio', { name: 'Light theme' })
+  await expect(light).toBeFocused()
+  await expect(light).toHaveAttribute('aria-checked', 'true')
+  await light.press('ArrowRight')
+  await expect(dark).toBeFocused()
+  await expect(dark).toHaveAttribute('tabindex', '0')
+  await expect(light).toHaveAttribute('tabindex', '-1')
+  await page.reload()
+  await expect(page.locator('html')).toHaveClass(/dark/)
+  if (mobile) await menu.click()
+  await expect(page.getByRole('radio', { name: 'Dark theme' })).toHaveAttribute('aria-checked', 'true')
+})

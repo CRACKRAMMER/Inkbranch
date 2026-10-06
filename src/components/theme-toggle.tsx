@@ -46,7 +46,7 @@ export function ThemeToggle({ className }: { className?: string }) {
       role="radiogroup"
       aria-label="Colour theme"
     >
-      {OPTIONS.map(({ value, label, Icon }) => {
+      {OPTIONS.map(({ value, label, Icon }, index) => {
         // Before mount every option renders unselected: guessing would light up
         // the wrong one for a frame, and the CSS class is not yet applied.
         const active = mounted && theme === value
@@ -58,8 +58,18 @@ export function ThemeToggle({ className }: { className?: string }) {
             role="radio"
             aria-checked={active}
             aria-label={label}
+            tabIndex={active || (!mounted && value === 'system') ? 0 : -1}
             title={label}
             onClick={() => setTheme(value)}
+            onKeyDown={(event) => {
+              const next = event.key === 'ArrowRight' || event.key === 'ArrowDown' ? (index + 1) % OPTIONS.length :
+                event.key === 'ArrowLeft' || event.key === 'ArrowUp' ? (index + OPTIONS.length - 1) % OPTIONS.length :
+                event.key === 'Home' ? 0 : event.key === 'End' ? OPTIONS.length - 1 : null
+              if (next === null) return
+              event.preventDefault()
+              setTheme(OPTIONS[next]!.value)
+              event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>('[role="radio"]')[next]?.focus()
+            }}
             className={cn(
               'inline-flex size-6 items-center justify-center rounded-sm transition-colors duration-150',
               active

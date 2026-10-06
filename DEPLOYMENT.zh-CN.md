@@ -13,7 +13,8 @@
 ```bash
 git clone <repo> inkbranch && cd inkbranch
 cp .env.example .env             # compose 读取的是 .env，而不是 .env.local
-$EDITOR .env                     # POSTGRES_PASSWORD, SESSION_SECRET, SITE_URL, COOKIE_SECURE
+$EDITOR .env                     # POSTGRES_PASSWORD、SESSION_SECRET、HTTPS SITE_URL、COOKIE_SECURE=1
+mkdir -p content uploads
 sudo chown -R 1001:1001 content uploads   # 见 §6 —— bind mount 会保留宿主的属主
 docker compose up -d
 ```
@@ -22,7 +23,7 @@ docker compose up -d
 
 | 服务 | 镜像 | 职责 |
 |---------|-------|------|
-| `postgres` | `postgres:17-alpine` | 数据库。锁定在 17；schema 不需要比 16 更新的版本。 |
+| `postgres` | `postgres:17-alpine` | 数据库。PostgreSQL 17 是受支持且实际验证的部署版本。 |
 | `migrate` | 本仓库，`build` 阶段 | 应用待执行的迁移，然后退出。 |
 | `web` | 本仓库，`runner` 阶段 | 站点。只有在 `migrate` 以 0 退出之后才会启动。 |
 
@@ -73,13 +74,13 @@ docker compose run --rm \
 
 | 阶段 | 产出 | 关键特性 |
 |-------|----------|----------------|
-| `deps` | `node_modules` | 只复制 `package.json` 和 `pnpm-lock.yaml`，所以改一个源文件不会重新跑安装。`--frozen-lockfile` 会直接失败，而不是去解析出任何新东西。 |
-| `build` | `.next/` | 复制完整源码。构建时使用**占位**环境值（`DATABASE_URL`、一个写死的假 `SESSION_SECRET`、`CONTENT_SYNC_ON_BOOT=0`），因为 `src/env.ts` 一被导入就会校验 —— 但这个阶段没有任何东西会被烙进产物，而且那个假密钥是写死的，所以同一个提交的两次构建字节级一致。 |
+| `deps` | `node_modules` | 复制 `package.json`、`pnpm-lock.yaml` 与 `pnpm-workspace.yaml`，所以改一个源文件不会重新跑安装。`--frozen-lockfile` 会直接失败，而不是去解析出任何新东西。 |
+| `build` | `.next/` | 复制源码并使用**占位**环境值构建（`DATABASE_URL`、固定的假 `SESSION_SECRET`、`CONTENT_SYNC_ON_BOOT=0`），因为 `src/env.ts` 在导入时校验配置。运行时凭据和站点来源在容器启动时提供；构建无需真实凭据。Next.js 构建不保证字节级一致。 |
 | `runner` | 服务器 | `NODE_ENV=production`、`PORT=3000`、非 root 用户 `nextjs`（uid 1001），以及 standalone 产物加上 `.next/static` 加上 `public/`。 |
 
 关于运行时阶段，有三件事是承重的。
 
-**它既不含 `node_modules`，也没有装任何包管理器。** `next.config.ts` 设置了 `output: 'standalone'`，所以构建只会产出包含应用真正触达过的模块的服务器产物。随镜像发布的只有应用及其被追踪到的依赖 —— 没有任何可以用来安装东西的工具。（base 阶段确实启用了 Corepack，所以 `PATH` 上有一个 `pnpm` 垫片；调用它会尝试下载 pnpm，而它并没有可供安装的依赖树。）
+**它只包含追踪到的运行时依赖，不含完整开发依赖树。** `next.config.ts` 设置了 `output: 'standalone'`，所以构建只会产出包含应用真正触达过的模块的服务器产物。随镜像发布的是应用及其被追踪到的依赖，包括 standalone 的 `node_modules`。（base 阶段确实启用了 Corepack，所以 `PATH` 上有一个 `pnpm` 垫片；调用它会尝试下载 pnpm，而它并没有可供安装的依赖树。）
 
 **`public/` 和 `.next/static/` 是手工复制进去的。** 它们不属于 standalone 输出 —— 这是 `output: 'standalone'` 唯一值得知道的后果，忘了它就会得到一个没有 CSS 的站点。
 
@@ -105,7 +106,7 @@ migrate:
 
 **为什么迁移不在运行时镜像里跑。** 迁移器是 TypeScript，跑在 `tsx` 下，而它是 devDependency；standalone 产物是从应用的入口点追踪出来的，既不包含 `tsx` 也不包含 `scripts/`。把 `src/`、`scripts/` 和 `drizzle/` 拷进 runner 阶段会*看起来*能用，然后在第一次真有人试的时候失败。`migrate` 服务改为在 `build` 阶段构建同一个提交，那里有完整的工具链和同一份 lockfile —— 所以 schema 和代码永远不会差一个版本。
 
-该服务使用的数据库 URL 是从 `POSTGRES_*` 变量拼出来的；它不是从 `.env` 里的 `DATABASE_URL` 读的。
+该服务使用的数据库 URL 从 `POSTGRES_*` 变量拼出，不读取 `.env` 的 `DATABASE_URL`。使用 `openssl rand -hex 32` 生成 `POSTGRES_PASSWORD`，避免 URL 分隔符。迁移的 advisory lock、事务和解锁使用同一条专用 PostgreSQL 连接。
 
 从一份 checkout 手工执行的等价命令：
 
@@ -119,7 +120,7 @@ pnpm db:migrate        # 应用待执行的迁移，并打印数量
 
 ## 4. 环境变量
 
-应用读取的每一个变量都在 `src/env.ts` 里声明一次，并在导入时校验。`.env.example` 用注释记录了同一组变量。
+应用读取的每一个变量都在 `src/env.ts` 里声明一次，并在导入时校验。布尔值仅接受 `0`、`1`、`true`、`false`；数据库 URL 必须包含 PostgreSQL 主机与数据库名称，站点 URL 必须使用 HTTP(S) 且不带凭证。`.env.example` 用注释记录了同一组变量。
 
 ### 应用
 
@@ -137,7 +138,7 @@ pnpm db:migrate        # 应用待执行的迁移，并打印数量
 | `TRUSTED_ORIGINS` | `localhost:3000` | 否 | 以逗号分隔的、额外被接受为请求来源的主机名。`SITE_URL` 的主机总是会被加上，所以只有在有别名域名时才需要它。 |
 | `CONTENT_DIR` | `./content` | 否 | Markdown 树的根。镜像里是 `/app/content`。 |
 | `CONTENT_MAX_FILES` | `5000` | 否 | 防止卷挂错时，启动变成一次对 `/` 的文件系统遍历。 |
-| `CONTENT_SYNC_ON_BOOT` | `1` | 否 | 启动时把索引与文件对齐。只读部署请设为 `0`。Docker 的**构建**阶段会把它设为 0。 |
+| `CONTENT_SYNC_ON_BOOT` | `1` | 否 | 使已启用 worker 的首次漂移检查立即执行。设为 `0` 时等待一个间隔，不会禁用后续同步。只读内容挂载需 `WORKER_ENABLED=0`，并提前准备索引。Docker 的**构建**阶段设为 0。 |
 | `SEARCH_PROVIDER` | `local` | 否 | 目前只有一个取值的枚举；这是 Meilisearch 将来接入的接缝。不在 `.env.example` 里。 |
 | `UPLOAD_DIR` | `./public/uploads` | 否 | 镜像里是 `/app/public/uploads`，也就是 `./uploads` bind mount 落地的位置。 |
 | `UPLOAD_URL_PREFIX` | `/uploads` | 否 | 映射到 `UPLOAD_DIR` 的公开 URL 前缀。必须以 `/` 开头。 |
@@ -145,7 +146,9 @@ pnpm db:migrate        # 应用待执行的迁移，并打印数量
 | `ANALYTICS_ENABLED` | `1` | 否 | 设为 `0` 会完全关闭采集（采集器停止写入）。 |
 | `ANALYTICS_RAW_RETENTION_DAYS` | `30` | 否 | 原始事件在转为只保留聚合数据之前会保存多久。 |
 | `GIT_INTEGRATION_ENABLED` | `0` | 否 | 允许内容自动提交的许可。设置里说的是站点是否想要提交，这里说的是进程是否可以做出提交，而这个功能需要两者同时成立 —— 见 §10。默认关闭：没有做任何改动的部署根本不会运行 `git` 进程。 |
-| `WORKER_INTERVAL_MS` | `60000` | 否 | worker 循环的轮询间隔；见 §10。 |
+| `WORKER_ENABLED` | `1` | 否 | 在服务器内启动 worker；见 §10。 |
+| `WORKER_INTERVAL_MS` | `60000` | 否 | 后台维护扫描间隔；期间仍会轮询并领取任务。 |
+| `JOB_RETENTION_DAYS` | `7` | 否 | 已完成与失败任务记录的保留天数。 |
 | `TEST_DATABASE_URL` | — | 否 | 只被测试套件读取，应用从不读它。 |
 
 ### 由工具读取，而不是由应用读取
@@ -200,12 +203,12 @@ export function assertProductionPosture(): void {
 
 两个应用卷都是 **bind mount，而不是命名卷**，这正是重点：Markdown 本来就该在宿主上编辑 —— 在编辑器里、在 git 里、通过 SSH —— 所以它必须是一个你能打开的目录，而不是 Docker 管理的一个数据块。上传目录同理：这些文件本来就该能被访问、能被复制，并被与 Markdown 相同的那份备份脚本一并取走。
 
-宿主上的名字和容器内名字不同是有意为之。`web` 通过 Next 的静态处理器在 `/uploads/**` 上提供上传文件，所以在容器内它们必须待在 `public/` 之下；而宿主目录则不该如此，因为它是数据，不是源码树里的静态资源。本地跑 `pnpm dev` 时写的却是 `public/uploads/`，那是 Next 无需任何配置就会提供的路径 —— 两者不会冲突，因为它们属于不同的站点运行方式。
+宿主路径与容器路径不同。本地 `pnpm dev` 写入 `public/uploads/`；Compose 把宿主的 `uploads/` 挂载到对应容器路径。`/uploads/**` 请求被重写到沙箱化的资源路由，执行与 `/api/assets/**` 相同的文件校验和响应头策略。
 
 值得知道的后果：
 
 - **bind mount 保留宿主的属主。** 容器以 uid 1001（`nextjs`）运行，所以这两个目录都必须对该 uid 可写，否则后台保存和上传会以 `EACCES` 失败。在一台全新的宿主上：
-  `sudo chown -R 1001:1001 content uploads`。Docker 会把*缺失的* bind mount 源目录创建为 `root`，这就是为什么这两个目录都在仓库里（带一个 `.gitkeep`），也是为什么 `chown` 该放在第一次 `up` 之前，而不是放在第一次失败之后。
+  `sudo chown -R 1001:1001 content uploads`。Docker 会把*缺失的* bind mount 源目录创建为 `root`，所以应在第一次 `up` 前执行 `mkdir -p content uploads` 和 `chown`。
 - **在宿主上编辑需要一次同步。** 应用会在启动时以及每次后台保存之后对齐索引。如果你在它运行时改了文件又不想重启，请运行 `pnpm content:sync`（§11）。
 - **镜像里不含任何内容。** 正因如此，回滚才是一次 tag 变更而不是一次恢复 —— 同一个镜像服务于挂载进来的任何东西。
 
@@ -213,76 +216,57 @@ export function assertProductionPosture(): void {
 
 ## 7. 备份与恢复
 
-### 备份
+一致性备份需要先暂停 `web`、独立 worker 和外部内容编辑。这两个脚本无法在写入持续进行时，同时快照数据库和文件系统。
+
+宿主机需要 Bash、GNU `tar`/`realpath`/`find`、`flock`、`zstd` 和 PostgreSQL 17 客户端。宿主的 `DATABASE_URL` 必须能连接 Compose 使用的同一个数据库；默认 Compose 网络不向宿主开放数据库。使用宿主客户端时只在回环地址发布数据库端口，或在 Compose 网络内运行客户端。宿主脚本的 `CONTENT_DIR`、`UPLOAD_DIR` 应使用宿主路径：Compose 是 `./content`、`./uploads`；本地开发的上传路径是 `./public/uploads`。
 
 ```bash
-bash scripts/backup.sh                    # → ./backups/backup-2026-09-11.tar.zst
-bash scripts/backup.sh /mnt/backups       # 换一个位置
-BACKUP_KEEP=30 bash scripts/backup.sh     # 保留 30 份（默认 14；0 关闭清理）
-BACKUP_LABEL=pre-upgrade bash scripts/backup.sh   # → backup-2026-09-11-pre-upgrade.tar.zst
-# `pnpm backup` 是它的别名，不带任何参数时行为完全相同。
+# 优先读取导出的变量，然后 .env.local，再 .env。
+# 先配置宿主可连接的 DATABASE_URL。
+CONTENT_DIR=./content UPLOAD_DIR=./uploads bash scripts/backup.sh
+BACKUP_KEEP=30 bash scripts/backup.sh /mnt/backups
+BACKUP_LABEL=pre-upgrade bash scripts/backup.sh
 ```
 
-一个文件，而不是一堆文件：
+经过校验的 `backup-<UTC 日期>[-标签][-序号].tar.zst` 包含：
 
 ```
-backups/backup-2026-09-11.tar.zst
-  database.dump        pg_dump 自定义格式 —— 已压缩，可分部分恢复
-  content/             Markdown 树
-  uploads/             媒体树
-  config/              环境文件（.env、.env.local），逐字保存
-  MANIFEST             这是什么、从哪儿来、是否校验通过
+database.dump        自定义格式 pg_dump
+content/             Markdown 快照，排除运行时 .locks/ 和 .tmp/
+uploads/             资源快照
+config/              存在时保存 .env 和 .env.local
+MANIFEST             版本、原始路径、时间与脱敏后的数据库 URL
 ```
 
-一个*目录*形式的备份就是一份会被拷到一半的备份 —— `scp`、`rsync`、U 盘和对象存储都有办法把一个目录留在不完整的状态，而没有哪一种能在不吭声的情况下留下一个不完整的单文件。所以各个部分会先在目标旁边的一个暂存目录里组装好，用 `zstd` 压缩一次，只有在校验通过之后，结果才会被移到它的最终名字下。一次失败的运行会原封不动地留下上一份备份，绝不会覆盖它。
+内容备份包含正式修改中断后保留的私有 `.recovery/` 副本。它保存旧文件完整原始字节，可能包含未发布内容；
+文件权限为 0600、目录为 0700。后台错误或 worker 日志给出相对恢复路径。先暂停写入，保留当前文件与副本，
+比较内容后明确选择要恢复的字节写回报告中的原文档路径，再执行 `pnpm content:sync` 与
+`pnpm content:sync --check`。同步只修复索引，不会将副本变成修订。完成恢复和备份验证后才能人工删除旧副本；
+后续重试与普通保留策略都不会自动删除之前失败操作的副本。
 
-内容本身是含密的：`config/` 逐字保存着 `SESSION_SECRET` 和数据库密码，而 `database.dump` 里本来就已经有了全部密码哈希、活动会话令牌和审计记录。**像对待 `.env` 那样对待这个归档** —— 它不是可以随便邮寄给别人的东西。manifest 在记录数据库 URL 时会隐去其中的密码，因为 manifest 是一个会被到处复制的文件。
+第 2 版固定使用 `content` 与 `uploads` 成员名，即使源目录使用自定义名称。缺失目录和符号链接会被拒绝。目录先复制到暂存区，再压缩归档；需预留暂存数据与最终压缩包的空间。PAX tar 保留亚秒级修改时间。归档和暂存文件使用私有权限（`umask 077`）；它包含凭证、密码哈希、Session 与修订历史，应按 `.env` 的标准保护。
 
-**同一天的备份永远不会被覆盖。** 一天跑两次是常态 —— 一次夜间定时任务，一次升级前的手工备份 —— 所以一个已被占用的名字会拿到下一个空闲后缀（`backup-2026-09-11-2.tar.zst`）。拒绝第二次会逼你做选择；覆盖则会让第一份灰飞烟灭。
-
-校验发生在归档拿到最终名字之前：用 `zstd --test` 校验帧校验和，用 `tar --list` 校验成员，以及对*从归档里读回来的* dump 执行 `pg_restore --list`。一份没人读回来过的备份是一个希望，不是一份备份。
-
-`UPLOAD_DIR` 默认为 `uploads/`（该目录存在时），否则为 `public/uploads/`，与站点的两种运行方式相对应（§6）—— 在两者都有的部署里请显式设置它。
-
-脚本需要宿主上有 `pg_dump`。没有的话，改在 compose 网络内部导出：
+发布最终文件名前会验证压缩流、tar 成员和 `pg_restore --list`。同一天备份追加可用数字序号，目标目录的备份操作通过独占锁串行化；保留策略按文件修改时间排序。`BACKUP_KEEP=0` 关闭裁剪。标签只能含字母、数字、下划线和连字符。
 
 ```bash
-mkdir -p backups
-docker compose exec -T postgres pg_dump -U myblog -d myblog --format=custom --compress=6 \
-  > backups/database-$(date -u +%Y-%m-%dT%H-%M-%SZ).dump
+bash scripts/restore.sh backups/backup-<日期>.tar.zst
+bash scripts/restore.sh <归档> --yes
+bash scripts/restore.sh <归档> --database-only
+bash scripts/restore.sh <归档> --files-only
 ```
 
-这只覆盖数据库 —— `content/` 和 `uploads/` 已经在宿主上了，所以请自己 tar 打包，或者安装 `postgresql-client` 并使用脚本。
+恢复前验证校验和、成员名称/类型/重复项、manifest 与数据库归档。符号链接、路径穿越、设备文件、未知成员、带符号链接的目标与重叠数据目录会被拒绝。旧脚本生成的归档仍受支持，但必须满足这些检查。
 
-`DATABASE_URL` 从环境中读取，回退到 `.env.local`，而 `CONTENT_DIR` / `UPLOAD_DIR` 若已设置则会被采用（请把它们设成*宿主*路径，而不是容器内路径）。
+文件先完整解压到私有暂存目录，然后才交换目录。原目录保留为 `*.before-<UTC 时间>`，恢复内容采用替换而非合并。环境副本进入 `config.restored/`，不会覆盖正在使用的 `.env`。数据库恢复采用 `--clean --if-exists --single-transaction --exit-on-error`；如果失败，数据库事务与已交换的文件/config 目录都会回滚。暂存目录会保留现有目标目录的属主，使 Compose 的 uid 1001 继续具备写权限；无权保留属主时会在替换文件前失败。恢复应使用必要的宿主属主权限。如果目标目录原本不存在，应在重启前设置应用属主（提供的 rootful Docker 配置可用 `sudo chown -R 1001:1001 content uploads`）。成功恢复仍保留原目录便于人工恢复。每个检出目录的恢复操作使用独占锁。
 
-### 恢复
+即使使用 `--yes` 也会显示数据库和文件目标；导出的 `DATABASE_URL` 与 dotenv 不同会明确提示。保持所有写入方暂停，直到恢复和校正完成：
 
 ```bash
-bash scripts/restore.sh backups/backup-2026-09-11.tar.zst        # 会要求你输入 "restore"
-bash scripts/restore.sh backups/backup-2026-09-11.tar.zst --yes
-bash scripts/restore.sh <archive> --database-only
-bash scripts/restore.sh <archive> --files-only
+pnpm content:sync
+pnpm content:sync --check
 ```
 
-需要传参数时请直接调用脚本；`pnpm restore` 是无参数的别名（`bash scripts/restore.sh` 自己从 `$@` 读取标志）。
-
-先停掉应用 —— 一个正在运行的服务器持有会话，并可能在数据库恢复的过程中写入。
-
-确认提示会说出它即将替换的数据库**以及那个答案来自哪里**，因为环境里的 `DATABASE_URL` 优先于 `.env.local`，而两者肉眼无法区分。如果它们不一致，脚本即使在 `--yes` 下也会告诉你：否则一个从某次部署遗留在 shell 里、或为了测试而导出的 `DATABASE_URL`，就会悄悄决定目标。
-
-它做什么，以及不做什么：
-
-- **它不会 drop 数据库。** 它恢复到已有的那个库里，并使用 `pg_restore --clean --if-exists --single-transaction --exit-on-error`，因此它重建的对象是在一个要么整体提交、要么整体回滚的事务里被删除并重建的。属主、扩展以及服务器上的其他数据库都不受影响。dump 直接从归档流进 `pg_restore` —— 它是迄今为止最大的成员，而且完全不需要落盘。
-- **它不会覆盖你的 `.env`。** 归档里的副本会落在 `config.restored/`，脚本会打印出这些文件名。一个从备份里回来的会话密钥，可能正是你有意轮换掉的那个。
-- **内容树和上传树是被替换，而不是被合并**，并且原先的树会被移到 `*.before-<UTC timestamp>`，而不是被删除 —— 恢复错了备份是可以挽回的。合并会留下一个既不是备份、也不是原先状态的站点，那是最难推理的状态。
-- **每一个可能失败的检查都在第一条破坏性命令之前运行**，而且顺序保证*原因*是对的：先是 zstd 校验和（这样被截断的文件会被报告为损坏，而不是“不是一个备份”），然后是 manifest，最后是对 dump 执行 `pg_restore --list`。损坏的归档会在当前状态被触碰之前就失败。
-
-之后，脚本会打印出三步，而这三步它都无法替你完成：
-
-1. `pnpm content:sync` —— 数据库和内容树是分开恢复的，所以要把它们对齐。
-2. 如果内容树是在应用运行期间被替换的，请重启应用；搜索索引和关系索引都在进程内构建，现在都已经过期。
-3. 把 `config.restored/` 和你线上的环境文件对照一遍。
+之后重启应用并比较 `config.restored/` 与当前环境。恢复验证完成前，保留归档和 `*.before-*` 目录。若宿主在跨数据库/文件的恢复过程中突然停电，回滚 trap 无法执行；应在重新开放写入前使用保留的原目录和备份归档恢复一致状态。
 
 ---
 
@@ -310,7 +294,7 @@ GET /api/health
 
 ```bash
 curl -fsS https://blog.example.com/api/health
-docker inspect --format '{{.State.Health.Status}}' myblog-app-1
+docker inspect --format '{{.State.Health.Status}}' myblog-web-1
 ```
 
 镜像自带一个 `HEALTHCHECK`，起始等待 20 秒、间隔 30 秒、超时 5 秒、重试 3 次。如果你的主机比较慢，或者首次启动时的内容同步很大，请调高起始等待时间。
@@ -328,6 +312,8 @@ docker inspect --format '{{.State.Health.Status}}' myblog-app-1
 4. 不要设置应用自己会设置的头。CSP、`X-Content-Type-Options`、`X-Frame-Options`、`Referrer-Policy` 和 `Permissions-Policy` 都来自 `next.config.ts`；代理里同时设置它们的规则会静默覆盖应用的值，尤其是 `/api/assets`，它对上传的 SVG 有一个更窄的 CSP，绝不能被替换掉。
 5. 由代理发送 HSTS —— 应用不发。
 
+边缘代理必须用实际连接地址覆盖客户端提供的 `X-Forwarded-For`，不能追加不可信的链。登录限流使用代理传来的首个 IP（哈希后作为限流键，Analytics 不读取它）；多层代理需要明确配置可信代理与来源覆盖策略。
+
 ```nginx
 server {
   listen 443 ssl;
@@ -343,7 +329,7 @@ server {
     proxy_pass http://127.0.0.1:3000;
     proxy_set_header Host              $host;
     proxy_set_header X-Real-IP         $remote_addr;
-    proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-For   $remote_addr;
     proxy_set_header X-Forwarded-Proto $scheme;
   }
 }
@@ -367,15 +353,13 @@ blog.example.com {
 
 ### worker
 
-`pnpm worker` 在前台运行定时任务循环：它消费 `scheduled_jobs` 表，把已排期的文档翻转为已发布，执行内容同步和漂移检查，并重建搜索文档的索引。它向 stdout 每行写一个 JSON 对象，并在收到 `SIGINT`/`SIGTERM` 时干净地关闭。
+`src/instrumentation.ts` 在 `WORKER_ENABLED=1` 时自动启动内嵌 worker，Compose 的 standalone 服务器同样如此。任务涵盖定时发布、内容同步/漂移检查、搜索索引、统计聚合/保留、资源引用检查与过期认证记录。数据库启动失败会按退避策略重试，日志每行一个 JSON。
 
-这个循环**不是由 HTTP 服务器启动的** —— `src/app` 里没有任何东西调用 `runWorker` —— 而 `docker-compose.yml` 也不运行它。定时发布在没有它的情况下仍然有效：`src/lib/content/queries.ts` 把 `scheduled` 状态的文档在其时间戳过去之后视为可见，所以这个承诺是由读路径、而不是由后台进程兑现的。没有 worker 时不会发生的是记账 —— 存储的状态不会被翻转，周期性的同步/漂移/重建索引任务也不会运行。
+`pnpm worker` 在独立进程中运行同一循环，不受 `WORKER_ENABLED` 控制。它需要仓库的 TypeScript 工具链，应在 `build` 阶段镜像或宿主检出目录运行，而不是 `runner` 镜像。CLI 收到第一次 `SIGINT`/`SIGTERM` 会完成当前任务后退出；第二次信号会强制退出。
 
-在容器里运行它需要一个有 `tsx` 的阶段（`build` 阶段，或者任何有仓库和 `node_modules` 的机器）：`runner` 镜像里既没有 `tsx` 也没有 `scripts/`。最简单的安排是一台检出了仓库的主机：
+领取任务使用 `FOR UPDATE SKIP LOCKED` 与 15 分钟租约。服务器突然重启后，原领取可能保留到租约过期；handler 从源文件校正状态，定时发布在文件锁内重新检查排期，因此重复执行是安全的。失败和未完成的同步/发布任务会记录失败并重试。到期内容在后台记账完成前，读路径也会允许公开。
 
-```bash
-DATABASE_URL=postgresql://myblog:…@127.0.0.1:5432/myblog pnpm worker
-```
+只有同一数据库/内容树已由其他 worker 维护时才设置 `WORKER_ENABLED=0`。`CONTENT_SYNC_ON_BOOT=0` 关闭启动校正检查，不关闭 worker 后续周期。
 
 ### 不经过后台到达的内容
 
@@ -419,12 +403,12 @@ docker compose up -d              # migrate 先运行，然后才是 web
 
 ### 扩容之前值得知道的限制
 
-- **只跑一个应用实例是设计前提。** 搜索索引是在进程内从内容文件构建的，以目录树的一个指纹为键，五秒后过期，所以第二个副本会构建自己的一份并在几秒内收敛 —— 但没有任何东西协调两者，而 `revalidateContentChange` 只在处理那次保存的那个进程里运行。也没有共享缓存或队列。
-- **分析采集接在一个信标上，但目前还没有任何东西发送它，而每日汇总（`aggregateDay`）从未被调用。** 后台的分析页面读的是 `analytics_daily`，而这张表实际上一直是空的。
-- **重定向有存储，但没有服务。** `resolveRedirect` 没有任何生产调用方，而中间件只覆盖 `/admin`。
-- **Git 自动提交是在单个进程内提交的。** 两个应用实例写同一个仓库，或者一次保存与终端里的 `pnpm content:sync` 重叠，都可能争抢 `.git/index.lock`；输的那次提交会被记录并跳过，下一次保存会把这个文件提交上去。文件本身什么都不会丢，而且这里没有任何东西会 push。
-- **worker 循环没有任何东西启动它。** `pnpm worker` 是 `runWorker` 唯一的入口点，而运行时镜像里没有 `tsx`，所以纯 Compose 部署不会运行它（§10）。定时文章仍然会按时可见；状态翻转以及周期性的同步/漂移/重建索引任务则不会发生。
-- 以上所有内容连同证据，都在交付说明里。它们没有一个影响读路径：发布、阅读、搜索和 feed 都正常工作。
+- 设计目标是一个应用实例。搜索索引保存在进程内；第二个实例有独立缓存，管理员保存只会失效当前进程的缓存。
+- Analytics 不读取 IP 或地理定位。页面 beacon 和每日聚合已连通；country 目前为空，关闭采集后不写入新跟踪事件。
+- 数据库重定向由 Node proxy 执行，只处理允许路径上的 GET/HEAD；保留路由、无效目标与循环规则会被拒绝。
+- Git 自动提交只在单进程内串行化。多实例可能竞争 Git index 锁；失败会报告，但不会损坏 Markdown，也不会 push。
+- 备份/恢复需要维护窗口。暂停服务器、worker 和外部编辑，恢复并校正索引后再启动。
+- 当前后台按登录状态授权，没有编辑协作审批或角色级权限。账号通过种子 CLI 创建。
 
 ---
 
@@ -438,7 +422,7 @@ docker compose up -d              # migrate 先运行，然后才是 web
 
 **`/api/health` 报告 `degraded`。** 索引和文件不一致 —— 通常发生在一次恢复、一次没有重启的 `git pull`，或者一个在宿主上被编辑过的 bind mount 之后。运行 `pnpm content:sync`。它不是错误状态，这是有意的（§8）。
 
-**站点能加载，但每个页面都是空的，或者后台什么都列不出来。** 几乎总是 `CONTENT_DIR` 指向了空目录，或者 `content/` 没有挂载。`docker compose exec app ls /app/content`。然后运行 `pnpm content:sync`。
+**站点能加载，但每个页面都是空的，或者后台什么都列不出来。** 几乎总是 `CONTENT_DIR` 指向了空目录，或者 `content/` 没有挂载。`docker compose exec web ls /app/content`。然后运行 `pnpm content:sync`。
 
 **登录看起来成功了，却立刻回到登录页。** `Secure` cookie 被拒绝或丢弃了：站点正通过纯 HTTP 提供服务，或者浏览器看到的主机与 `SITE_URL` 指定的不同。终止 TLS 并设置 `COOKIE_SECURE=1`（§9）。不要在生产环境用 `COOKIE_SECURE=0` 来“修复”它 —— 它会在启动时被拒绝，而绕过它意味着会话 cookie 以明文传输。
 
@@ -448,9 +432,9 @@ docker compose up -d              # migrate 先运行，然后才是 web
 
 **`migrate` 以非零状态退出，`web` 永远不启动。** 迁移失败了；数据库 URL 是从 `docker-compose.yml` 里的 `POSTGRES_*` 拼出来的，错误在 `docker compose logs migrate` 里。常见原因：角色缺少 `CREATE`/`ALTER`，或者某个迁移在被应用之后被手工改过。
 
-**你保存的重定向不生效。** 已知缺口：`src/lib/redirects.ts` 里的 `resolveRedirect` 已经实现并有单元测试，但没有被任何请求路径调用，而 `src/middleware.ts` 的作用域是 `/admin/:path*`，不会查询重定向表。行可以被创建、从 CSV 导入和列出；它们还没有被应用到请求上。
+**保存的重定向不生效。** 检查规则是否启用、源路径是否允许公开。Node proxy 在路由前解析规则；保留路由、非 GET/HEAD 方法和无效/循环目标会被排除。
 
-**分析显示为零，或者数字不再变化。** 两个彼此独立的缺口：前台目前不发送页面浏览信标，而 `aggregateDay`（它填充 `analytics_daily`，仪表盘读取的唯一一张表）没有被任何东西调用。采集器、聚合和保留规则都已实现并测试过；缺的只是两端。要让采集接受任何数据，还必须设置 `ANALYTICS_ENABLED=1`。
+**分析显示为零或停止增长。** 环境 `ANALYTICS_ENABLED=1` 和站点设置都需开启。检查 `worker.start`、`job.analytics-aggregate` 日志以及 `/admin/system` 里的失败任务，并等待聚合周期。来源被拒绝或隐私 opt-out 的请求会被丢弃。
 
 **保存之后搜索返回过期的结果。** 索引在进程内，并且每次后台保存都会被 `revalidateContentChange` 置为失效，所以这不应该持续存在。如果确实如此，你很可能跑了不止一个实例（§10）。
 

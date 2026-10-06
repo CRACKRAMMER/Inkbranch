@@ -15,6 +15,7 @@ import {
   type ContentType,
 } from '@/lib/content/schema'
 import { removeFromIndex, syncOneDocument } from '@/lib/content/sync'
+import { discardRecoverySnapshot } from '@/lib/content/recovery'
 import {
   ContentWriteError,
   createDocument,
@@ -36,7 +37,7 @@ import {
   captureWithPolicy,
   type CaptureWithPolicyResult,
 } from '@/lib/revision/policy'
-import { actionFailure, actionOk, type ActionResult } from '@/lib/admin/result'
+import { actionFailure, actionOk, type ActionResult, type CommittedContentChange } from '@/lib/admin/result'
 import { describeActionError, guardAction, parseActionInput } from '@/lib/admin/guard'
 import { revalidateContentChange } from '@/lib/admin/revalidate'
 
@@ -77,8 +78,7 @@ const contentPathSchema = z
       // both treat a NUL as a terminator, so a path carrying one addresses a
       // different file than it appears to.
       // eslint-disable-next-line no-control-regex
-      /^(posts|notes|projects)\/[^/\\\u0000-\u001f\u007f]+\.md$/.test(value) &&
-      !value.includes('..'),
+      /^(posts|notes|projects)\/[^/\\\u0000-\u001f\u007f]+\.(md|markdown)$/.test(value.toLowerCase()),
     { message: 'Not a content path' },
   )
 
@@ -136,6 +136,37 @@ class SaveRefusedError extends Error {
   }
 }
 
+/** Preserve the commit boundary when a helper fails after the atomic rename. */
+class ContentCommittedError extends Error {
+  constructor(readonly committed: CommittedContentChange, cause: unknown) {
+    super('The Markdown change reached disk before follow-up processing failed.', { cause })
+    this.name = 'ContentCommittedError'
+  }
+}
+
+function committedWrite(outcome: Pick<WriteOutcome, 'path' | 'slug' | 'checksum' | 'recoveryPath'>): CommittedContentChange {
+  return { path: outcome.path, slug: outcome.slug, operation: 'write', checksum: outcome.checksum,
+    ...(outcome.recoveryPath ? { recoveryPath: outcome.recoveryPath } : {}) }
+}
+
+function committedFailure(committed: CommittedContentChange[], error: unknown) {
+  console.error('[admin] content changed on disk; follow-up processing failed:', error)
+  const single = committed.length === 1 ? committed[0] : undefined
+  return actionFailure(
+    single
+      ? single.operation === 'delete'
+        ? 'The Markdown file was deleted, but follow-up processing did not complete.'
+        : 'The Markdown file was saved, but follow-up processing did not complete.'
+      : 'Markdown changes reached disk, but follow-up processing did not complete.',
+    {
+      code: 'content-committed',
+      committed,
+      detail: `Run a content sync from System before trusting the index. Revision, cache or Git bookkeeping may also be incomplete.${committed.some((change) => change.recoveryPath) ? ` Previous bytes are retained privately: ${committed.filter((change) => change.recoveryPath).map((change) => `${change.path} → ${change.recoveryPath}`).join('; ')}.` : ''}`,
+      retryable: single?.operation !== 'delete',
+    },
+  )
+}
+
 /* -------------------------------------------------------------------------- */
 /*  Shared write                                                               */
 /* -------------------------------------------------------------------------- */
@@ -149,6 +180,7 @@ interface WriteOutcome {
   previousContent: string | null
   data: Record<string, unknown>
   body: string
+  recoveryPath?: string
 }
 
 /**
@@ -172,6 +204,7 @@ async function writeChecked(
     normalised: Record<string, unknown>
     known: Record<string, unknown>
     body: string
+    tags: string[]
   }) => { data: Record<string, unknown>; body: string; comment?: string },
 ): Promise<WriteOutcome> {
   const captured: { data: Record<string, unknown>; body: string } = { data: {}, body: '' }
@@ -192,7 +225,7 @@ async function writeChecked(
     const normalised = normaliseFrontmatterKeys(parsed.data)
     const { known } = splitFrontmatterKeys(normalised)
 
-    const produced = mutate({ raw: current.raw, normalised, known, body: current.body })
+    const produced = mutate({ raw: current.raw, normalised, known, body: current.body, tags: current.tags })
 
     // The per-type schema is the last gate before serialisation. A file that
     // fails it would be written and then fail to load, which is worse than
@@ -209,9 +242,20 @@ async function writeChecked(
     captured.data = produced.data
     captured.body = produced.body
     return produced
-  })
+  }, { preservePrevious: true })
 
-  const written = await readDocument(result.relativePath)
+  let written: Awaited<ReturnType<typeof readDocument>>
+  try {
+    written = await readDocument(result.relativePath)
+  } catch (error) {
+    throw new ContentCommittedError({
+      path: result.relativePath,
+      slug: typeof captured.data.slug === 'string' ? captured.data.slug : slugFromPath(result.relativePath),
+      checksum: result.checksum,
+      operation: 'write',
+      ...(result.recoveryPath ? { recoveryPath: result.recoveryPath } : {}),
+    }, error)
+  }
 
   return {
     slug: written?.slug ?? input.path,
@@ -222,6 +266,7 @@ async function writeChecked(
     previousContent: result.previousContent,
     data: captured.data,
     body: captured.body,
+    ...(result.recoveryPath ? { recoveryPath: result.recoveryPath } : {}),
   }
 }
 
@@ -232,7 +277,7 @@ async function afterWrite(
   reason: 'save' | 'publish',
   actorId: string,
 ): Promise<CaptureWithPolicyResult> {
-  const row = await contentRowByPath(outcome.path)
+  const row = await contentRowByPath(outcome.path) ?? (await syncOneDocument(outcome.path))?.row
 
   // No index row means no document to attach a revision to. The sync below
   // creates one, so this is a narrow window rather than a normal state.
@@ -244,6 +289,7 @@ async function afterWrite(
         data: outcome.data,
         body: outcome.body,
         previousContent: outcome.previousContent,
+        writtenChecksum: outcome.checksum,
         reason,
         actorId,
       })
@@ -258,7 +304,10 @@ async function afterWrite(
         trimmed: 0,
       }
 
-  await syncOneDocument(outcome.path)
+  if (!row && outcome.previousContent !== null) throw new Error('The saved document could not be indexed for revision capture.')
+  if (revision.error) throw revision.error
+
+  if (!await syncOneDocument(outcome.path)) throw new Error('The saved document is no longer readable for index synchronization.')
 
   return revision
 }
@@ -298,6 +347,7 @@ const AUDIT_FOR_TRANSITION: Record<StatusTransition, AuditAction> = {
 export async function saveContentAction(
   input: SaveContentInput,
 ): Promise<ActionResult<SaveContentResult>> {
+  let committed: CommittedContentChange | undefined
   try {
     const context = await guardAction()
     const parsed = parseActionInput(saveSchema, input)
@@ -333,11 +383,12 @@ export async function saveContentAction(
         return { data, body: parsed.value.body, comment: parsed.value.comment }
       },
     )
+    committed = committedWrite(outcome)
 
     const revision = await afterWrite(
       outcome,
       type,
-      outcome.status === 'published' ? 'publish' : 'save',
+      previousStatus !== 'published' && outcome.status === 'published' ? 'publish' : 'save',
       context.user.id,
     )
 
@@ -367,6 +418,9 @@ export async function saveContentAction(
       paths: [outcome.path],
     })
 
+    await discardRecoverySnapshot(outcome.recoveryPath)
+    if (committed) delete committed.recoveryPath
+
     return actionOk({
       path: outcome.path,
       slug: outcome.slug,
@@ -378,6 +432,8 @@ export async function saveContentAction(
       git,
     })
   } catch (error) {
+    if (error instanceof ContentCommittedError) return committedFailure([error.committed], error.cause)
+    if (committed) return committedFailure([committed], error)
     if (error instanceof SaveRefusedError) {
       return actionFailure(error.message, {
         fieldErrors: Object.keys(error.fieldErrors).length > 0 ? error.fieldErrors : undefined,
@@ -538,6 +594,7 @@ export type CreateContentInput = z.output<typeof createSchema>
 export async function createContentAction(
   input: CreateContentInput,
 ): Promise<ActionResult<{ path: string; slug: string; git: GitCommitOutcome | null }>> {
+  let committed: CommittedContentChange | undefined
   try {
     const context = await guardAction()
     const parsed = parseActionInput(createSchema, input)
@@ -575,7 +632,8 @@ export async function createContentAction(
     }
 
     const result = await createDocument({ type, slug, data: built, body: '' })
-    await syncOneDocument(result.relativePath)
+    committed = { path: result.relativePath, slug, checksum: result.checksum, operation: 'write' }
+    if (!await syncOneDocument(result.relativePath)) throw new Error('The created document is no longer readable for index synchronization.')
 
     await recordAudit({
       action: 'post.create',
@@ -596,6 +654,7 @@ export async function createContentAction(
 
     return actionOk({ path: result.relativePath, slug, git })
   } catch (error) {
+    if (committed) return committedFailure([committed], error)
     return describeActionError(error)
   }
 }
@@ -620,6 +679,7 @@ export type DeleteContentInput = z.output<typeof deleteSchema>
 export async function deleteContentAction(
   input: DeleteContentInput,
 ): Promise<ActionResult<{ path: string; git: GitCommitOutcome | null }>> {
+  let committed: CommittedContentChange | undefined
   try {
     const context = await guardAction()
     const parsed = parseActionInput(deleteSchema, input)
@@ -632,10 +692,11 @@ export async function deleteContentAction(
     // but it must never run ahead of them: a failed unlink with the row already
     // deleted would leave a document the site cannot see and the next sync
     // would put straight back.
-    const removed = await deleteDocument(parsed.value.path)
+    const removed = await deleteDocument(parsed.value.path, { preservePrevious: true })
     if (!removed) {
       return actionFailure('That file is no longer on disk.')
     }
+    committed = { path: parsed.value.path, slug: row?.slug ?? slugFromPath(parsed.value.path), checksum: null, operation: 'delete', ...(removed.recoveryPath ? { recoveryPath: removed.recoveryPath } : {}) }
 
     await removeFromIndex(parsed.value.path)
 
@@ -669,9 +730,12 @@ export async function deleteContentAction(
       title: row?.title || slugFromPath(parsed.value.path),
       paths: [parsed.value.path],
     })
+    await discardRecoverySnapshot(removed.recoveryPath)
+    delete committed.recoveryPath
 
     return actionOk({ path: parsed.value.path, git })
   } catch (error) {
+    if (committed) return committedFailure([committed], error)
     return describeActionError(error)
   }
 }
@@ -687,7 +751,7 @@ export type BulkInput = z.output<typeof bulkSchema>
 export interface BulkReport {
   action: string
   changed: { path: string; slug: string; note?: string }[]
-  failed: { path: string; error: string }[]
+  failed: { path: string; error: string; committed?: CommittedContentChange }[]
   /** The one commit the whole run produced, when the site asks for commits. */
   git: GitCommitOutcome | null
 }
@@ -703,6 +767,7 @@ export interface BulkReport {
  * requested status is left alone.
  */
 export async function bulkContentAction(input: BulkInput): Promise<ActionResult<BulkReport>> {
+  const completedChanges: CommittedContentChange[] = []
   try {
     const context = await guardAction()
     const parsed = parseActionInput(bulkSchema, input)
@@ -717,14 +782,17 @@ export async function bulkContentAction(input: BulkInput): Promise<ActionResult<
     const report: BulkReport = { action, changed: [], failed: [], git: null }
 
     for (const path of paths) {
+      let committed: CommittedContentChange | undefined
       try {
         if (action === 'delete') {
           const row = await contentRowByPath(path)
-          const removed = await deleteDocument(path)
+          const removed = await deleteDocument(path, { preservePrevious: true })
           if (!removed) {
             report.failed.push({ path, error: 'Not found on disk.' })
             continue
           }
+          committed = { path, slug: row?.slug ?? slugFromPath(path), checksum: null, operation: 'delete', ...(removed.recoveryPath ? { recoveryPath: removed.recoveryPath } : {}) }
+          completedChanges.push(committed)
           await removeFromIndex(path)
           await recordAudit({
             action: 'post.delete',
@@ -741,12 +809,18 @@ export async function bulkContentAction(input: BulkInput): Promise<ActionResult<
           })
           if (row) revalidateContentChange(row.type, row.slug)
           else revalidatePath('/')
+          await discardRecoverySnapshot(removed.recoveryPath)
+          delete committed.recoveryPath
           report.changed.push({ path, slug: row?.slug ?? path })
           continue
         }
 
         if (action === 'add-tag') {
           const outcome = await addTagToDocument(path, tag as string, context.user.id)
+          if (outcome.committed) {
+            committed = outcome.committed
+            completedChanges.push(committed)
+          }
           if (outcome.note) report.changed.push({ path, slug: outcome.slug, note: outcome.note })
           else report.changed.push({ path, slug: outcome.slug })
           revalidateContentChange(outcome.type, outcome.slug)
@@ -765,7 +839,7 @@ export async function bulkContentAction(input: BulkInput): Promise<ActionResult<
           continue
         }
 
-        const outcome = await writeChecked({ path, type: existing.type }, ({ known }) => {
+        const outcome = await writeChecked({ path, type: existing.type }, ({ known, body }) => {
           const data: Record<string, unknown> = { ...known }
           data.status = target
           if (target === 'published' && data.date === undefined && data.publishedAt === undefined) {
@@ -774,8 +848,10 @@ export async function bulkContentAction(input: BulkInput): Promise<ActionResult<
           // `draft: true` and an explicit status contradict each other; the
           // status the operator just chose wins.
           delete data.draft
-          return { data, body: existing.body }
+          return { data, body }
         })
+        committed = committedWrite(outcome)
+        completedChanges.push(committed)
 
         await afterWrite(
           outcome,
@@ -794,9 +870,16 @@ export async function bulkContentAction(input: BulkInput): Promise<ActionResult<
         })
 
         revalidateContentChange(existing.type, outcome.slug)
+        await discardRecoverySnapshot(outcome.recoveryPath)
+        delete committed.recoveryPath
         report.changed.push({ path, slug: outcome.slug })
       } catch (error) {
-        report.failed.push({ path, error: errorText(error) })
+        if (error instanceof ContentCommittedError) {
+          committed = error.committed
+          completedChanges.push(committed)
+        }
+        const failure = committed ? committedFailure([committed], error) : null
+        report.failed.push({ path, error: failure ? `${failure.error} ${failure.detail}` : errorText(error), ...(committed ? { committed } : {}) })
       }
     }
 
@@ -813,8 +896,10 @@ export async function bulkContentAction(input: BulkInput): Promise<ActionResult<
 
     return actionOk(report)
   } catch (error) {
+    if (completedChanges.length > 0) return committedFailure(completedChanges, error)
     return describeActionError(error)
   }
+
 }
 
 /** The `{title}` for a bulk run: what was done, and to how many. */
@@ -828,7 +913,7 @@ async function addTagToDocument(
   path: string,
   tag: string,
   actorId: string,
-): Promise<{ slug: string; type: ContentType; note?: string }> {
+): Promise<{ slug: string; type: ContentType; note?: string; committed?: CommittedContentChange }> {
   const existing = await readDocument(path)
   if (!existing) throw new ContentWriteError('Document is not on disk', path)
 
@@ -836,23 +921,30 @@ async function addTagToDocument(
     return { slug: existing.slug, type: existing.type, note: 'Already tagged.' }
   }
 
-  const outcome = await writeChecked({ path, type: existing.type }, ({ known }) => {
+  const outcome = await writeChecked({ path, type: existing.type }, ({ known, body, tags }) => {
     const data: Record<string, unknown> = { ...known }
-    data.tags = [...existing.tags, tag]
-    return { data, body: existing.body }
+    data.tags = tags.some((current) => current.toLowerCase() === tag.toLowerCase())
+      ? tags
+      : [...tags, tag]
+    return { data, body }
   })
 
-  await afterWrite(outcome, existing.type, 'save', actorId)
+  try {
+    await afterWrite(outcome, existing.type, 'save', actorId)
 
-  await recordAudit({
-    action: 'post.update',
-    actorId,
-    targetType: 'content',
-    targetId: path,
-    metadata: { type: existing.type, slug: outcome.slug, addedTag: tag },
-  })
+    await recordAudit({
+      action: 'post.update',
+      actorId,
+      targetType: 'content',
+      targetId: path,
+      metadata: { type: existing.type, slug: outcome.slug, addedTag: tag },
+    })
+  } catch (error) {
+    throw new ContentCommittedError(committedWrite(outcome), error)
+  }
 
-  return { slug: outcome.slug, type: existing.type }
+  await discardRecoverySnapshot(outcome.recoveryPath)
+  return { slug: outcome.slug, type: existing.type, committed: committedWrite({ ...outcome, recoveryPath: undefined }) }
 }
 
 /* -------------------------------------------------------------------------- */
@@ -871,7 +963,7 @@ function todayIso(): string {
  * document far better than an empty pair of quotes would.
  */
 function slugFromPath(path: string): string {
-  return path.slice(path.lastIndexOf('/') + 1).replace(/\.md$/, '')
+  return path.slice(path.lastIndexOf('/') + 1).replace(/\.(?:md|markdown)$/i, '')
 }
 
 function errorText(error: unknown): string {

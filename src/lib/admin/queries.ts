@@ -3,6 +3,7 @@ import 'server-only'
 import { and, asc, count, desc, eq, gte, ilike, inArray, or, sql, type SQL } from 'drizzle-orm'
 
 import { db } from '@/lib/db'
+import { typeDirectory } from '@/lib/content/paths'
 import {
   contentIndex,
   contentTags,
@@ -426,7 +427,7 @@ export async function hasAnyUser(): Promise<boolean> {
 }
 
 /**
- * Every `type/slug` in the index, for the editor's link check.
+ * Every public `directory/slug` in the index, for the editor's link check.
  *
  * All statuses, not just published. The site flags a link to a draft as broken
  * because a reader cannot follow it; in the editor that would mean every
@@ -437,7 +438,7 @@ export async function indexSlugKeys(): Promise<string[]> {
   const rows = await db
     .select({ type: contentIndex.type, slug: contentIndex.slug })
     .from(contentIndex)
-  return rows.map((row) => `${row.type}/${row.slug}`)
+  return rows.map((row) => `${typeDirectory(row.type)}/${row.slug}`)
 }
 export async function contentRowByPath(path: string): Promise<ContentRow | null> {
   const [row] = await db.select().from(contentIndex).where(eq(contentIndex.path, path)).limit(1)

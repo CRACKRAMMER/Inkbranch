@@ -12,6 +12,9 @@ const bool = (defaultValue: '0' | '1') =>
   z
     .string()
     .default(defaultValue)
+    .refine((v) => ['0', '1', 'true', 'false'].includes(v.toLowerCase()), {
+      message: 'Expected 0, 1, true or false',
+    })
     .transform((v) => v === '1' || v.toLowerCase() === 'true')
 
 const int = (defaultValue: number) =>
@@ -29,8 +32,16 @@ const schema = z.object({
     .string()
     .min(1, 'DATABASE_URL is required')
     .refine(
-      (v) => v.startsWith('postgres://') || v.startsWith('postgresql://'),
-      'DATABASE_URL must be a postgres:// connection string',
+      (v) => {
+        try {
+          const url = new URL(v)
+          return ['postgres:', 'postgresql:'].includes(url.protocol) &&
+            Boolean(url.hostname) && url.pathname.length > 1
+        } catch {
+          return false
+        }
+      },
+      'DATABASE_URL must be a postgres:// or postgresql:// URL with a host and database name',
     ),
   DATABASE_POOL_MAX: int(10),
 
@@ -43,7 +54,15 @@ const schema = z.object({
   SESSION_IDLE_TTL: int(60 * 60 * 24 * 7),
   COOKIE_SECURE: bool('0'),
 
-  SITE_URL: z.string().url().default('http://localhost:3000'),
+  SITE_URL: z.string().url().refine((value) => {
+    try {
+      const url = new URL(value)
+      return ['http:', 'https:'].includes(url.protocol) && !url.username &&
+        !url.password && url.pathname === '/' && !url.search && !url.hash
+    } catch {
+      return false
+    }
+  }, 'SITE_URL must be an http:// or https:// origin without credentials, path, query or fragment').default('http://localhost:3000'),
   TRUSTED_ORIGINS: z
     .string()
     .default('localhost:3000')

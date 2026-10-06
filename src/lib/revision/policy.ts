@@ -5,6 +5,7 @@ import { desc, eq, inArray } from 'drizzle-orm'
 import { db } from '@/lib/db'
 import { contentRevisions } from '@/lib/db/schema'
 import { getSettings } from '@/lib/settings'
+import { checksumOf } from '@/lib/content/reader'
 import {
   AUTOSAVE_SUMMARY,
   captureRevision,
@@ -43,7 +44,7 @@ export interface CaptureWithPolicyResult extends CaptureResult {
 }
 
 export async function captureWithPolicy(
-  input: CaptureRevisionInput,
+  input: CaptureRevisionInput & { writtenChecksum?: string },
 ): Promise<CaptureWithPolicyResult> {
   const settings = await getSettings()
 
@@ -58,6 +59,13 @@ export async function captureWithPolicy(
       disabled: true,
       trimmed: 0,
     }
+  }
+
+  // A retry of a committed write can replace the same bytes again. Its earlier
+  // recovery snapshot remains independent; this attempt has no new past state.
+  if (input.previousContent !== null && input.writtenChecksum === checksumOf(input.previousContent)) {
+    return { captured: false, skipped: 'unchanged', revisionId: null, revisionNo: null,
+      pruned: 0, error: null, disabled: false, trimmed: 0 }
   }
 
   const result = await captureRevision(input)

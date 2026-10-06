@@ -1,9 +1,9 @@
 import type { Metadata, Viewport } from 'next'
 import { Inter, JetBrains_Mono, Source_Serif_4 } from 'next/font/google'
+import { connection } from 'next/server'
 
 import { FontPreloadLink } from '@/components/content/font-preload'
 import { ThemeProvider } from '@/components/theme-provider'
-import { Toaster } from '@/components/ui/toaster'
 import { siteOrigin } from '@/env'
 import { UI_FONT } from '@/lib/fonts'
 import { SITE_ATOM_PATH, SITE_RSS_PATH } from '@/lib/seo/metadata'
@@ -23,7 +23,9 @@ import './globals.css'
 const sans = Inter({
   subsets: ['latin'],
   variable: '--font-inter',
-  display: 'swap',
+  // Keep the first readable layout on slow links instead of swapping a late
+  // font into already painted text. Cached/preloaded fonts still apply.
+  display: 'optional',
 })
 
 /*
@@ -39,26 +41,29 @@ const sans = Inter({
  * This is a statement about which family is worth preloading, and it is the
  * reason the build's font manifest lists Inter against `/` and not the other
  * two. It does not, on its own, put a preload in the page: `next/font`'s
- * mechanism for that is inert in this version — see `src/lib/fonts.ts` — and the
- * one hint the site does emit is written by hand there.
+ * mechanism for that is inert in this version. `FontPreloadLink` resolves the
+ * installed build's CSS asset name so rebuilds cannot leave stale font URLs.
  *
  * Leaving them unpreloaded does not mean leaving them unloaded. All three are
  * declared in the same stylesheet, so a page that renders prose or a code block
  * fetches the family it needs when it lays that text out, a little later than a
- * preload but only on the pages that have such text, and `display: 'swap'`
- * means the fallback is readable in the meantime rather than blank.
+ * preload but only on the pages that have such text. Optional font display
+ * keeps the metric-adjusted fallback stable when a download arrives late.
  */
 const serif = Source_Serif_4({
   subsets: ['latin'],
   variable: '--font-source-serif',
-  display: 'swap',
+  display: 'optional',
   preload: false,
 })
 
 const mono = JetBrains_Mono({
   subsets: ['latin'],
+  // Code and metadata use the regular face; a variable weight file adds bytes
+  // to every page that contains a date or status label.
+  weight: '400',
   variable: '--font-jetbrains-mono',
-  display: 'swap',
+  display: 'optional',
   preload: false,
 })
 
@@ -128,6 +133,9 @@ export const viewport: Viewport = {
  * language out by hand.
  */
 export default async function RootLayout({ children }: { children: React.ReactNode }) {
+  // Settings describe the running site. Defer the database read until a request
+  // exists so builds need no database and cannot embed local configuration.
+  await connection()
   const settings = await getSettings()
 
   return (
@@ -154,7 +162,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
         {/*
          * The interface face, on every page there is. The article face's hint
          * is emitted by `ArticleBody` instead, because only a document route
-         * paints it — `src/lib/fonts.ts` has the reasoning for both.
+         * paints it.
          */}
         <FontPreloadLink font={UI_FONT} />
       </head>
@@ -172,7 +180,6 @@ export default async function RootLayout({ children }: { children: React.ReactNo
             Skip to content
           </a>
           {children}
-          <Toaster />
         </ThemeProvider>
       </body>
     </html>

@@ -1,4 +1,5 @@
-import type { FontPreload } from '@/lib/fonts'
+import { getFontPreload } from '@/lib/font-preloads'
+import type { FontRole } from '@/lib/fonts'
 
 /**
  * A font hint, rendered from wherever the font is first painted.
@@ -15,7 +16,9 @@ import type { FontPreload } from '@/lib/fonts'
  * fetched in CORS mode, and a preload without it warms a request the stylesheet
  * will then make again.
  */
-export function FontPreloadLink({ font }: { font: FontPreload }) {
+export function FontPreloadLink({ font: role }: { font: FontRole }) {
+  const font = getFontPreload(role)
+  if (!font) return null
   return (
     <link rel="preload" as="font" type={font.type} crossOrigin="anonymous" href={font.href} />
   )

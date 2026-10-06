@@ -6,7 +6,7 @@ import { useState } from 'react'
 
 import { ThemeToggle } from '@/components/theme-toggle'
 import { Button } from '@/components/ui/button'
-import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet'
+import { Sheet, SheetContent, SheetTitle, SheetTrigger } from '@/components/ui/sheet'
 import { cn } from '@/lib/utils/cn'
 import { ADMIN_NAV, isCurrent } from './nav-items'
 
@@ -34,58 +34,53 @@ export function AdminShell({
   const [menuOpen, setMenuOpen] = useState(false)
 
   return (
-    <div className="min-h-dvh bg-canvas lg:grid lg:grid-cols-[15rem_1fr]">
-      {/* Desktop sidebar */}
-      <aside className="hidden border-r border-line lg:block">
-        <div className="sticky top-0 flex h-dvh flex-col overflow-y-auto">
-          <div className="border-b border-line px-5 py-5">
-            <Link href="/admin" className="block">
-              <span className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink-subtle">
-                Admin
-              </span>
-              <span className="mt-1 block truncate font-serif text-base text-ink">
-                {user.siteName}
-              </span>
-            </Link>
+    <Sheet open={menuOpen} onOpenChange={setMenuOpen}>
+      <div className="min-h-dvh bg-canvas lg:grid lg:grid-cols-[15rem_1fr]">
+        {/* Desktop sidebar */}
+        <aside className="hidden border-r border-line lg:block">
+          <div className="sticky top-0 flex h-dvh flex-col overflow-y-auto">
+            <div className="border-b border-line px-5 py-5">
+              <Link href="/admin" className="block">
+                <span className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink-subtle">
+                  Admin
+                </span>
+                <span className="mt-1 block truncate font-serif text-base text-ink">
+                  {user.siteName}
+                </span>
+              </Link>
+            </div>
+            <nav aria-label="Admin sections" className="flex-1 px-2 py-4">
+              <NavList pathname={pathname} />
+            </nav>
+            <div className="border-t border-line px-5 py-4">
+              <SignedInAs user={user} />
+            </div>
           </div>
-          <nav aria-label="Admin sections" className="flex-1 px-2 py-4">
-            <NavList pathname={pathname} />
-          </nav>
-          <div className="border-t border-line px-5 py-4">
-            <SignedInAs user={user} />
-          </div>
+        </aside>
+
+        <div className="flex min-w-0 flex-col">
+          {/* Top bar — the only chrome above content, on both breakpoints */}
+          <header className="sticky top-0 z-20 flex h-14 items-center gap-3 border-b border-line bg-canvas px-4 lg:px-8">
+            <SheetTrigger asChild>
+              <Button variant="outline" size="sm" className="lg:hidden">
+                Menu
+              </Button>
+            </SheetTrigger>
+
+            <p className="min-w-0 flex-1 truncate text-sm text-ink-muted">
+              <span className="lg:hidden">{currentLabel(pathname)}</span>
+              <span className="hidden lg:inline">{user.email}</span>
+            </p>
+
+            <ThemeToggle />
+            <SignOutButton signOut={signOut} />
+          </header>
+
+          <main id="main" className="min-w-0 flex-1 px-4 py-8 lg:px-8 lg:py-10">
+            {children}
+          </main>
         </div>
-      </aside>
 
-      <div className="flex min-w-0 flex-col">
-        {/* Top bar — the only chrome above content, on both breakpoints */}
-        <header className="sticky top-0 z-20 flex h-14 items-center gap-3 border-b border-line bg-canvas px-4 lg:px-8">
-          <Button
-            variant="outline"
-            size="sm"
-            className="lg:hidden"
-            aria-expanded={menuOpen}
-            aria-haspopup="dialog"
-            onClick={() => setMenuOpen(true)}
-          >
-            Menu
-          </Button>
-
-          <p className="min-w-0 flex-1 truncate text-sm text-ink-muted">
-            <span className="lg:hidden">{currentLabel(pathname)}</span>
-            <span className="hidden lg:inline">{user.email}</span>
-          </p>
-
-          <ThemeToggle />
-          <SignOutButton signOut={signOut} />
-        </header>
-
-        <main id="main" className="min-w-0 flex-1 px-4 py-8 lg:px-8 lg:py-10">
-          {children}
-        </main>
-      </div>
-
-      <Sheet open={menuOpen} onOpenChange={setMenuOpen}>
         <SheetContent side="left" className="w-[17rem] p-0">
           <div className="border-b border-line px-5 py-5">
             <SheetTitle className="font-serif text-base">{user.siteName}</SheetTitle>
@@ -97,8 +92,8 @@ export function AdminShell({
             <SignedInAs user={user} />
           </div>
         </SheetContent>
-      </Sheet>
-    </div>
+      </div>
+    </Sheet>
   )
 }
 

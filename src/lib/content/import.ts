@@ -303,6 +303,7 @@ export interface ImportWrittenFile {
   outcome: 'created' | 'overwritten' | 'skipped' | 'failed'
   checksum: string
   message?: string
+  recoveryPath?: string
 }
 
 export type ImportEvent =
@@ -329,9 +330,12 @@ export interface ImportWrite {
   content: string
   /** The text it replaced, or null when the file is new. */
   previousContent: string | null
+  recoveryPath?: string
 }
 
 export interface ImportApplyOptions {
+  /** Preserve previous bytes for a caller that records revisions after writing. */
+  preservePrevious?: boolean
   /** Write the suggested fixes into the destination copies. */
   applyFixes?: boolean
   onEvent?: (event: ImportEvent) => void
@@ -1868,6 +1872,19 @@ export async function applyImport(
     durationMs: 0,
   }
 
+  // Slugs come from frontmatter, so an overwrite may target a filename that
+  // differs from the slug. Writing its canonical name would create a second
+  // document instead of replacing the one the report asked to overwrite.
+  const existingPaths = new Map<string, string[]>()
+  if (plan.entries.some((entry) => entry.action === 'overwrite')) {
+    for (const file of await scanContentFiles()) {
+      const document = await readDocument(file.relativePath).catch(() => null)
+      if (!document) continue
+      const key = `${document.type}/${document.slug}`
+      existingPaths.set(key, [...(existingPaths.get(key) ?? []), file.relativePath])
+    }
+  }
+
   for (const entry of plan.entries) {
     if (entry.action === 'reject') {
       result.rejected += 1
@@ -1890,11 +1907,19 @@ export async function applyImport(
           ? withFixes(entry.content, entry.fixes)
           : entry.content
 
+      const matchingPaths = existingPaths.get(`${entry.type}/${entry.slug}`) ?? []
+      if (entry.action === 'overwrite' && matchingPaths.length > 1) {
+        throw new Error('More than one existing file declares this slug; resolve the duplicate before overwriting.')
+      }
+      const relativePath = entry.action === 'overwrite' ? matchingPaths[0] : undefined
+
       const written = await importDocument({
         type: entry.type,
         slug: entry.slug,
         content,
         overwrite: entry.action === 'overwrite',
+        ...(relativePath ? { relativePath } : {}),
+        preservePrevious: options.preservePrevious,
       })
 
       if (written.skipped) {
@@ -1928,7 +1953,8 @@ export async function applyImport(
         sourcePath: entry.sourcePath,
         targetPath: written.relativePath,
         outcome,
-        checksum: entry.checksum,
+        checksum: checksumOf(content),
+        ...(written.recoveryPath ? { recoveryPath: written.recoveryPath } : {}),
       })
 
       if (options.afterWrite) {
@@ -1941,10 +1967,11 @@ export async function applyImport(
             outcome,
             content,
             previousContent: written.previousContent,
+            recoveryPath: written.recoveryPath,
           })
         } catch (error) {
           result.afterWriteFailures.push(
-            `${written.relativePath}: ${error instanceof Error ? error.message : String(error)}`,
+            `${written.relativePath}: ${error instanceof Error ? error.message : String(error)}${written.recoveryPath ? ` Previous bytes are retained at ${written.recoveryPath}.` : ''}`,
           )
         }
       }

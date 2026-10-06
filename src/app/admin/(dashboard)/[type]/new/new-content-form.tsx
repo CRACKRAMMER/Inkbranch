@@ -1,6 +1,7 @@
 'use client'
 
 import { useRouter } from 'next/navigation'
+import Link from 'next/link'
 import { useState, useTransition } from 'react'
 
 import { Button } from '@/components/ui/button'
@@ -27,12 +28,14 @@ export function NewContentForm({ type, segment }: { type: ContentType; segment: 
   const [date, setDate] = useState('')
   const [errors, setErrors] = useState<Record<string, string>>({})
   const [failure, setFailure] = useState<string | null>(null)
+  const [savedSlug, setSavedSlug] = useState<string | null>(null)
 
   const effectiveSlug = slugTouched ? slug : slugify(title)
 
   function submit() {
     setErrors({})
     setFailure(null)
+    setSavedSlug(null)
 
     startTransition(async () => {
       const result = await createContentAction({
@@ -46,6 +49,7 @@ export function NewContentForm({ type, segment }: { type: ContentType; segment: 
       if (!result.ok) {
         setErrors(result.fieldErrors ?? {})
         setFailure(result.detail ? `${result.error} ${result.detail}` : result.error)
+        setSavedSlug(result.committed?.find((change) => change.operation === 'write')?.slug ?? null)
         return
       }
 
@@ -144,6 +148,7 @@ export function NewContentForm({ type, segment }: { type: ContentType; segment: 
           {failure}
         </p>
       ) : null}
+      {savedSlug ? <Link href={`/admin/${segment}/${savedSlug}/edit`} className="text-sm underline">Open the saved file</Link> : null}
 
       <div className="flex items-center gap-3">
         <Button type="submit" disabled={pending || title.trim() === ''}>

@@ -20,10 +20,9 @@ import { flagBool, flagInt, heading, info, parseArgs, report, run, style, warn }
  * reindex job refuses to stamp rows for one rather than claiming a push that
  * never happened. This script does not stamp anything it did not rewrite either.
  *
- * `--force` rebuilds every indexed row rather than only the stale ones. That is
- * O(n²) in documents — `syncOneDocument` rescans the content tree per document —
- * so it is for the case that needs it (a version bump made without the stamp, a
- * row edited by hand) and not for routine use.
+ * `--force` rebuilds every indexed row rather than only stale ones. Each target
+ * is read directly without scanning the tree, so the work scales with the
+ * requested documents.
  */
 const args = parseArgs(process.argv.slice(2))
 const force = flagBool(args, 'force')

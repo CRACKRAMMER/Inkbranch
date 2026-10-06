@@ -11,8 +11,11 @@ import { buildRobots } from '@/lib/seo/robots'
  * list on this site that must not drift: a disallow entry that exists in the
  * module but not in the served file is an invitation to index the login form.
  *
- * Static, and safe to be: `buildRobots()` reads `SITE_URL` and nothing else.
+ * The image can be built before its public origin is configured. Read the
+ * runtime SITE_URL so container deployments advertise the correct sitemap.
  */
+export const dynamic = 'force-dynamic'
+
 export default function robots(): MetadataRoute.Robots {
   return buildRobots()
 }

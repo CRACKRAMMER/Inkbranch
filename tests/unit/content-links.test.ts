@@ -901,3 +901,114 @@ describe('expandLineSpec', () => {
     expect(expandLineSpec('55-57', 50)).toEqual([55, 56, 57])
   })
 })
+
+// CommonMark reference forms render as ordinary links/images and must therefore
+// participate in asset usage, broken-link reports and backlinks.
+describe('reference-style destinations', () => {
+  it('extracts multiline raw image markup with the same-origin URL policy', () => {
+    const markdown = 'Before.\n\n<img\n  src="https://site.example/uploads/diagram.webp"\n  alt="Multiline">\n'
+    expect(extractLinks(markdown, { siteUrl: 'https://site.example' }).links).toMatchObject([
+      { kind: 'image', targetKey: 'diagram.webp', label: 'Multiline', line: 3 },
+    ])
+  })
+  it('extracts full, collapsed and shortcut references with source lines', () => {
+    const markdown = [
+      '![Diagram][picture]',
+      '[Read this][post]',
+      '![picture][]',
+      '[post]',
+      '',
+      '[picture]: /uploads/diagram.webp "Caption"',
+      '[post]: /posts/target',
+    ].join('\n')
+    expect(extractLinks(markdown).links).toMatchObject([
+      { kind: 'image', targetKey: 'diagram.webp', label: 'Diagram', line: 1 },
+      { kind: 'internal', targetKey: 'posts/target', label: 'Read this', line: 2 },
+      { kind: 'image', targetKey: 'diagram.webp', label: 'picture', line: 3 },
+      { kind: 'internal', targetKey: 'posts/target', label: 'post', line: 4 },
+    ])
+  })
+
+  it('normalizes reference labels and ignores definitions without a rendered reference', () => {
+    const markdown = '[Link][Mixed   Label]\n\n[mixed label]: /notes/destination\n[unused]: /posts/no-reference\n'
+    expect(extractLinks(markdown).links).toMatchObject([
+      { kind: 'internal', targetKey: 'notes/destination', label: 'Link' },
+    ])
+    expect(extractLinks(markdown).links).toHaveLength(1)
+  })
+
+  it('ignores references and definitions inside code', () => {
+    const markdown = '`![inline][pic]`\n\n```md\n![fenced][pic]\n[only-code]: /posts/private\n```\n\n    ![indented][pic]\n\n[pic]: /uploads/unused.webp\n'
+    expect(extractLinks(markdown).links).toEqual([])
+  })
+})
+
+describe('uploaded media references', () => {
+  it('tracks rendered media directives with the configured upload prefix', () => {
+    const links = extractLinks([
+      '::video{src="/api/assets/movie.webm" poster="/api/assets/poster.png"}',
+      '::audio{src="/api/assets/talk.mp3"}',
+      '::embed{src="/api/assets/local.svg" title="Diagram"}',
+      '::iframe{src="https://site.example/api/assets/same.svg"}',
+    ].join('\n'), { uploadUrlPrefix: '/api/assets', siteUrl: 'https://site.example' }).links
+    expect(links.map((link) => [link.kind, link.targetKey, link.line])).toEqual([
+      ['image', 'movie.webm', 1], ['image', 'poster.png', 1],
+      ['image', 'talk.mp3', 2], ['image', 'local.svg', 3], ['image', 'same.svg', 4],
+    ])
+  })
+
+  it('tracks raw media sources, posters and each picture or image source-set candidate', () => {
+    const links = extractLinks([
+      '<video src="/uploads/movie.webm" poster="/uploads/poster.png"></video>',
+      '<audio src=/uploads/talk.mp3><source src="/uploads/alternate.ogg"></audio>',
+      '<picture>',
+      '  <source srcset="/uploads/large.avif 2x, /uploads/small.avif 1x">',
+      '  <img src="/uploads/fallback.png" srcset="/uploads/large.webp 1200w, /uploads/small.webp 600w">',
+      '</picture>',
+      '<iframe src="/uploads/local.svg"></iframe>',
+    ].join('\n')).links
+    expect(links.map((link) => [link.targetKey, link.line])).toEqual([
+      ['movie.webm', 1], ['poster.png', 1], ['talk.mp3', 2], ['alternate.ogg', 2],
+      ['large.avif', 4], ['small.avif', 4], ['fallback.png', 5],
+      ['large.webp', 5], ['small.webp', 5], ['local.svg', 7],
+    ])
+  })
+
+  it('matches decoded HTML entities and encoded asset filenames', () => {
+    expect(extractLinks('<img src="/uploads/a%2Esvg?x=1&amp;y=2" alt="A &amp; B">').links)
+      .toMatchObject([{ targetKey: 'a.svg', label: 'A & B' }])
+    expect(normalizeImageKey('/uploads/other/../a%2Esvg', '/uploads')).toBe('a.svg')
+    expect(normalizeImageKey('/api/assets/a%2Fb.svg', '/api/assets')).toBe('a/b.svg')
+    expect(normalizeImageKey('/uploads/../outside.svg', '/uploads')).toBeNull()
+    expect(normalizeImageKey('/uploads/%2e%2e%2foutside.svg', '/uploads')).toBeNull()
+    expect(normalizeImageKey('/uploads/%zz.svg', '/uploads')).toBeNull()
+    expect(extractLinks('![Legacy URL](/uploads/a.svg)', { uploadUrlPrefix: '/api/assets' }).links)
+      .toMatchObject([{ kind: 'image', targetKey: 'a.svg' }])
+    expect(extractLinks('![API URL](/api/assets/a.svg)').links)
+      .toMatchObject([{ kind: 'image', targetKey: 'a.svg' }])
+  })
+
+  it('ignores example code, HTML comments and external media', () => {
+    const markdown = [
+      '`::video{src="/uploads/inline.webm"}`',
+      '```md', '::audio{src="/uploads/fenced.mp3"}', '<img src="/uploads/fenced.png">', '```',
+      '', '    <video src="/uploads/indented.webm"></video>',
+      '', '<!--', '<img src="/uploads/comment.png">', '-->',
+      '', '::video{src="https://external.example/movie.webm"}',
+      '<img src="https://external.example/image.png">',
+    ].join('\n')
+    expect(extractLinks(markdown).links).toEqual([])
+  })
+
+  it('keeps escaped and entity-encoded HTML as literal text rather than asset usage', () => {
+    const markdown = [
+      '\\<img src="/uploads/escaped.png">',
+      '&lt;img src="/uploads/entity.png"&gt;',
+      '\\<video src=/uploads/escaped.webm>',
+      '&lt;audio src=/uploads/entity.mp3&gt;',
+    ].join('\n')
+    expect(extractLinks(markdown).links).toEqual([])
+    expect(extractLinks('\\\\<img src=/uploads/real.png>').links)
+      .toMatchObject([{ targetKey: 'real.png' }])
+  })
+})

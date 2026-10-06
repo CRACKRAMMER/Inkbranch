@@ -19,6 +19,7 @@ import {
   type RedirectMap,
 } from '@/lib/redirects'
 import { hasTestDatabase } from '../setup'
+import { siteOrigin } from '@/env'
 
 /**
  * Redirects.
@@ -59,6 +60,11 @@ describe('isResolvableRedirectSource', () => {
     expect(isResolvableRedirectSource('/old')).toBe(true)
     expect(isResolvableRedirectSource('/')).toBe(true)
     expect(isResolvableRedirectSource('/a/b/c')).toBe(true)
+  })
+
+  it('permits legacy HTML URLs and refuses the upload tree', () => {
+    expect(isResolvableRedirectSource('/old.html')).toBe(true)
+    expect(isResolvableRedirectSource('/uploads/asset.png')).toBe(false)
   })
 
   it('rejects what a redirect can never be stored on', () => {
@@ -268,6 +274,12 @@ describe('parseRedirectsCsv', () => {
 })
 
 describe('detectRedirectLoop', () => {
+  it('detects loops through an absolute URL on the configured site origin', () => {
+    expect(detectRedirectLoop('/a', `${siteOrigin}/a?legacy=1`, () => null))
+      .toMatchObject({ ok: false, reason: 'self' })
+    expect(detectRedirectLoop('/a', `${siteOrigin}/b`, (target) => target === '/b' ? '/a' : null))
+      .toMatchObject({ ok: false, reason: 'cycle' })
+  })
   const map = (entries: Record<string, string>) => (path: string) =>
     entries[path] ?? null
 
@@ -330,6 +342,11 @@ describe('detectRedirectLoop', () => {
 })
 
 describe('validateRedirect', () => {
+  it('rejects encoded traversal that the browser could normalize into a loop', () => {
+    for (const toPath of ['/%2e%2e/a', '/%252e%252e/a', '/%5cevil.test', 'https:evil.test']) {
+      expect(() => validateRedirect({ fromPath: '/a', toPath })).toThrow()
+    }
+  })
   it('normalises the source and defaults the status', () => {
     expect(validateRedirect({ fromPath: '/old/?a=1', toPath: '/new/' })).toEqual({
       fromPath: '/old',
@@ -463,6 +480,27 @@ describeWithDatabase('redirects storage', () => {
     ).rejects.toMatchObject({ code: 'REDIRECT', reason: 'loop' })
 
     expect((await listRedirects({})).total).toBe(1)
+  })
+
+  it('cannot commit opposite edges concurrently and create a redirect loop', async () => {
+    await clear()
+    const outcomes = await Promise.allSettled([
+      saveRedirect({ fromPath: '/concurrent-a', toPath: '/concurrent-b' }),
+      saveRedirect({ fromPath: '/concurrent-b', toPath: '/concurrent-a' }),
+    ])
+    expect(outcomes.filter((result) => result.status === 'fulfilled')).toHaveLength(1)
+    expect(outcomes.find((result) => result.status === 'rejected'))
+      .toMatchObject({ status: 'rejected', reason: { reason: 'loop' } })
+    expect((await listRedirects()).total).toBe(1)
+  })
+
+  it('validates an import against a concurrent save before committing its graph', async () => {
+    await clear()
+    await Promise.allSettled([
+      saveRedirect({ fromPath: '/import-race-a', toPath: '/import-race-b' }),
+      importRedirectsFromCsv('/import-race-b,/import-race-a\n'),
+    ])
+    expect((await listRedirects()).total).toBe(1)
   })
 
   it('allows correcting a redirect that already points somewhere', async () => {

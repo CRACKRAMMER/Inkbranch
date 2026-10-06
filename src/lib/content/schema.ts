@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { internalOrExternalUrlSchema } from '@/lib/security/urls'
 
 import {
   CONTENT_STATUSES,
@@ -100,19 +101,7 @@ export const tagListSchema = z.preprocess((value) => {
 }, z.array(tagSchema).max(30, 'A document may have at most 30 tags'))
 
 /** http(s) or site-relative URLs only. Blocks javascript: and data: payloads. */
-export const safeUrlSchema = z
-  .string()
-  .trim()
-  .max(512)
-  .refine((value) => {
-    if (value.startsWith('/')) return !value.startsWith('//')
-    try {
-      const url = new URL(value)
-      return url.protocol === 'http:' || url.protocol === 'https:'
-    } catch {
-      return false
-    }
-  }, 'Must be an http(s) URL or a site-relative path starting with /')
+export const safeUrlSchema = internalOrExternalUrlSchema
 
 export const seoSchema = z
   .object({

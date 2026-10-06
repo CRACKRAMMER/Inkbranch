@@ -32,8 +32,7 @@ export function ArticleBody({
       {/*
        * This component is the only place article prose is rendered, and every
        * page that has prose renders it, so it is the exact scope for the
-       * article face's preload — see `src/lib/fonts.ts` for why the hint is
-       * written by hand and why it belongs here rather than in the layout.
+       * article face's preload, resolved from the current build's CSS.
        */}
       <FontPreloadLink font={PROSE_FONT} />
       <div

@@ -192,7 +192,7 @@ void run('content:stats', async () => {
     ),
   )
 
-  if (brokenLinks > 0) {
+  if (brokenLinks > 0 || brokenImages > 0 || otherBroken > 0) {
     info(style.dim('`pnpm content:links` lists them by file and line.'))
     process.exitCode = 1
   }

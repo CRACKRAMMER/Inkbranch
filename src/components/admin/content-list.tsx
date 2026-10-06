@@ -153,7 +153,7 @@ export function ContentList({
         )}
       </div>
 
-      <div className="overflow-x-auto border-y border-line">
+      <div className="relative overflow-x-auto border-y border-line">
         <table className="w-full border-collapse text-sm">
           <caption className="sr-only">
             {type}s with status, taxonomy and counts

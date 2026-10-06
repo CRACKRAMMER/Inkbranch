@@ -79,6 +79,24 @@ export function internalPathProblem(value: string): string | null {
     return 'Path must not contain a ".." segment'
   }
 
+  // Encoded dots are normalized by the URL parser too. Double encoding can
+  // pass through a proxy and router in separate decoding steps, so screen both
+  // forms before storing a path used by metadata or an HTTP redirect.
+  let decoded = value.split(/[?#]/)[0] ?? value
+  for (let pass = 0; pass < 2; pass += 1) {
+    let next: string
+    try {
+      next = decodeURIComponent(decoded)
+    } catch {
+      break // A literal percent has no decoded traversal to check.
+    }
+    if (next === decoded) break
+    decoded = next
+    if (decoded.split('/').includes('..') || decoded.includes('\\') || decoded.startsWith('//')) {
+      return 'Path contains encoded traversal or separators'
+    }
+  }
+
   return null
 }
 
@@ -150,6 +168,9 @@ export function externalUrlProblem(
   if (scheme !== 'http' && scheme !== 'https') {
     const allowed = options.allowMailto ? 'http, https or mailto' : 'http or https'
     return `URL scheme must be ${allowed}, not ${scheme}`
+  }
+  if (!/^https?:\/\//i.test(value) || value.includes('\\')) {
+    return 'HTTP URLs must start with http:// or https:// and contain no backslash'
   }
   if (!parsed.hostname) return 'URL must name a host'
 

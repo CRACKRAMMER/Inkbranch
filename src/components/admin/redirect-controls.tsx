@@ -18,6 +18,7 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
+  DialogTrigger,
 } from '@/components/ui/dialog'
 import { Field, FieldDescription, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
@@ -207,28 +208,28 @@ export function EditRedirectDialog({ redirect }: { redirect: RedirectFormValues 
   const [open, setOpen] = useState(false)
 
   return (
-    <>
-      <Button type="button" variant="ghost" size="sm" onClick={() => setOpen(true)}>
-        Edit
-      </Button>
-      <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="sm:max-w-2xl">
-          <DialogHeader>
-            <DialogTitle>Edit the redirect for {redirect.fromPath}</DialogTitle>
-            <DialogDescription>
-              The source path identifies the rule and cannot be renamed here; a different source is a
-              different redirect.
-            </DialogDescription>
-          </DialogHeader>
-          <RedirectForm initial={redirect} compact onDone={() => setOpen(false)} />
-          <DialogFooter>
-            <Button type="button" variant="ghost" onClick={() => setOpen(false)}>
-              Close
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-    </>
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>
+        <Button type="button" variant="ghost" size="sm">
+          Edit
+        </Button>
+      </DialogTrigger>
+      <DialogContent className="sm:max-w-2xl">
+        <DialogHeader>
+          <DialogTitle>Edit the redirect for {redirect.fromPath}</DialogTitle>
+          <DialogDescription>
+            The source path identifies the rule and cannot be renamed here; a different source is a
+            different redirect.
+          </DialogDescription>
+        </DialogHeader>
+        <RedirectForm initial={redirect} compact onDone={() => setOpen(false)} />
+        <DialogFooter>
+          <Button type="button" variant="ghost" onClick={() => setOpen(false)}>
+            Close
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }
 
@@ -239,51 +240,51 @@ export function DeleteRedirectButton({ id, fromPath }: { id: string; fromPath: s
   const [pending, startTransition] = useTransition()
 
   return (
-    <>
-      <Button type="button" variant="ghost" size="sm" onClick={() => setOpen(true)}>
-        Delete
-      </Button>
-      <Dialog open={open} onOpenChange={(next) => (pending ? undefined : setOpen(next))}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Delete the redirect on {fromPath}?</DialogTitle>
-            <DialogDescription>
-              Requests to <span className="font-mono">{fromPath}</span> will 404 again until another
-              rule or a document serves that path.
-            </DialogDescription>
-          </DialogHeader>
-          {error ? (
-            <p role="alert" className="border-l-2 border-danger pl-3 text-sm text-ink">
-              {error}
-            </p>
-          ) : null}
-          <DialogFooter>
-            <Button type="button" variant="ghost" onClick={() => setOpen(false)} disabled={pending}>
-              Cancel
-            </Button>
-            <Button
-              type="button"
-              variant="destructive"
-              disabled={pending}
-              onClick={() =>
-                startTransition(async () => {
-                  const result = await deleteRedirectAction({ id })
-                  if (!result.ok) {
-                    setError(result.error)
-                    return
-                  }
-                  setOpen(false)
-                  toast.success('Redirect deleted.')
-                  router.refresh()
-                })
-              }
-            >
-              {pending ? 'Deleting…' : 'Delete'}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-    </>
+    <Dialog open={open} onOpenChange={(next) => (pending ? undefined : setOpen(next))}>
+      <DialogTrigger asChild>
+        <Button type="button" variant="ghost" size="sm">
+          Delete
+        </Button>
+      </DialogTrigger>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Delete the redirect on {fromPath}?</DialogTitle>
+          <DialogDescription>
+            Requests to <span className="font-mono">{fromPath}</span> will 404 again until another
+            rule or a document serves that path.
+          </DialogDescription>
+        </DialogHeader>
+        {error ? (
+          <p role="alert" className="border-l-2 border-danger pl-3 text-sm text-ink">
+            {error}
+          </p>
+        ) : null}
+        <DialogFooter>
+          <Button type="button" variant="ghost" onClick={() => setOpen(false)} disabled={pending}>
+            Cancel
+          </Button>
+          <Button
+            type="button"
+            variant="destructive"
+            disabled={pending}
+            onClick={() =>
+              startTransition(async () => {
+                const result = await deleteRedirectAction({ id })
+                if (!result.ok) {
+                  setError(result.error)
+                  return
+                }
+                setOpen(false)
+                toast.success('Redirect deleted.')
+                router.refresh()
+              })
+            }
+          >
+            {pending ? 'Deleting…' : 'Delete'}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }
 
@@ -347,6 +348,7 @@ export function RedirectImport() {
         <input
           ref={fileRef}
           type="file"
+          aria-label="CSV redirect file"
           accept=".csv,text/csv,text/plain"
           className="sr-only"
           onChange={async (event) => {

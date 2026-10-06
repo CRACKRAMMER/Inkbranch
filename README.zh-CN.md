@@ -88,7 +88,7 @@ ADMIN_PASSWORD=                        # 12–1024 characters, required
 变量中任何一个缺失或格式不对时，脚本以非零状态退出且不写入任何东西——所有检查都在第一次
 写数据库之前跑完，所以 `.env.local` 里的一个笔误不会产生一个只塞了一半的数据库。
 
-没有开放注册。拿到账号的唯一途径是这个脚本，或者由管理员创建。
+没有开放注册或用户管理页面。账号通过种子 CLI 创建；幂等性针对配置的邮箱。修改 `ADMIN_EMAIL` 会创建另一个账号，重新初始化时应使用同一邮箱。
 
 ### 内容
 
@@ -124,7 +124,7 @@ ADMIN_PASSWORD=                        # 12–1024 characters, required
 | `pnpm content:import` | 导入器，支持 `--from` 文件、`--zip` 归档与 `--scan-dir` 目录树。除非传入 `--apply`，否则是 dry run。 |
 | `pnpm content:links` | 打印指向空处的链接，按包含它们的文档分组。 |
 | `pnpm content:stats` | 按类型、标签与年份统计，外加孤立文档、字数与阅读时长——读的是索引，不是文件。 |
-| `pnpm worker` | 在前台运行定时任务循环：`content.publish-scheduled`、`content.sync`、`content.drift-check`、`search.reindex`。没有东西会自动启动它。 |
+| `pnpm worker` | 在独立进程中运行与服务器相同的任务循环：发布、同步/漂移/重建索引、统计聚合/保留、资源维护。服务器默认自动启动循环（`WORKER_ENABLED=1`）。 |
 | `pnpm backup` | `scripts/backup.sh`——写出一个 `backup-<date>.tar.zst`，内含 `pg_dump`、`content/`、`uploads/` 与环境文件，在取最终名字之前完成校验与清单。 |
 | `pnpm restore` | `scripts/restore.sh`——把那份归档恢复到数据库与两棵目录树上。破坏性操作；会让你手动输入 `restore`。 |
 
@@ -158,11 +158,12 @@ content/
   projects/
   .locks/       ← 临时；写锁
   .tmp/         ← 临时；原子写入的暂存区
+  .recovery/    ← 私有；未完成操作保留的旧文件原始字节
 ```
 
-`content/.locks/` 与 `content/.tmp/` 是运行时状态，已被 gitignore。树的其余部分就是你的
-内容本身，别无他物——这正是修订被**刻意**放在别处的原因（它们以 gzip 快照的形式存在数据库
-里；见 ARCHITECTURE.md §4）。
+隐藏的运行时目录被 gitignore，并且不会参与扫描或导入。修订历史以 gzip 快照保存于数据库
+（见 ARCHITECTURE.md §4）。正式修改先将旧文件的完整原始字节保存在私有 `.recovery/` 中；
+确认完成后只清理本次副本，后续处理失败则保留副本并报告恢复位置。备份会包含这些副本。
 
 ### frontmatter
 
@@ -196,11 +197,11 @@ pnpm test:integration  # needs TEST_DATABASE_URL
 pnpm test:e2e          # needs TEST_DATABASE_URL
 ```
 
-- **单元**（`tests/unit/`，19 个文件）覆盖 frontmatter 解析器、slug、Markdown 渲染器、
+- **单元**（`tests/unit/`）覆盖 frontmatter 解析器、slug、Markdown 渲染器、
   内部链接解析、反向链接、内容同步、重定向、路径校验、搜索、修订、任务、分析、SEO、
   订阅源、设置、资源、关系图与 git 自动提交——最后两项针对它们真正构建出来的东西测试，
   因为被测的就是 git 与布局引擎的行为。
-- **集成**（`tests/integration/`，4 个文件）跑在真实 Postgres 与真实的临时内容树上。
+- **集成**（`tests/integration/`）跑在真实 Postgres 与真实的临时内容树上。
   `vitest.integration.config.ts` 刻意设置 `fileParallelism: false`：每个文件有自己的
   `CONTENT_DIR`，但它们共用一个数据库，而 `syncContent` 会删除它看不到对应文件的索引行
   ——两个文件同时跑会互相删掉对方的夹具。没有 `TEST_DATABASE_URL` 时这些套件会**跳过**，
@@ -214,8 +215,7 @@ pnpm test:e2e          # needs TEST_DATABASE_URL
   密码猜测，而一个每分钟登录两次的测试套件不是在猜——没有这个接缝，一次运行就会把账号的
   每小时配额用光，最后几个测试会以 "Too many sign-in attempts" 失败。
 
-`TEST_DATABASE_URL` 必须指向与 `DATABASE_URL` 相同的 Postgres 服务器，但**数据库名不同**。
-没有任何东西会阻止你把它指向开发数据库；套件只是假定它是可丢弃的。
+`TEST_DATABASE_URL` 必须指向**与应用数据库不同、可丢弃的数据库**。测试会拒绝相同目标（包括 localhost 别名和更换凭证）。集成测试会修改索引，E2E 会重建自己的数据库；建议使用专用测试服务器或具备创建 E2E 数据库权限的测试角色。
 
 ```dotenv
 DATABASE_URL=postgresql://myblog:…@localhost:5432/myblog
@@ -260,7 +260,7 @@ src/
     git/              可选的 content 自动提交（默认关闭，从不 push）
   env.ts              经过校验的环境变量（见 DEPLOYMENT.md）
   instrumentation.ts  生产姿态检查，每次服务器启动运行一次
-  middleware.ts       限定在 /admin/:path*，设置 x-pathname
+  proxy.ts            Node 代理：数据库重定向与后台路径上下文
 scripts/              CLI 入口（content:*、db:*、worker）+ backup/restore
 tests/                unit · integration · e2e
 content/              Markdown——事实来源

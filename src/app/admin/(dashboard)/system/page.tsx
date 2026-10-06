@@ -307,7 +307,12 @@ export default async function SystemPage({
           </InlineNote>
         ) : (
           <>
-            <div className="overflow-x-auto border-t border-line">
+            <div
+              role="region"
+              aria-label="Audit log"
+              tabIndex={0}
+              className="overflow-x-auto border-t border-line focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
               <table className="w-full border-collapse text-sm">
                 <caption className="sr-only">
                   Audit entries, newest first{actionFilter ? `, filtered to ${actionFilter}` : ''}

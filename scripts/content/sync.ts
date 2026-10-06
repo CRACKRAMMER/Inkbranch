@@ -107,14 +107,12 @@ void run('content:sync', async () => {
   invalidateRelationsIndex()
 
   if (result.truncated) {
-    // Loud, because the consequence is not just an incomplete report: files
-    // past the cap look absent to the reconciler, and absent files are removed
-    // from the index. Silent truncation is data loss with extra steps.
     warn(
       `The scan stopped at ${result.scanned} files (CONTENT_MAX_FILES). ` +
-        'Files beyond the limit were not seen and their index rows may have been removed. ' +
+        'Files beyond the limit were not reconciled; existing index rows and revision history were retained. ' +
         'Raise CONTENT_MAX_FILES and re-run.',
     )
+    process.exitCode = 1
   }
 
   if (result.errors.length > 0) {

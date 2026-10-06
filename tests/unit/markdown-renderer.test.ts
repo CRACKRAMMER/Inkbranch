@@ -47,6 +47,17 @@ describe('renderMarkdown — features', () => {
     expect(html).not.toContain('math-inline')
   })
 
+  it('highlights a word that occupies an entire Shiki token', async () => {
+    const { html } = await renderMarkdown('```ts /answer/\nconst answer = 42\n```\n')
+    expect(html).toContain('<mark class="code-word-highlight">answer</mark>')
+  })
+
+  it.each(['', 'unknown-language'])('preserves copyable source line breaks for %s code', async (language) => {
+    const { html } = await renderMarkdown(`\`\`\`${language}\nfirst line\nsecond line\n\`\`\`\n`)
+    const code = /<code(?: [^>]*)?>([\s\S]*?)<\/code>/.exec(html)?.[1]
+    expect(code?.replace(/<[^>]*>/g, '')).toBe('first line\nsecond line\n')
+  })
+
   it('does not treat a dollar sign inside a code fence as math', async () => {
     const { html, features } = await renderMarkdown('```sh\ncost=$5\necho $HOME\n```\n')
 
@@ -96,6 +107,14 @@ describe('renderMarkdown — features', () => {
     expect(html.match(/tabindex="-1"/g)).toHaveLength(1)
     expect(html).toContain('Install')
     expect(html).toContain('Use')
+  })
+
+  it('gives separate tab groups unique accessible identifiers', async () => {
+    const tabs = '::::tabs\n:::tab[One]\nFirst\n:::\n:::tab[Two]\nSecond\n:::\n::::\n'
+    const { html } = await renderMarkdown(`${tabs}\n${tabs}`)
+    const ids = [...html.matchAll(/id="(tab-[^"]+)"/g)].map((match) => match[1])
+    expect(ids).toHaveLength(4)
+    expect(new Set(ids).size).toBe(4)
   })
 
   it('renders callouts from both directive and alert syntax', async () => {

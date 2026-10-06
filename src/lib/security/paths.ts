@@ -1,4 +1,5 @@
 import path from 'node:path'
+import fs from 'node:fs/promises'
 
 /**
  * Filesystem path containment.
@@ -92,6 +93,41 @@ export function assertInside(
     throw new PathSecurityError(
       `Refusing to touch ${label} outside its root: ${resolved} is not inside ${path.resolve(root)}`,
     )
+  }
+  return resolved
+}
+
+/**
+ * Reject symlinks below a configured storage root, including the target itself.
+ * Lexical containment alone cannot stop `root/link/file` following a link to
+ * another tree. The root is deployment configuration and may itself be a link;
+ * every component supplied by content, database rows or requests must be plain.
+ * Missing components are allowed so the same check protects new writes.
+ * Call immediately before filesystem operations and again after mkdir.
+ * Storage directories must be writable only by the application's trusted user;
+ * Node has no portable openat primitive to defeat a hostile local rename race.
+ */
+export async function assertNoSymlinkPath(
+  root: string,
+  target: string,
+  label = 'path',
+): Promise<string> {
+  const resolvedRoot = path.resolve(root)
+  const resolved = assertInside(resolvedRoot, target, label)
+  const relative = path.relative(resolvedRoot, resolved)
+  let current = resolvedRoot
+  for (const component of relative.split(path.sep).filter(Boolean)) {
+    current = path.join(current, component)
+    let stat
+    try {
+      stat = await fs.lstat(current)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') break
+      throw error
+    }
+    if (stat.isSymbolicLink()) {
+      throw new PathSecurityError(`Refusing ${label} through a symbolic link: ${current}`)
+    }
   }
   return resolved
 }

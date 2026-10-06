@@ -16,9 +16,10 @@
  *
  * The risk of the split is that the checks are skipped if `register` never
  * runs. It always runs — Next calls it on every server start, including the
- * standalone server the container image boots — and the failure is fatal, so a
- * configuration that should have been refused takes down the process rather
- * than being served from.
+ * standalone server the container image boots. Next can catch a rejected hook
+ * while leaving the listener open, so production configuration failures below
+ * explicitly exit with code 1. A supervisor can then report and restart the
+ * failed process instead of retaining a server that never became ready.
  *
  * `NEXT_RUNTIME` is read rather than assumed: `register` is also invoked for
  * the edge runtime, where none of these variables are read and where throwing
@@ -69,13 +70,23 @@
 export async function register(): Promise<void> {
   if (process.env.NEXT_RUNTIME !== 'nodejs') return
 
-  const { assertProductionPosture, env } = await import('@/env')
-  assertProductionPosture()
+  let startupEnv: typeof import('@/env')['env']
+  try {
+    const { assertProductionPosture, env } = await import('@/env')
+    assertProductionPosture()
+    startupEnv = env
+  } catch (error) {
+    if (process.env.NODE_ENV !== 'production') throw error
+    // Validation messages name fields and accepted shapes, never their values.
+    console.error('[startup] Configuration refused:', error instanceof Error
+      ? error.message : 'Unable to validate server configuration')
+    process.exit(1)
+  }
 
   const { warmHighlighter } = await import('@/lib/markdown/shiki')
   void warmHighlighter()
 
-  if (!env.WORKER_ENABLED) return
+  if (!startupEnv.WORKER_ENABLED) return
 
   const { startEmbeddedWorker } = await import('@/lib/jobs')
   startEmbeddedWorker()

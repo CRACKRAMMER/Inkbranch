@@ -3,6 +3,7 @@ import { createRequire } from 'node:module'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { defineConfig } from 'vitest/config'
+import { assertSeparateTestDatabase } from './tests/database-safety'
 
 /* -------------------------------------------------------------------------- */
 /*  Database selection, before anything else can read it                       */
@@ -24,11 +25,14 @@ import { defineConfig } from 'vitest/config'
  * test database is configured it falls back to the same unreachable address
  * `tests/setup.ts` uses, and the suites skip.
  */
-const envFile = path.join(process.cwd(), '.env.local')
-if (fs.existsSync(envFile)) {
-  process.loadEnvFile(envFile)
+for (const file of ['.env.local', '.env']) {
+  const envFile = path.join(process.cwd(), file)
+  if (fs.existsSync(envFile)) process.loadEnvFile(envFile)
 }
 
+if (process.env.TEST_DATABASE_URL) {
+  assertSeparateTestDatabase(process.env.TEST_DATABASE_URL, process.env.DATABASE_URL)
+}
 process.env.DATABASE_URL =
   process.env.TEST_DATABASE_URL ?? 'postgres://unused:unused@127.0.0.1:1/unused'
 

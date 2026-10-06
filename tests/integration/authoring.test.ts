@@ -24,6 +24,7 @@ import {
   updateDocument,
 } from '@/lib/content/writer'
 import { db } from '@/lib/db'
+import { runMigrations } from '@/lib/db/migrate'
 import { assets, contentIndex } from '@/lib/db/schema'
 import {
   RevisionSlugMismatchError,
@@ -105,6 +106,7 @@ async function indexedRow(relativePath: string) {
 
 describe.skipIf(!hasTestDatabase)('authoring lifecycle', () => {
   beforeAll(async () => {
+    await runMigrations(process.env.TEST_DATABASE_URL as string)
     await ensureContentDirectories()
     await fs.mkdir(POSTS, { recursive: true })
   })

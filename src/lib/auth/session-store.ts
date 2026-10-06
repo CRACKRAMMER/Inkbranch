@@ -25,9 +25,21 @@ export interface CreatedSession {
   expiresAt: Date
 }
 
+export class CredentialChangedError extends Error {
+  constructor() {
+    super('The account credential changed during sign-in. Try again.')
+    this.name = 'CredentialChangedError'
+  }
+}
+
 export async function createSession(
   userId: string,
-  context: { ip?: string | null; userAgent?: string | null } = {},
+  context: {
+    ip?: string | null
+    userAgent?: string | null
+    /** Version of the credential actually verified by the sign-in action. */
+    expectedSessionVersion?: number
+  } = {},
 ): Promise<CreatedSession> {
   const token = generateToken()
   const csrfToken = generateToken(24)
@@ -40,6 +52,12 @@ export async function createSession(
 
   if (!user) {
     throw new Error(`Cannot create a session for unknown user ${userId}`)
+  }
+  if (
+    context.expectedSessionVersion !== undefined &&
+    context.expectedSessionVersion !== user.sessionVersion
+  ) {
+    throw new CredentialChangedError()
   }
 
   const now = Date.now()

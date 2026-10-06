@@ -280,7 +280,7 @@ function AssetTable({
   context: { locale: string; timeZone: string; now: Date }
 }) {
   return (
-    <div className="overflow-x-auto border-t border-line">
+    <div className="relative overflow-x-auto border-t border-line">
       <table className="w-full border-collapse text-sm">
         <caption className="sr-only">Stored assets with their dimensions, size and alt text</caption>
         <thead>
@@ -359,4 +359,3 @@ function clampPage(value: string | undefined): number {
   if (!Number.isFinite(parsed)) return 1
   return Math.max(1, Math.trunc(parsed))
 }
-

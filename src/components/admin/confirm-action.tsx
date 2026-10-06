@@ -12,6 +12,7 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
+  DialogTrigger,
 } from '@/components/ui/dialog'
 import type { ActionResult } from '@/lib/admin/result'
 
@@ -77,57 +78,53 @@ export function ConfirmAction<P>({
   }
 
   return (
-    <>
-      <Button
-        type="button"
-        variant={triggerVariant}
-        size={triggerSize}
-        onClick={() => {
-          setError(null)
-          setOpen(true)
-        }}
-      >
-        {triggerLabel}
-      </Button>
+    <Dialog open={open} onOpenChange={(next) => (pending ? undefined : setOpen(next))}>
+      <DialogTrigger asChild>
+        <Button
+          type="button"
+          variant={triggerVariant}
+          size={triggerSize}
+          onClick={() => setError(null)}
+        >
+          {triggerLabel}
+        </Button>
+      </DialogTrigger>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>{title}</DialogTitle>
+          <DialogDescription asChild>
+            <div className="text-sm leading-relaxed text-ink-muted">{description}</div>
+          </DialogDescription>
+        </DialogHeader>
 
-      <Dialog open={open} onOpenChange={(next) => (pending ? undefined : setOpen(next))}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>{title}</DialogTitle>
-            <DialogDescription asChild>
-              <div className="text-sm leading-relaxed text-ink-muted">{description}</div>
-            </DialogDescription>
-          </DialogHeader>
+        {error ? (
+          <p role="alert" className="border-l-2 border-danger pl-3 text-sm text-ink">
+            {error.message}
+            {error.detail ? (
+              <span className="mt-1 block text-xs text-ink-muted">{error.detail}</span>
+            ) : null}
+          </p>
+        ) : null}
 
-          {error ? (
-            <p role="alert" className="border-l-2 border-danger pl-3 text-sm text-ink">
-              {error.message}
-              {error.detail ? (
-                <span className="mt-1 block text-xs text-ink-muted">{error.detail}</span>
-              ) : null}
-            </p>
-          ) : null}
-
-          <DialogFooter>
-            <Button
-              type="button"
-              variant="ghost"
-              onClick={() => setOpen(false)}
-              disabled={pending}
-            >
-              {cancelLabel}
-            </Button>
-            <Button
-              type="button"
-              variant={destructive ? 'destructive' : 'default'}
-              onClick={confirm}
-              disabled={pending}
-            >
-              {pending ? 'Working…' : confirmLabel}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-    </>
+        <DialogFooter>
+          <Button
+            type="button"
+            variant="ghost"
+            onClick={() => setOpen(false)}
+            disabled={pending}
+          >
+            {cancelLabel}
+          </Button>
+          <Button
+            type="button"
+            variant={destructive ? 'destructive' : 'default'}
+            onClick={confirm}
+            disabled={pending}
+          >
+            {pending ? 'Working…' : confirmLabel}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }

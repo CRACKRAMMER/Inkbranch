@@ -254,7 +254,31 @@ test('an author writes, publishes, finds and deletes a post', async ({ page }) =
 
     const row = page.getByRole('row', { name: new RegExp(title) })
     await expect(row).toBeVisible()
-    await row.getByRole('button', { name: 'Delete' }).click()
+    const trigger = row.getByRole('button', { name: 'Delete', exact: true })
+    await trigger.focus()
+    await page.keyboard.press('Enter')
+
+    const dialog = page.getByRole('dialog')
+    await expect(dialog).toBeVisible()
+    for (let index = 0; index < 8; index += 1) {
+      await page.keyboard.press('Tab')
+      await expect.poll(() => dialog.evaluate(node => node.contains(document.activeElement))).toBe(true)
+    }
+    await dialog.getByRole('button', { name: 'Cancel', exact: true }).click()
+    await expect(dialog).toBeHidden()
+    await expect(trigger).toBeFocused()
+    await expect(row).toBeVisible()
+    expect((await page.request.get(`/posts/${slug}`)).status()).toBe(200)
+
+    // Cancel and Escape both return to the action that opened the dialog. The
+    // next keyboard action must act on that row, rather than on the page body.
+    await page.keyboard.press('Enter')
+    await expect(dialog).toBeVisible()
+    await page.keyboard.press('Escape')
+    await expect(dialog).toBeHidden()
+    await expect(trigger).toBeFocused()
+    await page.keyboard.press('Enter')
+    await expect(dialog).toBeVisible()
 
     // The confirmation is not decoration — the dialog says the revision history
     // goes with it — so the test goes through it rather than around it.

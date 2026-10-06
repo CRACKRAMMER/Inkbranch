@@ -1,6 +1,7 @@
-import { afterAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { desc, eq, inArray, sql } from 'drizzle-orm'
 import { db } from '@/lib/db'
+import { runMigrations } from '@/lib/db/migrate'
 import { scheduledJobs } from '@/lib/db/schema'
 import {
   CADENCE_KINDS,
@@ -42,6 +43,7 @@ import { hasTestDatabase } from '../setup'
 const WAIT_TIMEOUT_MS = 15_000
 
 describe.runIf(hasTestDatabase)('the embedded worker', () => {
+  beforeAll(async () => { await runMigrations(process.env.TEST_DATABASE_URL as string) })
   /**
    * Remove the cadence's own bookkeeping before and after.
    *

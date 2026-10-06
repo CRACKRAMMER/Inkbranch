@@ -6,7 +6,6 @@ import { useRouter } from 'next/navigation'
 import { useEffect, useMemo, useState } from 'react'
 
 import type { GraphNode, GraphNodeKind, KnowledgeGraph } from '@/lib/graph/graph'
-import { cn } from '@/lib/utils/cn'
 
 /**
  * The knowledge graph page, as an island.
@@ -347,9 +346,9 @@ export function GraphExplorer() {
               {listed.length} {listed.length === 1 ? 'node' : 'nodes'} in this view
             </h2>
 
-            <ul className="mt-4 grid gap-x-10 gap-y-1 sm:grid-cols-2">
+            <ul className="mt-4 grid grid-cols-1 gap-x-10 gap-y-1 sm:grid-cols-2">
               {listed.map((node) => (
-                <li key={node.id} className="flex items-baseline gap-3 py-1">
+                <li key={node.id} className="flex min-w-0 items-baseline gap-3 py-1">
                   <Link
                     href={node.url}
                     className="min-w-0 flex-1 truncate text-sm text-ink-muted transition-colors duration-150 hover:text-brand"
@@ -363,15 +362,12 @@ export function GraphExplorer() {
                     information, in the medium the list has.
                   */}
                   {node.type === 'tag' ? (
-                    <span className="shrink-0 text-[10px] uppercase tracking-wider text-ink-subtle/70">
+                    <span className="shrink-0 text-[10px] uppercase tracking-wider text-ink-subtle">
                       Tag
                     </span>
                   ) : null}
                   <span
-                    className={cn(
-                      'shrink-0 font-mono text-xs tabular-nums',
-                      node.degree === 0 ? 'text-ink-subtle/70' : 'text-ink-subtle',
-                    )}
+                    className="shrink-0 font-mono text-xs tabular-nums text-ink-subtle"
                     title={`${node.degree} ${node.degree === 1 ? 'connection' : 'connections'}`}
                   >
                     {node.degree}

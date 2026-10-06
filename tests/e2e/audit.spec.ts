@@ -82,6 +82,13 @@ test('a page past the end of the log says so instead of claiming the log is empt
 
     const log = page.getByRole('table', { name: /Audit entries/ })
     await expect(log).toBeVisible()
+    const region = page.getByRole('region', { name: 'Audit log', exact: true })
+    await region.focus()
+    await expect(region).toBeFocused()
+    if (await region.evaluate(node => node.scrollWidth > node.clientWidth)) {
+      await page.keyboard.press('ArrowRight')
+      await expect.poll(() => region.evaluate(node => node.scrollLeft)).toBeGreaterThan(0)
+    }
     // Written by the sign-in above, and the one action every run is certain to
     // have produced. `.first()`, because the log accumulates and this asserts
     // what is rendered, not how many: the row is written by every sign-in, and

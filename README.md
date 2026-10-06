@@ -85,7 +85,7 @@ pnpm dev                          # http://localhost:3000  ·  /admin/login
 
 `pnpm db:seed` reads three variables and creates the owner account, the
 settings row and a starting navigation. It is idempotent: running it again
-changes nothing, and it never resets a password or a site name an admin has
+changes nothing, and it never resets the matching account password or a site name an admin has
 since edited.
 
 ```dotenv
@@ -101,8 +101,7 @@ non-zero and writes nothing if any of the three is missing or malformed — the
 checks all run before the first database write, so a typo in `.env.local` cannot
 produce a half-seeded database.
 
-There is no open registration. The only way to get an account is this script or
-an admin creating one.
+There is no open registration or user-management screen. Accounts are provisioned by the seed CLI; its idempotency applies to the configured email. Changing `ADMIN_EMAIL` creates another account, so keep the same email when re-running bootstrap.
 
 ### Content
 
@@ -140,7 +139,7 @@ wrapper.
 | `pnpm content:import` | Importer for `--from` files, `--zip` archives and `--scan-dir` trees. A dry run unless `--apply` is passed. |
 | `pnpm content:links` | Prints the links that point at nothing, grouped by the document containing them. |
 | `pnpm content:stats` | Counts per type, tag and year, plus orphans, word counts and reading time — read from the index, not the files. |
-| `pnpm worker` | Runs the scheduled-job loop in the foreground: `content.publish-scheduled`, `content.sync`, `content.drift-check`, `search.reindex`. Nothing starts it for you. |
+| `pnpm worker` | Runs the same job loop as the server in a separate process: publishing, sync/drift/reindex, analytics rollup/retention and asset maintenance. The server starts its own loop by default (`WORKER_ENABLED=1`). |
 | `pnpm backup` | `scripts/backup.sh` — writes one `backup-<date>.tar.zst` holding a `pg_dump`, `content/`, `uploads/` and the environment files, verified and manifested before it takes its final name. |
 | `pnpm restore` | `scripts/restore.sh` — restores that archive over the database and the two trees. Destructive; asks you to type `restore`. |
 
@@ -177,12 +176,14 @@ content/
   projects/
   .locks/       ← transient; write locks
   .tmp/         ← transient; atomic-write staging
+  .recovery/    ← private prior bytes retained after incomplete mutations
 ```
 
-`content/.locks/` and `content/.tmp/` are runtime state and are gitignored. The
-rest of the tree is exactly your content, nothing else — that is where revisions
-were deliberately *not* put (they live in the database as gzipped snapshots; see
-ARCHITECTURE.md §4).
+The hidden runtime directories are gitignored and excluded from scanning and
+imports. Revisions live in the database as gzipped snapshots (ARCHITECTURE.md §4).
+Formal mutations first preserve exact prior bytes in `.recovery/` with private
+permissions. A confirmed operation removes its own copy; an incomplete one reports
+its recovery location and keeps it for the operator. Backups include these copies.
 
 ### Frontmatter
 
@@ -217,13 +218,13 @@ pnpm test:integration  # needs TEST_DATABASE_URL
 pnpm test:e2e          # needs TEST_DATABASE_URL
 ```
 
-- **Unit** (`tests/unit/`, 19 files) covers the frontmatter parser, slugs,
+- **Unit** (`tests/unit/`) covers the frontmatter parser, slugs,
   the Markdown renderer, internal-link parsing, backlinks, content sync,
   redirects, path validation, search, revisions, jobs, analytics, SEO, feeds,
   settings, assets, the relation graph and git auto-commit — the last two
   against the real things they build, because what is being tested is what git
   and the layout engine do.
-- **Integration** (`tests/integration/`, 4 files) runs against real Postgres and
+- **Integration** (`tests/integration/`) runs against real Postgres and
   a real temp content tree. `vitest.integration.config.ts` sets
   `fileParallelism: false` deliberately: every file gets its own `CONTENT_DIR`
   but they share one database, and `syncContent` deletes index rows whose file
@@ -243,9 +244,7 @@ pnpm test:e2e          # needs TEST_DATABASE_URL
   not guessing — without the seam, a run spends the account's hourly allowance
   and its last tests fail on "Too many sign-in attempts".
 
-`TEST_DATABASE_URL` must point at the same Postgres server as `DATABASE_URL`
-but a **different database name**. Nothing will stop you from pointing it at
-your development database; the suites assume it is disposable.
+`TEST_DATABASE_URL` must identify a **disposable database different from the application database**. The test harness refuses identical database targets, including localhost aliases and changes of credentials. Integration tests mutate the test index and E2E recreates its own database; use a dedicated test server or role with permission to create the E2E database.
 
 ```dotenv
 DATABASE_URL=postgresql://myblog:…@localhost:5432/myblog
@@ -290,7 +289,7 @@ src/
     git/              optional content auto-commit (off by default, never pushes)
   env.ts              validated environment (see DEPLOYMENT.md)
   instrumentation.ts  production posture checks, run once per server start
-  middleware.ts       scoped to /admin/:path*, sets x-pathname
+  proxy.ts            Node proxy: stored redirects and admin pathname context
 scripts/              CLI entry points (content:*, db:*, worker) + backup/restore
 tests/                unit · integration · e2e
 content/              Markdown — the source of truth

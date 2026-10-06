@@ -44,13 +44,16 @@ void run('content:validate', async () => {
 
   heading('Validating content')
 
-  const files = await scanContentFiles()
-  if (files.length >= env.CONTENT_MAX_FILES) {
+  const scanned = await scanContentFiles({ maxFiles: env.CONTENT_MAX_FILES + 1 })
+  const truncated = scanned.length > env.CONTENT_MAX_FILES
+  const files = scanned.slice(0, env.CONTENT_MAX_FILES)
+  if (truncated) {
     // Loud, because the report below claims to cover the tree and would not.
     warn(
       `The scan stopped at ${env.CONTENT_MAX_FILES} files (CONTENT_MAX_FILES); ` +
         'documents past the limit were not checked. Raise it and run again for a complete answer.',
     )
+    process.exitCode = 1
   }
 
   const existing = await collectExistingContent()
@@ -133,7 +136,7 @@ void run('content:validate', async () => {
   if (invalid.length > 0) {
     warn('Invalid files cannot be indexed or imported. Fix them, then run `pnpm content:sync`.')
     process.exitCode = 1
-  } else {
+  } else if (!truncated) {
     info(style.green(`All ${candidates.length} files are valid.`))
   }
 })

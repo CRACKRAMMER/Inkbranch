@@ -161,7 +161,7 @@ const nextConfig: NextConfig = {
     return [
       {
         /*
-         * Every path except `/api/assets`.
+         * Every path except uploaded files, including their `/uploads` alias.
          *
          * Config headers are applied to the response after the route has run,
          * so a matching rule here silently replaces a header the route set
@@ -173,23 +173,22 @@ const nextConfig: NextConfig = {
          *
          * The negative lookahead is the documented way to express "all paths
          * but this one": the outer group is matched as a regular expression,
-         * and a path beginning with `api/assets` fails the lookahead.
+         * and either upload prefix fails the lookahead.
          */
-        source: '/((?!api/assets).*)',
+        source: '/((?!api/assets(?:/|$)|uploads(?:/|$)).*)',
         headers: securityHeaders,
-      },
-      {
-        // Content-addressed uploads: safe to cache aggressively.
-        source: '/uploads/:path*',
-        headers: [
-          { key: 'Cache-Control', value: 'public, max-age=31536000, immutable' },
-        ],
       },
     ]
   },
 
   async rewrites() {
-    return { beforeFiles: [], afterFiles: [], fallback: [] }
+    // Run before public-file lookup so the legacy/default upload URL gets the
+    // same symlink jail, private-directory checks and SVG sandbox as the API.
+    return {
+      beforeFiles: [{ source: '/uploads/:path*', destination: '/api/assets/:path*' }],
+      afterFiles: [],
+      fallback: [],
+    }
   },
 
   async redirects() {

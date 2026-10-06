@@ -104,7 +104,7 @@ export function SessionList({
         ) : null
       }
     >
-      <div className="overflow-x-auto border-t border-line">
+      <div className="relative overflow-x-auto border-t border-line">
         <table className="w-full border-collapse text-sm">
           <caption className="sr-only">
             Sessions signed in to this account, oldest first

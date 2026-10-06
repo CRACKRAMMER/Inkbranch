@@ -2,6 +2,11 @@ import { defineConfig } from 'vitest/config'
 import { createRequire } from 'node:module'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { assertSeparateTestDatabase } from './tests/database-safety'
+
+if (process.env.TEST_DATABASE_URL) {
+  assertSeparateTestDatabase(process.env.TEST_DATABASE_URL, process.env.DATABASE_URL)
+}
 
 /**
  * `server-only` is a marker that throws the moment it is loaded anywhere other

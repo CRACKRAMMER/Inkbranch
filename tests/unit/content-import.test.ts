@@ -22,6 +22,7 @@ import {
   type ImportWrite,
 } from '@/lib/content/import'
 import { CONTENT_ROOT, LOCK_DIR, documentPath } from '@/lib/content/paths'
+import { checksumOf } from '@/lib/content/reader'
 
 /**
  * The import engine.
@@ -819,6 +820,7 @@ describe('applyImport', () => {
 
       expect(result.created).toBe(1)
       const written = await fs.readFile(absolute, 'utf8')
+      expect(result.files[0]?.checksum).toBe(checksumOf(written))
       expect(written).toContain('title: "From The Heading"')
       expect(written).toContain('date: "2026-01-02"')
       expect(written).toContain('body')
@@ -827,6 +829,26 @@ describe('applyImport', () => {
     } finally {
       await fs.rm(root, { recursive: true, force: true })
     }
+  })
+
+  it('overwrites the existing filename when its frontmatter declares a different slug', async () => {
+    const slug = unique('declared-slug')
+    const previous = `---\ntitle: Existing\nslug: ${slug}\ndate: 2026-01-01\n---\n\nOriginal bytes.\n`
+    const replacement = previous.replace('Original bytes.', 'Replacement bytes.')
+    const originalPath = `posts/${unique('different-filename')}.md`
+    const absolute = track(originalPath)
+    await fs.mkdir(path.dirname(absolute), { recursive: true })
+    await fs.writeFile(absolute, previous)
+    const existing = await collectExistingContent()
+    const plan = scanImportFiles([{ name: 'replacement.md', data: Buffer.from(replacement) }], {
+      type: 'post', existing: existing.slugs, overwrite: true,
+    })
+    const result = await applyImport(plan)
+    expect(result.overwritten).toBe(1)
+    expect(result.created).toBe(0)
+    expect(result.files[0]?.targetPath).toBe(originalPath)
+    expect(await fs.readFile(absolute, 'utf8')).toBe(replacement)
+    await expect(fs.stat(documentPath(`posts/${slug}.md`))).rejects.toThrow()
   })
 
   it('reports a write that fails instead of claiming success', async () => {

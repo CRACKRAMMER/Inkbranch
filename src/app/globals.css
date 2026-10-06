@@ -56,12 +56,12 @@
 
   /*
    * Status colours, and they are text colours as much as they are fills: a
-   * callout title, a badge label, the editor's "unsaved changes" line. Only
-   * the light warning needed moving — at 70% it was 2.7:1 on the canvas, which
-   * is a warning nobody can read. Dark is a separate set and was already
-   * legible; both are checked by the contrast test named above.
+   * callout title, a badge label, the editor's "unsaved changes" line. Light
+   * warning at 70% was 2.7:1 on the canvas; success at 52% was 4.44:1 on its
+   * translucent badge fill. Dark has a separate set. The contrast tests check
+   * the plain backgrounds as well as the painted badge and callout fills.
    */
-  --color-success: oklch(52% 0.11 152);
+  --color-success: oklch(50% 0.11 152);
   --color-warning: oklch(53% 0.14 76);
   --color-danger: oklch(52% 0.17 27);
   --color-info: oklch(53% 0.09 240);

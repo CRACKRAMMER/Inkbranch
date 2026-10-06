@@ -17,7 +17,8 @@ system is shaped this way; this document is the runbook.
 ```bash
 git clone <repo> inkbranch && cd inkbranch
 cp .env.example .env             # compose reads .env, not .env.local
-$EDITOR .env                     # POSTGRES_PASSWORD, SESSION_SECRET, SITE_URL, COOKIE_SECURE
+$EDITOR .env                     # set POSTGRES_PASSWORD, SESSION_SECRET, HTTPS SITE_URL, COOKIE_SECURE=1
+mkdir -p content uploads
 sudo chown -R 1001:1001 content uploads   # see §6 — a bind mount keeps host ownership
 docker compose up -d
 ```
@@ -26,7 +27,7 @@ docker compose up -d
 
 | Service | Image | Role |
 |---------|-------|------|
-| `postgres` | `postgres:17-alpine` | The database. Pinned to 17; the schema needs nothing newer than 16. |
+| `postgres` | `postgres:17-alpine` | The database. PostgreSQL 17 is the supported and tested deployment version. |
 | `migrate` | this repo, `build` stage | Applies pending migrations and exits. |
 | `web` | this repo, `runner` stage | The site. Starts only after `migrate` exits 0. |
 
@@ -97,16 +98,16 @@ from `packageManager` in `package.json`), then three working stages over it.
 
 | Stage | Produces | Key properties |
 |-------|----------|----------------|
-| `deps` | `node_modules` | Copies only `package.json` and `pnpm-lock.yaml`, so editing a source file does not re-run the install. `--frozen-lockfile` fails rather than resolving anything new. |
-| `build` | `.next/` | Copies the full source. Builds with **placeholder** environment values (`DATABASE_URL`, a fixed dummy `SESSION_SECRET`, `CONTENT_SYNC_ON_BOOT=0`) because `src/env.ts` validates at import — but nothing from that stage is baked into the output, and the dummy secret is fixed so two builds of the same commit are byte-identical. |
+| `deps` | `node_modules` | Copies `package.json`, `pnpm-lock.yaml` and `pnpm-workspace.yaml`, so editing a source file does not re-run the install. `--frozen-lockfile` fails rather than resolving anything new. |
+| `build` | `.next/` | Copies the source and builds with **placeholder** environment values (`DATABASE_URL`, a fixed dummy `SESSION_SECRET`, `CONTENT_SYNC_ON_BOOT=0`) because `src/env.ts` validates at import. Runtime credentials and the site origin are supplied when starting the container; no real credentials are required by the build. Next.js builds are not guaranteed to be byte-identical. |
 | `runner` | the server | `NODE_ENV=production`, `PORT=3000`, non-root user `nextjs` (uid 1001), the standalone bundle plus `.next/static` plus `public/`. |
 
 Three things about the runtime stage are load-bearing.
 
-**It contains no `node_modules` and no installed package manager.** `next.config.ts`
+**It contains traced runtime dependencies, rather than the full development dependency tree.** `next.config.ts`
 sets `output: 'standalone'`, so the build emits a server bundle containing only
 the modules the application actually reached. What ships is the application and
-its traced dependencies — nothing that can be used to install anything. (The
+its traced dependencies, including a standalone `node_modules` directory. (The
 base stage does enable Corepack, so a `pnpm` shim exists on `PATH`; invoking it
 would try to download pnpm, and there is no dependency tree for it to install
 into.)
@@ -149,8 +150,7 @@ it worked and fail the first time anyone tried it. The `migrate` service builds
 the same commit at the `build` stage instead, which has the full toolchain and
 the same lockfile — so the schema and the code are never a version apart.
 
-The database URL used by that service is assembled from the `POSTGRES_*`
-variables; it is not read from `DATABASE_URL` in `.env`.
+The database URL used by that service is assembled from `POSTGRES_*`; it does not use `DATABASE_URL` from `.env`. Generate `POSTGRES_PASSWORD` with `openssl rand -hex 32` so it contains no URL delimiters. Migrations hold their advisory lock, transaction and unlock on one dedicated PostgreSQL connection.
 
 Manual equivalent, from a checkout:
 
@@ -183,7 +183,7 @@ validated at import. `.env.example` documents the same set with commentary.
 | `TRUSTED_ORIGINS` | `localhost:3000` | no | Comma-separated extra hostnames accepted as request origins. `SITE_URL`'s host is always added, so this is only needed for an alias domain. |
 | `CONTENT_DIR` | `./content` | no | Root of the Markdown tree. `/app/content` in the image. |
 | `CONTENT_MAX_FILES` | `5000` | no | Guards against a mis-mounted volume turning boot into a filesystem walk of `/`. |
-| `CONTENT_SYNC_ON_BOOT` | `1` | no | Reconciles the index with the files at startup. Set to `0` for a read-only deployment. The Docker **build** sets it to 0. |
+| `CONTENT_SYNC_ON_BOOT` | `1` | no | Makes the enabled worker's first drift check immediate. At `0` it waits one interval; this does not disable later syncs. A read-only content mount requires `WORKER_ENABLED=0` and a separately prepared index. The Docker **build** sets it to 0. |
 | `SEARCH_PROVIDER` | `local` | no | An enum with one value today; the seam Meilisearch would slot into. Not in `.env.example`. |
 | `UPLOAD_DIR` | `./public/uploads` | no | `/app/public/uploads` in the image, which is where the `./uploads` bind mount lands. |
 | `UPLOAD_URL_PREFIX` | `/uploads` | no | Public URL prefix that maps to `UPLOAD_DIR`. Must start with `/`. |
@@ -191,7 +191,9 @@ validated at import. `.env.example` documents the same set with commentary.
 | `ANALYTICS_ENABLED` | `1` | no | `0` disables collection entirely (the collector stops writing). |
 | `ANALYTICS_RAW_RETENTION_DAYS` | `30` | no | How long raw events are kept before aggregation-only retention. |
 | `GIT_INTEGRATION_ENABLED` | `0` | no | Permission for content auto-commit. The settings say whether the site wants commits, this says whether the process may make them, and the feature needs both — see §10. Off by default: a deployment that changed nothing runs no `git` process at all. |
-| `WORKER_INTERVAL_MS` | `60000` | no | The worker loop's poll interval; see §10. |
+| `WORKER_ENABLED` | `1` | no | Starts the worker inside the server process; see §10. |
+| `WORKER_INTERVAL_MS` | `60000` | no | Interval between worker maintenance sweeps; claims poll between sweeps. |
+| `JOB_RETENTION_DAYS` | `7` | no | Retention for completed and failed job rows. |
 | `TEST_DATABASE_URL` | — | no | Read only by the test suites, never by the app. |
 
 ### Read by tooling, not by the application
@@ -206,7 +208,7 @@ validated at import. `.env.example` documents the same set with commentary.
 | `NEXT_TELEMETRY_DISABLED` | set to `1` in the image | Standard Next.js flag. |
 
 Every variable is validated for **shape** at import: types, required-ness,
-allowed values, with a default for everything that has one. `DATABASE_URL` and
+allowed values, with a default for everything that has one. Boolean values must be `0`, `1`, `true` or `false`; unknown spellings are rejected. Database URLs must identify a PostgreSQL host and database, and the site URL must use HTTP(S) without credentials. `DATABASE_URL` and
 `SESSION_SECRET` have no default and are therefore hard requirements wherever
 the module is loaded — including inside a CLI script. Three variables are
 additionally checked for **posture** in production, which is §5.
@@ -265,13 +267,11 @@ SSH — so it has to be a directory you can open rather than a blob Docker manag
 Uploads are the same: the files are meant to be reachable, copyable, and picked
 up by the same backup script that picks up the Markdown.
 
-The host name and the container name differ on purpose. `web` serves uploads
-through Next's static handler at `/uploads/**`, so inside the container they have
-to sit under `public/`; the host directory should not, because it is data rather
-than an asset of the source tree. A local `pnpm dev` writes to
-`public/uploads/` instead, which is the path Next serves without any configuration
-— the two do not collide because they belong to different ways of running the
-site.
+The host and container paths differ. A local `pnpm dev` writes to
+`public/uploads/`; Compose mounts the host's `uploads/` at the equivalent
+container path. Requests to `/uploads/**` are rewritten to the sandboxed asset
+route, which applies the same file validation and response headers as
+`/api/assets/**`.
 
 Consequences worth knowing:
 
@@ -279,9 +279,8 @@ Consequences worth knowing:
   (`nextjs`), so both directories must be writable by that uid or admin saves and
   uploads fail with `EACCES`. On a fresh host:
   `sudo chown -R 1001:1001 content uploads`. Docker creates a *missing*
-  bind-mount source as `root`, which is why both directories are in the
-  repository (with a `.gitkeep`) and why the `chown` belongs before the first
-  `up` rather than after the first failure.
+  bind-mount source as `root`, which is why `mkdir -p content uploads` and the
+  `chown` belong before the first `up`.
 - **Editing on the host needs a sync.** The app reconciles at boot and after
   every admin save. If you edit files while it is running and do not want to
   restart, run `pnpm content:sync` (§11).
@@ -292,122 +291,61 @@ Consequences worth knowing:
 
 ## 7. Backup and restore
 
-### Backup
+Stop `web`, any separate worker, and external content edits while taking a coherent snapshot. The database and filesystem cannot be snapshotted together by these scripts while writers continue running.
+
+The host needs Bash, GNU `tar`/`realpath`/`find`, `flock`, `zstd`, and PostgreSQL 17 client tools. Its `DATABASE_URL` must reach the same database as Compose; the default Compose network does not expose Postgres to the host. Publish the database on **loopback only** if using host clients, or run the clients inside the Compose network. Set `CONTENT_DIR` and `UPLOAD_DIR` to host paths when running the scripts on the host; Compose data is `./content` and `./uploads`, whereas local development uploads are `./public/uploads`.
 
 ```bash
-bash scripts/backup.sh                    # → ./backups/backup-2026-09-11.tar.zst
-bash scripts/backup.sh /mnt/backups       # elsewhere
-BACKUP_KEEP=30 bash scripts/backup.sh     # retain 30 (default 14; 0 disables pruning)
-BACKUP_LABEL=pre-upgrade bash scripts/backup.sh   # → backup-2026-09-11-pre-upgrade.tar.zst
-# `pnpm backup` is the alias, and behaves identically with no arguments.
+# The scripts read exported values, then .env.local, then .env.
+# Configure a host-accessible DATABASE_URL before this step.
+CONTENT_DIR=./content UPLOAD_DIR=./uploads bash scripts/backup.sh
+BACKUP_KEEP=30 bash scripts/backup.sh /mnt/backups
+BACKUP_LABEL=pre-upgrade bash scripts/backup.sh
 ```
 
-One file, not a directory of them:
+A verified `backup-<UTC date>[-label][-suffix].tar.zst` contains:
 
 ```
-backups/backup-2026-09-11.tar.zst
-  database.dump        pg_dump, custom format — compressed and restorable in parts
-  content/             the Markdown tree
-  uploads/             the media tree
-  config/              the environment files (.env, .env.local), verbatim
-  MANIFEST             what this is, from where, and whether it verified
+database.dump        custom-format pg_dump
+content/             Markdown snapshot, excluding runtime .locks/ and .tmp/
+uploads/             media snapshot
+config/              .env and .env.local, when present
+MANIFEST             version, original paths, timestamp and redacted database URL
 ```
 
-A backup that is a *directory* is a backup that gets half copied — `scp`,
-`rsync`, a USB stick and an object store all have a way to leave a directory
-incomplete, and none of them has a way to leave a single file incomplete without
-saying so. So the pieces are assembled in a staging directory next to the
-destination, compressed once with `zstd`, and the result is only moved to its
-final name after it verifies. A failed run leaves the previous backup untouched,
-and never lands on top of it.
+The content snapshot includes private `.recovery/` copies from interrupted
+formal mutations. They retain exact previous file bytes, including unpublished
+content, with file mode 0600 and directory mode 0700. The Admin error or worker
+log names the relative recovery file. Pause writers, preserve both the current
+document and that snapshot, compare them, then deliberately restore the desired
+bytes to the reported document path and run `pnpm content:sync` followed by
+`pnpm content:sync --check`. A sync repairs the index but does not turn the copy
+into a revision. Remove a retained snapshot only after verifying recovery and
+backup; retries and normal retention never automatically remove earlier failures.
 
-The contents are secret-bearing: `config/` holds `SESSION_SECRET` and the
-database password verbatim, and `database.dump` already held every password hash,
-live session token and audit entry. **Treat the archive the way you treat the
-`.env`** — it is not something to mail. The manifest records the database URL
-with its password redacted, because a manifest is a file that gets copied around.
+Version 2 uses stable `content` and `uploads` member names even for custom source paths. Missing directories and symlinks are refused. Data trees are staged before archiving; allow disk space for the staged data and the final compressed archive. PAX tar preserves fractional modification times. Secret-bearing staging and archive files are private (`umask 077`); protect the archive like `.env` because it also contains password hashes, session state and revision history.
 
-**A same-day backup is never overwritten.** Two runs on one day is the normal
-case — a nightly job and a manual one before an upgrade — so a taken name gets
-the next free suffix (`backup-2026-09-11-2.tar.zst`). Refusing the second would
-make you choose; overwriting would destroy the first.
-
-Verification happens before the archive takes its final name: `zstd --test` for
-the frame checksum, `tar --list` for the members, and `pg_restore --list` on the
-dump *read back out of the archive*. A backup nobody has read back is a hope,
-not a backup.
-
-`UPLOAD_DIR` defaults to `uploads/` when that directory exists and
-`public/uploads/` otherwise, matching the two ways of running the site (§6) —
-set it explicitly in a deployment that has both.
-
-The script needs `pg_dump` on the host. Without it, dump from inside the compose
-network instead:
+The script verifies the compressed stream, tar members and `pg_restore --list` before publishing the final filename. Same-day backups receive a free numeric suffix, backup operations in the same destination are exclusively locked, and retention uses file modification time rather than lexical filename order. `BACKUP_KEEP=0` disables pruning. Labels permit only letters, digits, underscores and hyphens.
 
 ```bash
-mkdir -p backups
-docker compose exec -T postgres pg_dump -U myblog -d myblog --format=custom --compress=6 \
-  > backups/database-$(date -u +%Y-%m-%dT%H-%M-%SZ).dump
-```
-
-That covers the database only — `content/` and `uploads/` are already on the
-host, so tar them yourself, or install `postgresql-client` and use the script.
-
-`DATABASE_URL` is read from the environment, falling back to `.env.local`, and
-`CONTENT_DIR` / `UPLOAD_DIR` are honoured if set (set them to the *host* paths,
-not the container paths).
-
-### Restore
-
-```bash
-bash scripts/restore.sh backups/backup-2026-09-11.tar.zst        # asks you to type "restore"
-bash scripts/restore.sh backups/backup-2026-09-11.tar.zst --yes
+bash scripts/restore.sh backups/backup-<date>.tar.zst
+bash scripts/restore.sh <archive> --yes
 bash scripts/restore.sh <archive> --database-only
 bash scripts/restore.sh <archive> --files-only
 ```
 
-Invoke the scripts directly when passing arguments; `pnpm restore` is the
-no-argument alias (`bash scripts/restore.sh` reads its own flags from `$@`).
+Restore verifies checksums, member names, file types, duplicate members, the manifest and database archive before replacing data. Links, traversal paths, special files, unexpected members, symlinked targets and overlapping data roots are rejected. Legacy archives produced by the previous script remain supported when they meet these checks.
 
-Stop the application first — a running server holds sessions and may write while
-the database is being restored.
+Files are extracted completely into private staging directories before any swap. Current trees move to `*.before-<UTC timestamp>`, and restored trees replace them rather than merging. Environment copies land in `config.restored/`; live `.env` files are preserved. Database restore uses `--clean --if-exists --single-transaction --exit-on-error`. If it fails, the database transaction rolls back and the script rolls the file/config swaps back as well. Staged data preserves each existing target directory's owner, so Compose's uid 1001 retains write access; a caller lacking permission to preserve it fails before replacing files. Run restore with the required host ownership privileges. If targets were absent, set their ownership for the application before restart (`sudo chown -R 1001:1001 content uploads` for the shipped rootful Docker setup). Successful restores keep previous trees for manual recovery. A restore is exclusively locked per checkout.
 
-The confirmation names the database it is about to replace **and where that
-answer came from**, because `DATABASE_URL` in the environment beats `.env.local`
-and the two are indistinguishable by eye. If they disagree, the script says so
-even under `--yes`: a `DATABASE_URL` left over in a shell from a deploy, or
-exported for a test, would otherwise silently pick the target.
+The confirmation displays the database and file targets even with `--yes`, and warns if exported `DATABASE_URL` differs from dotenv. Keep all writers stopped until restore and reconciliation complete:
 
-What it does and does not do:
+```bash
+pnpm content:sync
+pnpm content:sync --check
+```
 
-- **It does not drop the database.** It restores into the existing one and uses
-  `pg_restore --clean --if-exists --single-transaction --exit-on-error`, so the
-  objects it recreates are dropped and recreated inside one transaction that
-  either commits or rolls back. Ownership, extensions and other databases on the
-  server are untouched. The dump is streamed straight out of the archive into
-  `pg_restore` — it is the largest member by far and never needs to touch disk.
-- **It does not overwrite your `.env`.** The archive's copies land in
-  `config.restored/` and the script prints the file names. A session secret that
-  comes back from a backup is a secret you may have rotated on purpose.
-- **The content and uploads trees are replaced, not merged**, and the previous
-  trees are moved aside to `*.before-<UTC timestamp>` rather than deleted — a
-  restore of the wrong backup is recoverable. A merge would leave a site that is
-  neither the backup nor what was there before, which is the hardest state to
-  reason about.
-- **Every check that can fail runs before the first destructive command**, and in
-  an order that keeps the *reason* right: the zstd checksum first (so a truncated
-  file is reported as damaged rather than as "not a backup"), then the manifest,
-  then `pg_restore --list` on the dump. A damaged archive fails before the
-  current state is touched.
-
-Afterwards, three steps the script prints and none of which it can do for you:
-
-1. `pnpm content:sync` — the database and the content tree were restored
-   separately, so reconcile them.
-2. Restart the application if the content tree was replaced while it was
-   running; the search index and the relations index are built in-process and
-   are now stale.
-3. Check `config.restored/` against your live environment files.
+Then restart the application and compare `config.restored/` with the live environment. Preserve the archive and `*.before-*` trees until the recovered site has been verified. An abrupt host shutdown during the cross-resource restore cannot run the rollback trap; use those preserved trees and the archive for recovery before restarting writers.
 
 ---
 
@@ -442,7 +380,7 @@ log instead). Responses are `no-store`.
 
 ```bash
 curl -fsS https://blog.example.com/api/health
-docker inspect --format '{{.State.Health.Status}}' myblog-app-1
+docker inspect --format '{{.State.Health.Status}}' myblog-web-1
 ```
 
 The image ships a `HEALTHCHECK` with a 20-second start period, 30-second
@@ -470,6 +408,8 @@ terminates TLS, because production requires `SITE_URL` to be `https://` and
    SVG that must not be replaced.
 5. Send HSTS from the proxy — the application does not.
 
+The edge proxy must overwrite client-supplied `X-Forwarded-For` with the actual connection address. Authentication rate limiting trusts the first forwarded address (hashed for limiter keys; analytics does not read it), so multiple proxy hops require an explicit trusted-proxy and header-overwrite configuration.
+
 ```nginx
 server {
   listen 443 ssl;
@@ -485,7 +425,7 @@ server {
     proxy_pass http://127.0.0.1:3000;
     proxy_set_header Host              $host;
     proxy_set_header X-Real-IP         $remote_addr;
-    proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-For   $remote_addr;
     proxy_set_header X-Forwarded-Proto $scheme;
   }
 }
@@ -513,27 +453,13 @@ admin saves are refused as cross-origin.
 
 ### The worker
 
-`pnpm worker` runs the scheduled-job loop in the foreground: it drains the
-`scheduled_jobs` table, flips scheduled documents to published, runs content sync
-and drift checks, and reindexes search documents. It writes one JSON object per
-line to stdout and shuts down cleanly on `SIGINT`/`SIGTERM`.
+`src/instrumentation.ts` starts the embedded worker when `WORKER_ENABLED=1`, including in the standalone Compose server. It handles scheduled publishing, content sync/drift checks, search reindexing, analytics aggregation/retention, asset reference scans, and expired authentication records. The worker retries database startup with backoff and logs one JSON object per line.
 
-The loop is **not started by the HTTP server** — nothing in `src/app` calls
-`runWorker` — and `docker-compose.yml` does not run it. Scheduled publishing
-still works without it: `src/lib/content/queries.ts` treats a `scheduled`
-document as visible once its timestamp has passed, so the promise is kept by the
-read path rather than by a background process. What does not happen without a
-worker is the bookkeeping — the stored status is not flipped and the periodic
-sync/drift/reindex jobs do not run.
+`pnpm worker` runs the same loop in a separate process and ignores `WORKER_ENABLED`. It needs the repository's TypeScript toolchain, so use the `build` stage or a host checkout rather than the `runner` image. The CLI finishes its current job on the first `SIGINT`/`SIGTERM`; a second signal forces exit.
 
-Running it in a container needs a stage that has `tsx` (the `build` stage, or any
-machine with the repository and `node_modules`): the `runner` image has neither
-`tsx` nor `scripts/`. The simplest arrangement is a host with the repo checked
-out:
+Queue claims use `FOR UPDATE SKIP LOCKED` and a 15-minute lease. An abrupt server restart can leave a claim until its lease expires; handlers reconcile from source files and scheduled publication rechecks the file under its write lock, making repeated execution safe. Failed and incomplete sync/publish jobs are recorded as failures and retried, rather than marked done. Due scheduled content is also visible through the read path while bookkeeping catches up.
 
-```bash
-DATABASE_URL=postgresql://myblog:…@127.0.0.1:5432/myblog pnpm worker
-```
+Set `WORKER_ENABLED=0` only when another worker maintains the same database and content tree. `CONTENT_SYNC_ON_BOOT=0` disables the boot reconciliation check; it does not disable the worker's subsequent cadence.
 
 ### Content that arrives without the admin
 
@@ -613,22 +539,15 @@ is not undone by an older image.
   converge within seconds — but nothing coordinates the two, and
   `revalidateContentChange` runs in whichever process handled the save. There is
   no shared cache or queue either.
-- **Analytics collection is wired to a beacon that nothing sends yet, and the
-  daily rollup (`aggregateDay`) is never invoked.** The admin Analytics page
-  reads `analytics_daily`, which in practice stays empty.
-- **Redirects are stored but not served.** `resolveRedirect` has no production
-  caller and the middleware only covers `/admin`.
+- **Analytics intentionally avoids IP addresses and geolocation.** Page-view beacons and the worker's daily aggregation are wired end to end. Country remains empty; no country lookup is performed. Disabling collection prevents new tracking rows.
+- **Stored redirects are served by the Node proxy.** Only GET/HEAD requests on permitted paths are redirected; reserved application paths and invalid or looping rules are refused.
 - **Git auto-commit commits within one process.** Two app instances writing to
   one repository, or a save overlapping `pnpm content:sync` in a terminal, can
   contend for `.git/index.lock`; the loser's commit is logged and skipped, and
   the next save commits the file. Nothing is lost from the files themselves, and
   nothing here pushes.
-- **The worker loop is started by nothing.** `pnpm worker` is the only entry
-  point to `runWorker`, and the runtime image has no `tsx`, so a pure Compose
-  deployment does not run it (§10). Scheduled posts still become visible on
-  time; the status flip and the periodic sync/drift/reindex jobs do not happen.
-- All of these, with the evidence, are in the delivery notes. None of them
-  affects the read path: publishing, reading, searching and the feeds work.
+- **Backup/restore requires a maintenance window.** Pause the server, worker and external edits for a coherent database/file snapshot; restore and reconcile before restarting them.
+- **No editorial permissions workflow.** Accounts can be provisioned through the seed CLI, but the current admin requires authentication rather than separate role permissions.
 
 ---
 
@@ -655,7 +574,7 @@ on the host. Run `pnpm content:sync`. It is not an error status on purpose
 
 **The site loads but every page is empty, or the admin lists nothing.** Almost
 always `CONTENT_DIR` pointing somewhere empty, or `content/` not mounted.
-`docker compose exec app ls /app/content`. Then `pnpm content:sync`.
+`docker compose exec web ls /app/content`. Then `pnpm content:sync`.
 
 **Signing in appears to succeed and immediately returns to the login page.** The
 `Secure` cookie was refused or dropped: the site is being served over plain HTTP,
@@ -676,18 +595,9 @@ database URL is assembled from `POSTGRES_*` in `docker-compose.yml`, and the
 error is in `docker compose logs migrate`. Common causes: the role lacks
 `CREATE`/`ALTER`, or a migration was hand-edited after being applied.
 
-**A redirect you saved does not fire.** Known gap: `resolveRedirect` in
-`src/lib/redirects.ts` is implemented and unit-tested but is not called from any
-request path, and `src/middleware.ts` is scoped to `/admin/:path*` and does not
-consult the redirect table. Rows can be created, imported from CSV and listed;
-they are not yet applied to requests.
+**A redirect you saved does not fire.** Check that the rule is enabled and its source is a permitted public path. The Node proxy resolves rules before routing; reserved routes, non-GET/HEAD methods and invalid/looping destinations are excluded.
 
-**Analytics shows zero, or numbers stopped moving.** Two separate gaps: the
-public site does not currently emit the page-view beacon, and `aggregateDay`
-(which populates `analytics_daily`, the only table the dashboard reads) is never
-invoked by anything. The collector, the aggregation and the retention rules are
-all implemented and tested; only the two ends are missing. `ANALYTICS_ENABLED=1`
-also has to be set for collection to accept anything.
+**Analytics shows zero, or numbers stopped moving.** Both `ANALYTICS_ENABLED=1` and the site's analytics setting are required. Verify `worker.start` and `job.analytics-aggregate` logs, inspect failed jobs in `/admin/system`, and allow the aggregation cadence to run. Browser requests with rejected origins or privacy opt-outs are intentionally discarded.
 
 **Search returns results that are out of date after a save.** The index is
 in-process and invalidated on every admin save by `revalidateContentChange`, so

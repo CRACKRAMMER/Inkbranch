@@ -1,10 +1,11 @@
 import { gunzipSync } from 'node:zlib'
-import { afterAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { and, eq, inArray, like, sql } from 'drizzle-orm'
 import { env } from '@/env'
 import { MAX_AGGREGATE_DAYS_PER_RUN } from '@/lib/analytics/aggregate'
 import { addDays, dayStart, utcDay } from '@/lib/analytics/day'
 import { db } from '@/lib/db'
+import { runMigrations } from '@/lib/db/migrate'
 import {
   analyticsDaily,
   analyticsEvents,
@@ -285,6 +286,7 @@ describe('scheduled publish predicate', () => {
  * that the pure tests above cannot see.
  */
 describe.runIf(hasTestDatabase)('queue against Postgres', () => {
+  beforeAll(async () => { await runMigrations(process.env.TEST_DATABASE_URL as string) })
   /** Unique per run, so cleanup touches nothing another suite created. */
   const marker = `jobs-test-${process.pid}-${Date.now().toString(36)}`
 
@@ -565,6 +567,7 @@ describe.runIf(hasTestDatabase)('queue against Postgres', () => {
  * nowhere, fails here rather than in production.
  */
 describe.runIf(hasTestDatabase)('handlers against Postgres', () => {
+  beforeAll(async () => { await runMigrations(process.env.TEST_DATABASE_URL as string) })
   const marker = `housekeeping-${process.pid}-${Date.now().toString(36)}`
   /** Paths this suite created, so cleanup touches nothing else. */
   const PATH_PREFIX = `/__jobs_test__/${marker}/`

@@ -6,7 +6,7 @@ import { z } from 'zod'
 import { env, siteOrigin } from '@/env'
 import { parseInternalTarget } from '@/lib/content/links'
 import { db } from '@/lib/db'
-import { analyticsEvents, contentIndex, type DeviceType } from '@/lib/db/schema'
+import { analyticsEvents, contentIndex, siteSettings, type DeviceType } from '@/lib/db/schema'
 import { MAX_DURATION_MS, MAX_REFERRER_LENGTH, NAVIGATION_TYPES, type BeaconPayload } from './beacon'
 import { utcDay } from './day'
 
@@ -451,7 +451,7 @@ export function analyticsEnabled(): boolean {
   return env.ANALYTICS_ENABLED
 }
 
-async function readBeacon(request: Request): Promise<BeaconPayload | null> {
+export async function readBeacon(request: Request): Promise<BeaconPayload | null> {
   // A body larger than a beacon is refused before it is read. This only bounds
   // what the client declares — a chunked body declares nothing — but the
   // endpoint is public, and a request that overstates its own size is a probe
@@ -460,13 +460,29 @@ async function readBeacon(request: Request): Promise<BeaconPayload | null> {
   if (Number.isFinite(declared) && declared > MAX_BEACON_BYTES) return null
 
   let body: unknown
+  if (!request.body) return null
+  const reader = request.body.getReader()
   try {
-    body = await request.json()
+    const chunks: Uint8Array[] = []
+    let length = 0
+    while (true) {
+      const { value, done } = await reader.read()
+      if (done) break
+      length += value.byteLength
+      if (length > MAX_BEACON_BYTES) {
+        await reader.cancel()
+        return null
+      }
+      chunks.push(value)
+    }
+    body = JSON.parse(Buffer.concat(chunks, length).toString('utf8'))
   } catch {
     // A body that is not JSON — an empty POST from a probe, a truncated request
     // — is a dropped beacon, not an error. It is not logged either: nobody can
     // act on it, and logging it would let a stranger fill the logs.
     return null
+  } finally {
+    reader.releaseLock()
   }
 
   const parsed = beaconSchema.safeParse(body)
@@ -516,6 +532,17 @@ export async function recordPageView(
   // all — no body read, no header read, no query — rather than write rows that
   // the read layer later filters out.
   if (!env.ANALYTICS_ENABLED) return { recorded: false, reason: 'disabled' }
+
+  try {
+    const [settings] = await db.select({ enabled: siteSettings.analyticsEnabled })
+      .from(siteSettings).where(eq(siteSettings.id, 'default')).limit(1)
+    if (settings?.enabled === false) return { recorded: false, reason: 'disabled' }
+  } catch (error) {
+    // Fail closed: a privacy preference that cannot be read never permits an event.
+    console.error('[analytics] collection preference could not be read:',
+      error instanceof Error ? error.message : error)
+    return { recorded: false, reason: 'error' }
+  }
 
   const beacon = await readBeacon(request)
   if (!beacon) return { recorded: false, reason: 'invalid-payload' }

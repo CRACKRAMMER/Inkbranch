@@ -97,12 +97,10 @@ export async function proxy(request: NextRequest): Promise<NextResponse> {
  * is where the saving actually is: a missing chunk or image is the single most
  * frequent request on any site.
  *
- * The final alternative drops anything with a dot in it — favicons, fonts,
- * `robots.txt`, `sitemap.xml`, and whatever a crawler decides to ask for. The
- * cost is that a post whose slug contains a dot does not get redirects, which
- * is a real limitation and a deliberately accepted one: a slug with a dot is
- * rare, and every asset request is not.
+ * Dotted paths remain eligible: legacy publishing URLs often end in `.html`,
+ * and accepting a redirect that routing never asks about is a silent failure.
+
  */
 export const config = {
-  matcher: ['/((?!api/|_next/|uploads/|.*\\..*).*)'],
+  matcher: ['/((?!api/|_next/|uploads/).*)'],
 }

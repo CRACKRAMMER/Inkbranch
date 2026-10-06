@@ -1,10 +1,17 @@
 import { CONTENT_TYPE_DIRS } from './paths'
 import type { ContentType } from './schema'
+import type { Definition, ImageReference, LinkReference, PhrasingContent } from 'mdast'
+import type { Root as HtmlRoot } from 'hast'
+import { unified } from 'unified'
+import remarkParse from 'remark-parse'
+import remarkDirective from 'remark-directive'
+import rehypeRaw from 'rehype-raw'
+import { visit } from 'unist-util-visit'
 
 /**
  * Link extraction.
  *
- * Pulls internal references and image references out of raw Markdown. Used for
+ * Pulls internal references and uploaded media out of raw Markdown. Used for
  * backlinks, broken-link reporting, and "which articles use this image".
  *
  * Written as a scanner rather than a regex sweep so that fenced code blocks and
@@ -24,7 +31,7 @@ export interface ExtractedLink {
    * - `internal` — `type/slug`, e.g. `posts/hello`.
    * - `wiki` — the target exactly as written, which may be a bare slug.
    *   See `wikiTargetCandidates` for why it is not normalised here.
-   * - `image` — the path relative to the upload root.
+   * - `image` — an uploaded image or media path, relative to the upload root.
    * - `anchor` — the fragment, or the site-relative path.
    */
   targetKey: string
@@ -134,8 +141,8 @@ function splitHash(href: string): [string, string | undefined] {
 }
 
 /**
- * Normalise an image reference to a key relative to the upload root.
- * Returns null for external images, which nothing here can resolve.
+ * Normalise an uploaded image or media reference to a storage key.
+ * Returns null for external URLs, which nothing here can resolve.
  */
 export function normalizeImageKey(href: string, urlPrefix: string): string | null {
   const [pathPart] = splitHash(href)
@@ -143,12 +150,21 @@ export function normalizeImageKey(href: string, urlPrefix: string): string | nul
 
   // Strip the query string; it does not change which file this is.
   const withoutQuery = pathPart.split('?')[0] ?? ''
-
-  if (withoutQuery.startsWith(`${urlPrefix}/`)) {
-    return withoutQuery.slice(urlPrefix.length + 1)
-  }
-  if (withoutQuery.startsWith('uploads/')) {
-    return withoutQuery.slice('uploads/'.length)
+  if ((!withoutQuery.startsWith('/') && !withoutQuery.startsWith('uploads/')) || withoutQuery.startsWith('//')) return null
+  try {
+    // Browsers resolve dot segments before requesting a URL; the catch-all
+    // asset route then decodes path segments once. Both aliases must identify
+    // the same storage key, including `/uploads/a%2Esvg`.
+    const pathname = decodeURIComponent(new URL(withoutQuery, 'https://asset.invalid/').pathname)
+    if (pathname.includes('\\') || pathname.includes('\0') || pathname.split('/').includes('..')) return null
+    if (pathname.startsWith(`${urlPrefix}/`)) return pathname.slice(urlPrefix.length + 1)
+    // The conventional alias is always served, even after the configured URL
+    // prefix changes. Existing Markdown can keep its older upload URLs.
+    if (pathname.startsWith('/uploads/')) return pathname.slice('/uploads/'.length)
+    if (pathname.startsWith('/api/assets/')) return pathname.slice('/api/assets/'.length)
+  } catch {
+    // An invalid URL or invalid encoding cannot name a served local asset.
+    return null
   }
   return null
 }
@@ -163,7 +179,7 @@ interface FenceState {
 }
 
 /**
- * Collect Markdown links, wiki-links, and raw `<img>` tags from a document.
+ * Collect Markdown links, wiki-links, and uploaded media from a document.
  *
  * Which lines are prose at all is `proseLines`' question, and it answers it for
  * the renderer too — see the wiki-link section below for why that matters.
@@ -177,6 +193,54 @@ export function extractLinks(
 
   const links: ExtractedLink[] = []
 
+  // Reference destinations can be defined later, on another line. Parse these
+  // with the same CommonMark grammar the renderer uses rather than guessing
+  // whether a bracket pair is a link or an example inside code.
+  const tree = unified().use(remarkParse).use(remarkDirective).parse(markdown)
+  const definitions = new Map<string, Definition>()
+  const referenceKey = (identifier: string) => identifier.toUpperCase()
+  visit(tree, 'definition', (node) => {
+    const key = referenceKey(node.identifier)
+    if (!definitions.has(key)) definitions.set(key, node)
+  })
+  visit(tree, (node) => {
+    if (node.type === 'html' || node.type === 'text') {
+      // Keep the accepted unquoted-attribute form, which CommonMark can leave
+      // as text. Code and HTML comments have distinct nodes and stay excluded.
+      // A text value has already decoded Markdown escapes and HTML entities:
+      // `\<img>` and `&lt;img&gt;` must remain examples, not asset references.
+      const source = node.type === 'html' ? node.value : markdown.slice(
+        node.position?.start.offset, node.position?.end.offset,
+      ).replace(/(\\+)</g, (match: string, escapes: string) =>
+        escapes.length % 2 === 1 ? `${escapes}&lt;` : match,
+      )
+      for (const ref of scanHtmlAssets(source)) {
+        const classified = classifyRef(ref.src, ref.alt, uploadPrefix, siteHost)
+        if (classified?.kind === 'image') {
+          links.push({ ...classified, line: (node.position?.start.line ?? 1) + ref.lineOffset })
+        }
+      }
+      return
+    }
+    if (node.type === 'leafDirective') {
+      const name = node.name.toLowerCase()
+      if (!['video', 'audio', 'embed', 'iframe'].includes(name) || !node.attributes?.src) return
+      const sources = [node.attributes.src, ...(name === 'video' && node.attributes.poster ? [node.attributes.poster] : [])]
+      for (const source of sources) {
+        const classified = classifyRef(source, node.attributes.title ?? '', uploadPrefix, siteHost)
+        if (classified?.kind === 'image') links.push({ ...classified, line: node.position?.start.line ?? 1 })
+      }
+      return
+    }
+    if (node.type !== 'linkReference' && node.type !== 'imageReference') return
+    const reference = node as LinkReference | ImageReference
+    const definition = definitions.get(referenceKey(reference.identifier))
+    if (!definition) return
+    const label = reference.type === 'imageReference' ? (reference.alt ?? '') : phrasingText(reference.children)
+    const classified = classifyRef(definition.url, label, uploadPrefix, siteHost)
+    if (classified) links.push({ ...classified, line: reference.position?.start.line ?? 1 })
+  })
+
   for (const { text, line } of proseLines(markdown)) {
     for (const ref of scanMarkdownLinks(text)) {
       const classified = classifyRef(ref.href, ref.label, uploadPrefix, siteHost)
@@ -188,20 +252,19 @@ export function extractLinks(
       if (classified) links.push({ ...classified, line })
     }
 
-    for (const ref of scanHtmlImages(text)) {
-      const key = normalizeImageKey(ref.src, uploadPrefix)
-      if (!key) continue
-      links.push({
-        kind: 'image',
-        href: ref.src,
-        targetKey: key,
-        label: ref.alt || null,
-        line,
-      })
-    }
   }
 
+  links.sort((a, b) => a.line - b.line)
   return { links }
+}
+
+function phrasingText(nodes: PhrasingContent[]): string {
+  return nodes.map((node) => {
+    if ('value' in node) return node.value
+    if ('alt' in node) return node.alt
+    if ('children' in node) return phrasingText(node.children)
+    return ''
+  }).join('')
 }
 
 interface ProseLine {
@@ -420,21 +483,39 @@ function matchWikiLinks(line: string): LineWikiLink[] {
   return results
 }
 
-/** Raw `<img src="…" alt="…">` markup, which Markdown permits pass-through. */
-function scanHtmlImages(line: string): { src: string; alt: string }[] {
-  const results: { src: string; alt: string }[] = []
-  const pattern = /<img\b[^>]*>/gi
-  let match: RegExpExecArray | null
+const htmlParser = unified().use(rehypeRaw)
 
-  while ((match = pattern.exec(line)) !== null) {
-    const tag = match[0]
-    const src = /\bsrc\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i.exec(tag)
-    const alt = /\balt\s*=\s*(?:"([^"]*)"|'([^']*)')/i.exec(tag)
-    const srcValue = src?.[1] ?? src?.[2] ?? src?.[3]
-    if (!srcValue) continue
-    results.push({ src: srcValue, alt: alt?.[1] ?? alt?.[2] ?? '' })
-  }
-
+/** Parse media attributes with the same HTML grammar as the renderer. */
+function scanHtmlAssets(html: string): { src: string; alt: string; lineOffset: number }[] {
+  if (!/<(?:img|video|audio|source|iframe)\b/i.test(html)) return []
+  const lines = html.split('\n')
+  const tree: HtmlRoot = { type: 'root', children: [{
+    type: 'raw', value: html,
+    position: {
+      start: { line: 1, column: 1, offset: 0 },
+      end: { line: lines.length, column: (lines.at(-1)?.length ?? 0) + 1, offset: html.length },
+    },
+  }] }
+  const results: { src: string; alt: string; lineOffset: number }[] = []
+  visit(htmlParser.runSync(tree), 'element', (node) => {
+    if (!['img', 'video', 'audio', 'source', 'iframe'].includes(node.tagName)) return
+    const properties = node.properties
+    const sources = typeof properties.src === 'string' ? [properties.src] : []
+    if (node.tagName === 'video' && typeof properties.poster === 'string') sources.push(properties.poster)
+    if (node.tagName === 'img' || node.tagName === 'source') {
+      const sourceSet = Array.isArray(properties.srcSet) ? properties.srcSet.join(',') : properties.srcSet
+      if (typeof sourceSet === 'string') {
+        for (const candidate of sourceSet.split(',')) {
+          const url = candidate.trim().split(/\s+/)[0]
+          if (url) sources.push(url)
+        }
+      }
+    }
+    for (const src of sources) results.push({
+      src, alt: typeof properties.alt === 'string' ? properties.alt : '',
+      lineOffset: (node.position?.start.line ?? 1) - 1,
+    })
+  })
   return results
 }
 

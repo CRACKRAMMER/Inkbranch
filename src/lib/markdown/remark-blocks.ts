@@ -57,9 +57,10 @@ export function remarkBlocks() {
 
     // Tabs need a second pass: the first pass converted every `tab` child, but
     // the wrapper must know how many tabs it has to build its toolbar.
+    let tabGroup = 0
     visit(tree, 'containerDirective', (node: ContainerDirective) => {
       if (node.name !== 'tabs') return
-      buildTabs(node)
+      buildTabs(node, tabGroup++)
     })
   }
 }
@@ -208,7 +209,7 @@ function transform(node: DirectiveNode): void {
 /*  Tabs                                                                       */
 /* -------------------------------------------------------------------------- */
 
-function buildTabs(node: ContainerDirective): void {
+function buildTabs(node: ContainerDirective, group: number): void {
   const labels: string[] = []
 
   for (const child of node.children) {
@@ -225,7 +226,7 @@ function buildTabs(node: ContainerDirective): void {
     labels
       .map(
         (label, index) =>
-          `<button type="button" role="tab" class="md-tabs__tab" id="tab-${index}" ` +
+          `<button type="button" role="tab" class="md-tabs__tab" id="tab-${group}-${index}" ` +
           `data-tab-index="${index}" aria-selected="${index === 0 ? 'true' : 'false'}" ` +
           `tabindex="${index === 0 ? '0' : '-1'}">${escapeHtml(label)}</button>`,
       )

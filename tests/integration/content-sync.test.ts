@@ -3,6 +3,7 @@ import path from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
 import { hasTestDatabase, testContentRoot } from '../setup'
+import { runMigrations } from '@/lib/db/migrate'
 
 /**
  * End-to-end reconciliation: real Markdown files on disk, a real database
@@ -70,6 +71,7 @@ and once by its route: [the post](/posts/atomic-writes).
 
 describe.skipIf(!hasTestDatabase)('content sync with real files', () => {
   beforeAll(async () => {
+    await runMigrations(process.env.TEST_DATABASE_URL as string)
     await fs.mkdir(POSTS, { recursive: true })
     await fs.mkdir(NOTES, { recursive: true })
     await fs.writeFile(path.join(POSTS, 'atomic-writes.md'), POST, 'utf8')

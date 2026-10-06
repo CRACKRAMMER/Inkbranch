@@ -22,9 +22,9 @@
 # reachable, copyable, and backed up by the same script that copies the Markdown.
 #
 # The host names are `./content` and `./uploads` while the container paths are
-# `/app/content` and `/app/public/uploads`. The asymmetry is deliberate: `web`
-# serves uploads through Next's static handler at `/uploads/**`, so in the
-# container they must sit under `public/`, and the host directory should not.
+# `/app/content` and `/app/public/uploads`. `/uploads/**` is rewritten to the
+# sandboxed asset route; the volume location also preserves the default local
+# upload directory.
 #
 # **On a fresh Linux host, make both directories writable by uid 1001 before the
 # first `up`.** A bind mount keeps the host's ownership and the container runs as
@@ -82,6 +82,7 @@ services:
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-myblog}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-myblog}
       SESSION_SECRET: ${SESSION_SECRET:?SESSION_SECRET is required}
+      DATABASE_POOL_MAX: ${DATABASE_POOL_MAX:-10}
     depends_on:
       postgres:
         condition: service_healthy
@@ -98,21 +99,29 @@ services:
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-myblog}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-myblog}
       SESSION_SECRET: ${SESSION_SECRET:?SESSION_SECRET is required}
+      DATABASE_POOL_MAX: ${DATABASE_POOL_MAX:-10}
+      SESSION_COOKIE_NAME: ${SESSION_COOKIE_NAME:-myblog_session}
+      SESSION_ABSOLUTE_TTL: ${SESSION_ABSOLUTE_TTL:-2592000}
+      SESSION_IDLE_TTL: ${SESSION_IDLE_TTL:-604800}
 
       # The public origin. Used for canonical URLs, the sitemap, feeds and
       # generated OG cards, so it has to be the address a reader types — an
       # internal service name here produces a sitemap full of hostnames nobody
       # can resolve.
       SITE_URL: ${SITE_URL:-http://localhost:3000}
+      TRUSTED_ORIGINS: ${TRUSTED_ORIGINS:-}
 
-      # Cookies are only marked `Secure` when the site is actually served over
-      # TLS. Set this to 1 behind HTTPS; leaving it at 0 over plain HTTP is what
-      # makes login work at all on a local deployment.
+      # The shipped production runner requires 1 and an HTTPS SITE_URL.
+      # Plain-HTTP development uses 0 with `pnpm dev`; it is not supported by
+      # this production container.
       COOKIE_SECURE: ${COOKIE_SECURE:-0}
 
       CONTENT_DIR: /app/content
       UPLOAD_DIR: /app/public/uploads
       UPLOAD_URL_PREFIX: /uploads
+      MAX_UPLOAD_SIZE: ${MAX_UPLOAD_SIZE:-20971520}
+      CONTENT_MAX_FILES: ${CONTENT_MAX_FILES:-5000}
+      SEARCH_PROVIDER: ${SEARCH_PROVIDER:-local}
 
       # Reconcile the content tree against the index on boot. This is what makes
       # dropping a `.md` file into `./content` and restarting a publish.
@@ -121,6 +130,8 @@ services:
       # Analytics is on by default and stores no IP addresses. Set to 0 to turn
       # it off entirely — no collection, no aggregation, no page.
       ANALYTICS_ENABLED: ${ANALYTICS_ENABLED:-1}
+      ANALYTICS_RAW_RETENTION_DAYS: ${ANALYTICS_RAW_RETENTION_DAYS:-30}
+      GIT_INTEGRATION_ENABLED: ${GIT_INTEGRATION_ENABLED:-0}
 
       # The worker loop inside the app: scheduled publishing, analytics
       # rollups, orphan pruning. `WORKER_ENABLED=0` leaves an instance serving

@@ -106,7 +106,8 @@ export default defineConfig({
     : {
         command: `${nextBin} build && ${nextBin} start --port ${E2E_PORT}`,
         port: E2E_PORT,
-        reuseExistingServer: !process.env.CI,
+        // An existing server may use real content or a real database.
+        reuseExistingServer: false,
         timeout: 300_000,
         stdout: 'pipe',
         stderr: 'pipe',

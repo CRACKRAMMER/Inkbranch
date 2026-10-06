@@ -1,5 +1,5 @@
 import { and, asc, eq, gte, inArray, lt } from 'drizzle-orm'
-import { afterAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { env, siteOrigin } from '@/env'
 import {
   DayRollup,
@@ -29,6 +29,7 @@ import {
   pathFromReferer,
   readVisitorCookie,
   referrerHost,
+  readBeacon,
   secondsUntilUtcMidnight,
 } from '@/lib/analytics/collect'
 import {
@@ -54,10 +55,12 @@ import {
 import { partitionPrunableDays, pruneRawEvents } from '@/lib/analytics/retention'
 import { documentUrl } from '@/lib/content/paths'
 import { db } from '@/lib/db'
+import { runMigrations } from '@/lib/db/migrate'
 import {
   analyticsDaily,
   analyticsEvents,
   contentIndex,
+  siteSettings,
   type DeviceType,
 } from '@/lib/db/schema'
 import { hasTestDatabase } from '../setup'
@@ -495,6 +498,29 @@ describe('beaconSchema', () => {
     for (const body of [null, undefined, 'text', 7, []]) {
       expect(beaconSchema.safeParse(body).success).toBe(false)
     }
+  })
+})
+
+describe('bounded beacon bodies', () => {
+  it('rejects and cancels an oversized chunked body without trusting content-length', async () => {
+    let cancelled = false
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) { controller.enqueue(new Uint8Array(2048).fill(32)) },
+      cancel() { cancelled = true },
+    })
+    const request = new Request(`${siteOrigin}/api/analytics`, {
+      method: 'POST', body, duplex: 'half',
+    } as RequestInit & { duplex: string })
+    expect(await readBeacon(request)).toBeNull()
+    expect(cancelled).toBe(true)
+  })
+
+  it('enforces the byte ceiling even when the declared length understates the payload', async () => {
+    const request = new Request(`${siteOrigin}/api/analytics`, {
+      method: 'POST', headers: { 'content-length': '2' },
+      body: JSON.stringify({ referrer: 'x'.repeat(5000) }),
+    })
+    expect(await readBeacon(request)).toBeNull()
   })
 })
 
@@ -1186,6 +1212,7 @@ describe.skipIf(env.ANALYTICS_ENABLED)('with collection disabled', () => {
 /* -------------------------------------------------------------------------- */
 
 describe.skipIf(!hasTestDatabase)('analytics against a database', () => {
+  beforeAll(async () => { await runMigrations(process.env.TEST_DATABASE_URL as string) })
   /** Scopes every fixture to this run, so a rerun cannot read the last one's rows. */
   const RUN = `analytics-${Date.now().toString(36)}`
 
@@ -2076,6 +2103,27 @@ describe.skipIf(!hasTestDatabase)('analytics against a database', () => {
   /* ------------------------------------------------------------------------ */
 
   describe('recordPageView', () => {
+    it('writes no raw events after the administrator disables collection', async () => {
+      const previous = env.ANALYTICS_ENABLED
+      const [beforeSettings] = await db.select().from(siteSettings).where(eq(siteSettings.id, 'default'))
+      env.ANALYTICS_ENABLED = true
+      try {
+        await db.insert(siteSettings).values({ id: 'default', analyticsEnabled: false })
+          .onConflictDoUpdate({ target: siteSettings.id, set: { analyticsEnabled: false } })
+        const before = await rawCount(utcDay())
+        await expect(recordPageView(beaconRequest({ path: RECORDED_PATH })))
+          .resolves.toEqual({ recorded: false, reason: 'disabled' })
+        expect(await rawCount(utcDay())).toBe(before)
+      } finally {
+        env.ANALYTICS_ENABLED = previous
+        if (beforeSettings) {
+          await db.update(siteSettings).set({ analyticsEnabled: beforeSettings.analyticsEnabled })
+            .where(eq(siteSettings.id, 'default'))
+        } else {
+          await db.delete(siteSettings).where(eq(siteSettings.id, 'default'))
+        }
+      }
+    })
     it('records a view, counts one visitor per day, and issues one cookie', async () => {
       // The flag is read at call time, so it can be turned on for this case and
       // restored before anything else runs. `finally` rather than a cleanup

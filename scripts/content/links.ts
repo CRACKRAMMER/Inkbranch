@@ -28,6 +28,12 @@ void run('content:links', async () => {
   const { db } = await import('@/lib/db')
   const { contentLinks, contentIndex } = await import('@/lib/db/schema')
   const { eq } = await import('drizzle-orm')
+  const { checkContentDrift } = await import('@/lib/content/sync')
+  const drift = await checkContentDrift()
+  if (drift.drift) {
+    warn('The content index is stale or the scan is incomplete. Run `pnpm content:sync` before trusting this report.')
+    process.exitCode = 1
+  }
 
   heading('Link report')
 
@@ -91,7 +97,7 @@ void run('content:links', async () => {
   if (broken.length > 0) {
     warn('A broken wiki link renders as plain text. Rename the target back, or update the link.')
     process.exitCode = 1
-  } else {
+  } else if (!drift.drift) {
     info(style.green('No broken links.'))
   }
 })

@@ -7,6 +7,7 @@ import {
   eq,
   ilike,
   inArray,
+  isNotNull,
   like,
   ne,
   not,
@@ -16,7 +17,11 @@ import {
 import { z } from 'zod'
 
 import { recordAudit } from '@/lib/audit'
+import { env } from '@/env'
+import { extractLinks } from '@/lib/content/links'
 import { documentUrl } from '@/lib/content/paths'
+import { readDocument, scanContentFiles } from '@/lib/content/reader'
+import { withContentIndexLock } from '@/lib/content/writer'
 import { db } from '@/lib/db'
 import {
   assets,
@@ -40,7 +45,7 @@ import { assetFilePaths, relativePathFromUrl, removeStoredFile } from './storage
  * a draft mentions — but it takes an explicit `force`, so the safe call is the
  * one a caller writes by accident.
  *
- * A reference can live in three places, and all three are checked:
+ * Indexed references can live in three places, and all three are checked:
  *
  *   - `content_links` rows, which is what the Markdown scanner produced;
  *   - a document's `cover`/`og_image` frontmatter, which the scanner never sees
@@ -49,6 +54,8 @@ import { assetFilePaths, relativePathFromUrl, removeStoredFile } from './storage
  *
  * Missing the second one is the subtle failure: an image used only as a post's
  * cover would look unused, and the cleanup pass would delete a hero image.
+ * Before deletion, a fresh scan also checks unsynced Markdown under the content
+ * lock; malformed or incomplete scans refuse deletion even with `force`.
  */
 
 /* -------------------------------------------------------------------------- */
@@ -338,6 +345,26 @@ function referenceForms(asset: AssetRow): string[] {
   return [...new Set([...assetUrls(asset), ...referenceMatchKeys(asset)])]
 }
 
+/** Metadata may use a same-origin absolute URL or include a cache query. */
+function referenceKey(value: string | null): string | null {
+  if (!value) return null
+  let href = value.trim()
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(href)) {
+    try {
+      const url = new URL(href)
+      if (url.origin !== new URL(env.SITE_URL).origin) return null
+      href = `${url.pathname}${url.search}${url.hash}`
+    } catch {
+      return null
+    }
+  }
+  return relativePathFromUrl(href)
+}
+
+function referencesAsset(value: string | null, keys: Set<string>, forms: Set<string>): boolean {
+  return Boolean(value && (forms.has(value) || keys.has(referenceKey(value) ?? '')))
+}
+
 /** Documents and settings that point at this asset. */
 export async function findAssetReferences(
   id: string,
@@ -371,6 +398,8 @@ async function collectUsage(asset: AssetRow): Promise<AssetUsage> {
     )
 
   const forms = referenceForms(asset)
+  const keySet = new Set(keys)
+  const formSet = new Set(forms)
   const covered = forms.length > 0
     ? await db
         .select({
@@ -385,8 +414,8 @@ async function collectUsage(asset: AssetRow): Promise<AssetUsage> {
         .from(contentIndex)
         .where(
           or(
-            inArray(contentIndex.cover, forms),
-            inArray(contentIndex.ogImage, forms),
+            isNotNull(contentIndex.cover),
+            isNotNull(contentIndex.ogImage),
           ),
         )
     : []
@@ -410,7 +439,7 @@ async function collectUsage(asset: AssetRow): Promise<AssetUsage> {
     // image, and it is the document the admin cares about, not the field — but
     // the field is worth naming, because removing the wrong one leaves the
     // other pointing at a file that is about to disappear.
-    if (forms.includes(row.cover ?? '')) {
+    if (referencesAsset(row.cover, keySet, formSet)) {
       documents.set(`${row.id}:cover`, {
         id: row.id,
         type: row.type,
@@ -421,7 +450,7 @@ async function collectUsage(asset: AssetRow): Promise<AssetUsage> {
         href: documentUrl(row.type, row.slug),
       })
     }
-    if (forms.includes(row.ogImage ?? '')) {
+    if (referencesAsset(row.ogImage, keySet, formSet)) {
       documents.set(`${row.id}:ogImage`, {
         id: row.id,
         type: row.type,
@@ -437,17 +466,68 @@ async function collectUsage(asset: AssetRow): Promise<AssetUsage> {
   return {
     asset,
     documents: [...documents.values()],
-    usedAsSiteAvatar: await isSiteAvatar(forms),
+    usedAsSiteAvatar: await isSiteAvatar(keySet, formSet),
   }
 }
 
-async function isSiteAvatar(forms: string[]): Promise<boolean> {
-  if (forms.length === 0) return false
+/**
+ * Deletion is rare and destructive, so verify Markdown itself even when an
+ * external editor has not synced its changes yet. A bounded or unreadable scan
+ * cannot establish that an asset is unused and must refuse the deletion.
+ */
+async function includeFilesystemUsage(usage: AssetUsage): Promise<void> {
+  let files
+  try {
+    files = await scanContentFiles({ maxFiles: env.CONTENT_MAX_FILES + 1 })
+  } catch (error) {
+    console.error('[assets] reference scan failed', error)
+    throw new AssetQueryError('Could not verify Markdown references. The asset was not deleted.')
+  }
+  if (files.length > env.CONTENT_MAX_FILES) {
+    throw new AssetQueryError('The content scan exceeded CONTENT_MAX_FILES. The asset was not deleted.')
+  }
+  const keys = new Set(referenceMatchKeys(usage.asset))
+  const forms = new Set(referenceForms(usage.asset))
+  const matchesImage = (value: string | null) => referencesAsset(value, keys, forms)
+  const seen = new Set(usage.documents.map((doc) => `${doc.type}/${doc.slug}:${doc.via}`))
+  for (const file of files) {
+    let document
+    try {
+      document = await readDocument(file.relativePath, { fresh: true })
+    } catch (error) {
+      console.error('[assets] a document could not be checked', error)
+      throw new AssetQueryError(`Could not verify references in ${file.relativePath}. The asset was not deleted.`)
+    }
+    if (!document) continue
+    const matches: ReferencingDocument['via'][] = []
+    if (extractLinks(document.body, { uploadUrlPrefix: env.UPLOAD_URL_PREFIX, siteUrl: env.SITE_URL })
+      .links.some((link) => link.kind === 'image' && keys.has(link.targetKey))) matches.push('link')
+    if (matchesImage(document.cover)) matches.push('cover')
+    if (matchesImage(document.seo.ogImage)) matches.push('ogImage')
+    for (const via of matches) {
+      const key = `${document.type}/${document.slug}:${via}`
+      if (seen.has(key)) continue
+      seen.add(key)
+      usage.documents.push({
+        id: `file:${document.relativePath}`,
+        type: document.type,
+        slug: document.slug,
+        title: document.title,
+        status: document.status,
+        via,
+        href: documentUrl(document.type, document.slug),
+      })
+    }
+  }
+}
+
+async function isSiteAvatar(keys: Set<string>, forms: Set<string>): Promise<boolean> {
+  if (forms.size === 0) return false
   const [settings] = await db
     .select({ avatarUrl: siteSettings.avatarUrl })
     .from(siteSettings)
     .limit(1)
-  return Boolean(settings?.avatarUrl && forms.includes(settings.avatarUrl))
+  return referencesAsset(settings?.avatarUrl ?? null, keys, forms)
 }
 
 /* -------------------------------------------------------------------------- */
@@ -494,10 +574,18 @@ export async function deleteAsset(
   id: string,
   options: DeleteAssetOptions = {},
 ): Promise<DeleteAssetResult> {
+  return withContentIndexLock(() => deleteAssetUnderContentLock(id, options))
+}
+
+async function deleteAssetUnderContentLock(
+  id: string,
+  options: DeleteAssetOptions,
+): Promise<DeleteAssetResult> {
   const asset = await getAsset(id)
   if (!asset) throw new AssetNotFoundError(parseAssetId(id))
 
   const usage = await collectUsage(asset)
+  await includeFilesystemUsage(usage)
 
   if (isAssetInUse(usage) && !options.force) {
     await recordAudit({
@@ -688,7 +776,7 @@ async function referencedKeySet(): Promise<Set<string>> {
 
   for (const row of frontmatter) {
     for (const value of [row.cover, row.ogImage]) {
-      if (value) keys.add(relativePathFromUrl(value) ?? value)
+      if (value) keys.add(referenceKey(value) ?? value)
     }
   }
 
@@ -698,7 +786,7 @@ async function referencedKeySet(): Promise<Set<string>> {
     .limit(1)
 
   if (settings?.avatarUrl) {
-    keys.add(relativePathFromUrl(settings.avatarUrl) ?? settings.avatarUrl)
+    keys.add(referenceKey(settings.avatarUrl) ?? settings.avatarUrl)
   }
 
   return keys

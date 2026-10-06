@@ -1,8 +1,9 @@
 import { inArray } from 'drizzle-orm'
-import { afterAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { documentUrl } from '@/lib/content/paths'
 import type { ContentStatus, ContentType } from '@/lib/content/schema'
 import { db } from '@/lib/db'
+import { runMigrations } from '@/lib/db/migrate'
 import {
   contentIndex,
   contentLinks,
@@ -68,6 +69,8 @@ function node(overrides: Partial<RelationNode> & { id: string }): RelationNode {
     url: `/posts/${id}`,
     description: '',
     status: 'published',
+    category: null,
+    scheduledAt: null,
     series: null,
     publishedAt: PUBLISHED_AT,
     updatedAt: PUBLISHED_AT,
@@ -220,6 +223,15 @@ describe('related scoring', () => {
     expect(scoreRelated(subject, twin, rarity).total).toBeLessThanOrEqual(1)
   })
 
+  it('relates a shared category without requiring a shared series or tag', () => {
+    const subject = node({ id: 'subject', category: 'Databases' })
+    const matching = node({ id: 'matching', category: 'Databases' })
+    const stranger = node({ id: 'stranger', category: 'Frontend' })
+    const ranked = rankRelated(subject, [stranger, matching], rarity)
+    expect(ranked.map((entry) => entry.node.id)).toEqual(['matching'])
+    expect(ranked[0]?.score.signals.category).toBe(1)
+  })
+
   it('does not grow the score with the number of tags', () => {
     const subject = node({ id: 'subject', tags: ['rare'] })
     const focused = scoreRelated(subject, node({ id: 'a', tags: ['rare'] }), rarity)
@@ -354,26 +366,27 @@ describe('visibility', () => {
   const published = new Set<ContentStatus>(['published'])
 
   it('hides drafts from a published view', () => {
-    const draft: Pick<RelationNode, 'status' | 'publishedAt'> = {
+    const draft: Pick<RelationNode, 'status' | 'scheduledAt'> = {
       status: 'draft',
-      publishedAt: null,
+      scheduledAt: null,
     }
     expect(isVisible(draft, published)).toBe(false)
     expect(isVisible(draft, new Set<ContentStatus>(['published', 'draft']))).toBe(true)
   })
 
   it('shows a scheduled document once its time has passed', () => {
-    const due: Pick<RelationNode, 'status' | 'publishedAt'> = {
+    const due: Pick<RelationNode, 'status' | 'scheduledAt'> = {
       status: 'scheduled',
-      publishedAt: new Date(Date.now() - 60_000),
+      scheduledAt: new Date(Date.now() - 60_000),
     }
-    const future: Pick<RelationNode, 'status' | 'publishedAt'> = {
+    const future: Pick<RelationNode, 'status' | 'scheduledAt'> = {
       status: 'scheduled',
-      publishedAt: new Date(Date.now() + 86_400_000),
+      scheduledAt: new Date(Date.now() + 86_400_000),
     }
 
     expect(isVisible(due, published)).toBe(true)
     expect(isVisible(future, published)).toBe(false)
+    expect(isVisible({ status: 'scheduled', scheduledAt: null }, published)).toBe(false)
   })
 })
 
@@ -640,6 +653,7 @@ function backlinkRow(overrides: Partial<BacklinkRow> & { sourceId: string }): Ba
     slug: `slug-${overrides.sourceId}`,
     title: `Title ${overrides.sourceId}`,
     status: 'published',
+    scheduledAt: null,
     publishedAt: PUBLISHED_AT,
     updatedAt: PUBLISHED_AT,
     ...overrides,
@@ -695,7 +709,8 @@ describe('backlink grouping', () => {
         backlinkRow({
           sourceId: 'scheduled',
           status: 'scheduled',
-          publishedAt: new Date(Date.now() + 86_400_000),
+          publishedAt: new Date('2020-01-01'),
+          scheduledAt: new Date(Date.now() + 86_400_000),
         }),
       ],
       published,
@@ -717,6 +732,7 @@ describe('backlink grouping', () => {
  * contents of the database as a whole.
  */
 describe.skipIf(!hasTestDatabase)('graph against a database', () => {
+  beforeAll(async () => { await runMigrations(process.env.TEST_DATABASE_URL as string) })
   const RUN = `graphtest-${Date.now().toString(36)}`
   const contentIds: string[] = []
   const tagIds: string[] = []
@@ -728,6 +744,8 @@ describe.skipIf(!hasTestDatabase)('graph against a database', () => {
     status?: ContentStatus
     publishedAt?: Date
     tags?: string[]
+    category?: string
+    scheduledAt?: Date
   }): Promise<string> {
     const [row] = await db
       .insert(contentIndex)
@@ -740,6 +758,8 @@ describe.skipIf(!hasTestDatabase)('graph against a database', () => {
         publishedAt: input.publishedAt ?? PUBLISHED_AT,
         checksum: `${RUN}-${input.slug}`.padEnd(64, '0').slice(0, 64),
         description: null,
+        category: input.category ?? null,
+        scheduledAt: input.scheduledAt ?? null,
       })
       .returning({ id: contentIndex.id })
 
@@ -858,6 +878,31 @@ describe.skipIf(!hasTestDatabase)('graph against a database', () => {
     expect(found).toBeDefined()
     expect(found?.signals.backlink).toBe(1)
     expect(found?.signals.tags).toBe(0)
+    expect(found?.reason).toBe('linked document')
+  })
+
+  it('reads category membership from the index and explains the actual shared category', async () => {
+    const category = `${RUN}-database-category`
+    const subject = await insertDoc({ slug: `${RUN}-category-subject`, category })
+    const candidate = await insertDoc({ slug: `${RUN}-category-candidate`, category, tags: ['unshared'] })
+    invalidateRelatedIndex()
+    const found = (await getRelatedPosts(subject)).find((post) => post.id === candidate)
+    expect(found?.signals.category).toBe(1)
+    expect(found?.reason).toBe(category)
+  })
+
+  it('keeps future scheduled titles out of backlinks, related content and the graph', async () => {
+    const subject = await insertDoc({ slug: `${RUN}-schedule-target`, tags: ['schedule'] })
+    const candidate = await insertDoc({
+      slug: `${RUN}-schedule-hidden`, status: 'scheduled',
+      publishedAt: new Date('2020-01-01'), scheduledAt: new Date(Date.now() + 86_400_000),
+      tags: ['schedule'],
+    })
+    await insertLink({ sourceId: candidate, targetId: subject, href: `/posts/${RUN}-schedule-target` })
+    invalidateRelatedIndex()
+    expect((await getBacklinks(subject)).some((entry) => entry.id === candidate)).toBe(false)
+    expect((await getRelatedPosts(subject)).some((entry) => entry.id === candidate)).toBe(false)
+    expect((await getKnowledgeGraph()).nodes.some((entry) => entry.id === candidate)).toBe(false)
   })
 
   it('answers the same order twice', async () => {

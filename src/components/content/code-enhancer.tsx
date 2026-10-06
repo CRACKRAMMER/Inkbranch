@@ -37,6 +37,7 @@ let diagramSeq = 0
 export function CodeEnhancer({
   contentKey,
   children,
+  rootSelector = '[data-article-body]',
 }: {
   /**
    * Identity of the rendered content. The effect re-runs when this changes,
@@ -46,11 +47,12 @@ export function CodeEnhancer({
    */
   contentKey: string
   children: React.ReactNode
+  rootSelector?: string
 }) {
   const { resolvedTheme } = useTheme()
 
   useEffect(() => {
-    const root = document.querySelector<HTMLElement>('[data-article-body]')
+    const root = document.querySelector<HTMLElement>(rootSelector)
     if (!root) return
 
     const cleanups: (() => void)[] = []
@@ -65,7 +67,7 @@ export function CodeEnhancer({
       cancelled = true
       for (const cleanup of cleanups) cleanup()
     }
-  }, [contentKey, resolvedTheme])
+  }, [contentKey, resolvedTheme, rootSelector])
 
   return children
 }
@@ -185,7 +187,7 @@ function enhanceTabs(root: HTMLElement): () => void {
         tab.tabIndex = active ? 0 : -1
       })
       panels.forEach((panel, i) => {
-        panel.toggleAttribute('data-active', i === index)
+        panel.setAttribute('data-active', String(i === index))
       })
     }
 
@@ -285,10 +287,14 @@ async function enhanceDiagrams(
     const mermaidModule = (await import('mermaid')) as unknown as { default: MermaidApi }
     mermaid = mermaidModule.default
   } catch {
-    // The library is a dynamic import and can fail on a flaky connection. The
-    // source stays visible in its `<noscript>`-adjacent fallback, so the page
-    // is still usable; there is nothing to report to a reader who did not ask
-    // for a diagram renderer.
+    // With scripting enabled, noscript contains no visible pre element.
+    // Rebuild the readable source when the deferred library cannot load.
+    if (!isCancelled()) {
+      for (const block of blocks) {
+        block.replaceChildren(fallbackSource(decodeSource(block)))
+        block.setAttribute('data-error', 'true')
+      }
+    }
     return
   }
 
@@ -303,6 +309,7 @@ async function enhanceDiagrams(
      * and click handlers inside a diagram — an XSS hole with a syntax for it.
      */
     securityLevel: 'strict',
+    suppressErrorRendering: true,
     fontFamily: 'var(--font-sans)',
   })
 

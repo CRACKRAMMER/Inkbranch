@@ -22,6 +22,7 @@ import { uploadAssetAction } from '@/app/admin/actions/assets'
 import { Button } from '@/components/ui/button'
 import { Kbd } from '@/components/ui/kbd'
 import { StatusBadge } from '@/components/admin/status-badge'
+import { CodeEnhancer } from '@/components/content/code-enhancer'
 import { useUnsavedGuard } from '@/components/admin/unsaved-guard'
 import { MetadataPanel } from './metadata-panel'
 import { MarkdownEditor, type MarkdownEditorHandle } from './markdown-editor'
@@ -90,7 +91,7 @@ type Pane = 'metadata' | 'write' | 'preview'
 const AUTOSAVE_DELAY_MS = 2000
 const PREVIEW_DELAY_MS = 350
 const UNSAVED_MESSAGE =
-  'This document has changes that have not been saved to the file. Leave anyway?'
+  'This document has unsaved changes or incomplete save processing. Leave anyway?'
 
 export function Editor({
   doc,
@@ -124,9 +125,9 @@ export function Editor({
   const bodyRef = useRef(doc.body)
   const valuesRef = useRef(doc.values)
   const checksumRef = useRef(doc.checksum)
-  const slugRef = useRef(doc.slug)
   const dirtyRef = useRef(false)
   const savingRef = useRef(false)
+  const editVersion = useRef(0)
   const reloadRequested = useRef(false)
 
   const [values, setValues] = useState(doc.values)
@@ -148,6 +149,7 @@ export function Editor({
   const dirty = save.kind === 'dirty' || save.kind === 'failed'
 
   const markDirty = useCallback(() => {
+    editVersion.current += 1
     dirtyRef.current = true
     setRevision((value) => value + 1)
     setSave((current) => (current.kind === 'saving' ? current : { kind: 'dirty' }))
@@ -186,6 +188,7 @@ export function Editor({
       if (savingRef.current) return
       savingRef.current = true
       setSave({ kind: 'saving' })
+      const savedVersion = editVersion.current
 
       try {
         const result = await saveContentAction({
@@ -197,11 +200,20 @@ export function Editor({
         })
 
         if (!result.ok) {
+          dirtyRef.current = true
+          const written = result.committed?.find((change) => change.path === doc.path && change.operation === 'write')
+          if (written?.checksum) checksumRef.current = written.checksum
           setSave({ kind: 'failed', failure: result })
           return
         }
 
         checksumRef.current = result.data.checksum
+        // Typing and completed image uploads can change the buffer while the
+        // request is in flight. Only the version sent to the server was saved.
+        if (editVersion.current !== savedVersion) {
+          setSave({ kind: 'dirty' })
+          return
+        }
         dirtyRef.current = false
         setSave({
           kind: 'saved',
@@ -210,22 +222,31 @@ export function Editor({
           // is written either way: what this adds is a phrase, never a state.
           commit: result.data.git ? describeGitOutcome(result.data.git) : null,
         })
-        setDraft((current) => (current.kind === 'recorded' ? { kind: 'idle' } : current))
+        setDraft((current) => (current.kind === 'recorded' || current.kind === 'saving' ? { kind: 'idle' } : current))
         setStats(textStats(bodyRef.current))
 
-        if (result.data.slug !== slugRef.current) {
-          slugRef.current = result.data.slug
+        if (result.data.slug !== doc.slug) {
           // The URL names the slug, so a rename is a navigation. `replace`, not
           // `push`: the old URL no longer resolves to anything.
           router.replace(`/admin/${segment}/${result.data.slug}/edit`)
         } else {
           router.refresh()
         }
+      } catch {
+        dirtyRef.current = true
+        setSave({
+          kind: 'failed',
+          failure: {
+            ok: false,
+            error: 'The save could not be confirmed. Keep this buffer and retry.',
+            retryable: true,
+          },
+        })
       } finally {
         savingRef.current = false
       }
     },
-    [doc.path, formatTime, router, segment],
+    [doc.path, doc.slug, formatTime, router, segment],
   )
 
   /* ---------------------------------------------------------------------- */
@@ -234,34 +255,43 @@ export function Editor({
 
   useEffect(() => {
     if (!dirty) return
+    let cancelled = false
     const timer = setTimeout(async () => {
       // A save in flight already carries this buffer to disk; recording a draft
       // beside it would file the same keystrokes twice.
       if (savingRef.current) return
       setDraft({ kind: 'saving' })
 
-      const result = await autosaveContentAction({
-        path: doc.path,
-        values: valuesRef.current,
-        body: bodyRef.current,
-      })
+      try {
+        const result = await autosaveContentAction({
+          path: doc.path,
+          values: valuesRef.current,
+          body: bodyRef.current,
+        })
+        if (cancelled) return
 
-      if (!result.ok) {
-        setDraft({ kind: 'failed', message: result.error })
-        return
+        if (!result.ok) {
+          setDraft({ kind: 'failed', message: result.error })
+          return
+        }
+        if (result.data.revisionsDisabled) {
+          setDraft({ kind: 'off' })
+          return
+        }
+        setDraft({
+          kind: 'recorded',
+          at: formatTime(new Date(result.data.savedAt)),
+          revisionNo: result.data.revisionNo,
+        })
+      } catch {
+        if (!cancelled) setDraft({ kind: 'failed', message: 'The draft revision could not be confirmed.' })
       }
-      if (result.data.revisionsDisabled) {
-        setDraft({ kind: 'off' })
-        return
-      }
-      setDraft({
-        kind: 'recorded',
-        at: formatTime(new Date(result.data.savedAt)),
-        revisionNo: result.data.revisionNo,
-      })
     }, AUTOSAVE_DELAY_MS)
 
-    return () => clearTimeout(timer)
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+    }
   }, [dirty, revision, doc.path, formatTime])
 
   /* ---------------------------------------------------------------------- */
@@ -272,20 +302,29 @@ export function Editor({
 
   useEffect(() => {
     if (!previewVisible) return
+    let cancelled = false
     const timer = setTimeout(async () => {
       setPreview({ kind: 'loading' })
-      const result = await previewMarkdownAction({
-        body: bodyRef.current,
-        title: valuesRef.current.title,
-      })
-      if (!result.ok) {
-        setPreview({ kind: 'failed', message: result.error })
-        return
+      try {
+        const result = await previewMarkdownAction({
+          body: bodyRef.current,
+          title: valuesRef.current.title,
+        })
+        if (cancelled) return
+        if (!result.ok) {
+          setPreview({ kind: 'failed', message: result.error })
+          return
+        }
+        setPreview({ kind: 'ready', html: result.data.html, broken: result.data.broken })
+      } catch {
+        if (!cancelled) setPreview({ kind: 'failed', message: 'The preview request did not complete. Edit or retry to render it again.' })
       }
-      setPreview({ kind: 'ready', html: result.data.html, broken: result.data.broken })
     }, PREVIEW_DELAY_MS)
 
-    return () => clearTimeout(timer)
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+    }
   }, [previewVisible, revision])
 
   /* ---------------------------------------------------------------------- */
@@ -308,7 +347,6 @@ export function Editor({
     bodyRef.current = doc.body
     valuesRef.current = doc.values
     checksumRef.current = doc.checksum
-    slugRef.current = doc.slug
     dirtyRef.current = false
     editor.current?.replaceAll(doc.body)
     setValues(doc.values)
@@ -647,6 +685,13 @@ function FailureBanner({
     <div role="alert" className="mt-4 border border-danger/40 bg-danger/5 px-4 py-3 text-sm text-ink">
       <p className="font-medium">{failure.error}</p>
       {failure.detail ? <p className="mt-1 text-xs text-ink-muted">{failure.detail}</p> : null}
+      {failure.committed?.some((change) => change.recoveryPath) ? (
+        <ul className="mt-2 space-y-1 text-xs text-ink-muted">
+          {failure.committed.filter((change) => change.recoveryPath).map((change) => (
+            <li key={change.path}>Previous {change.path}: <code className="break-all">{change.recoveryPath}</code></li>
+          ))}
+        </ul>
+      ) : null}
       {failure.code === 'stale' ? (
         <>
           <p className="mt-2 text-xs text-ink-muted">
@@ -756,7 +801,9 @@ function Preview({ state }: { state: PreviewState }) {
   if (state.kind === 'ready') {
     return (
       <div className="editor-preview px-5 pt-4">
-        <div className="prose" dangerouslySetInnerHTML={{ __html: state.html }} />
+        <CodeEnhancer contentKey={state.html} rootSelector="[data-editor-preview]">
+          <div data-editor-preview="" className="prose" dangerouslySetInnerHTML={{ __html: state.html }} />
+        </CodeEnhancer>
       </div>
     )
   }
@@ -766,4 +813,3 @@ function Preview({ state }: { state: PreviewState }) {
     </p>
   )
 }
-

@@ -1,10 +1,13 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
+import { randomUUID } from 'node:crypto'
 import {
   type ContentDocument,
   checksumOf,
   invalidateContentCache,
+  parseDocument,
   readDocument,
+  scanContentFiles,
 } from './reader'
 import { serializeFrontmatter } from './frontmatter'
 import {
@@ -14,12 +17,15 @@ import {
   buildRelativePath,
   documentPath,
   lockPath,
+  parseRelativePath,
   requiredContentDirs,
   tempPath,
   typeDirectory,
 } from './paths'
-import { assertSafeSlug, toPosix } from '@/lib/security/paths'
+import { assertNoSymlinkPath, assertSafeSlug, toPosix } from '@/lib/security/paths'
 import type { ContentType } from './schema'
+import { env } from '@/env'
+import { preservePreviousContent } from './recovery'
 
 /**
  * Writing documents safely.
@@ -30,9 +36,9 @@ import type { ContentType } from './schema'
  *      under `.tmp/`, fsynced, then `rename()`d over the target.
  *   2. `rename()` within one filesystem is atomic, so a concurrent reader sees
  *      either the complete old file or the complete new one.
- *   3. Before the rename, the previous contents are handed to the caller so a
- *      revision can be recorded. If that step fails, the write does not happen.
- *   4. If anything throws, the target is byte-for-byte what it was.
+ *   3. The previous contents are read under the lock and returned after the
+ *      rename so the caller can record a revision and report capture failures.
+ *   4. A failed atomic write leaves the target byte-for-byte what it was.
  *
  * The only way to break rule 4 is to lose power between `rename` and the
  * directory fsync, which is why the directory is fsynced.
@@ -70,6 +76,12 @@ export interface WriteResult {
   /** Contents of the previous version, or null when the file is new. */
   previousContent: string | null
   created: boolean
+  /** Private old bytes retained until revision capture is confirmed. */
+  recoveryPath?: string
+}
+
+export interface PreservePreviousOptions {
+  preservePrevious?: boolean
 }
 
 /**
@@ -113,10 +125,16 @@ let directoriesReady: Promise<void> | null = null
 export function ensureContentDirectories(): Promise<void> {
   directoriesReady ??= (async () => {
     for (const dir of requiredContentDirs()) {
+      await assertNoSymlinkPath(CONTENT_ROOT, dir, 'content directory')
       await fs.mkdir(dir, { recursive: true })
     }
     await sweepOrphanTempFiles()
-  })()
+  })().catch((error: unknown) => {
+    // A corrected mount, permission or disk error must be retryable without
+    // restarting the process solely to discard this rejected boot promise.
+    directoriesReady = null
+    throw error
+  })
   return directoriesReady
 }
 
@@ -128,6 +146,7 @@ export function ensureContentDirectories(): Promise<void> {
  * younger might belong to a concurrent write, so it is left alone.
  */
 export async function sweepOrphanTempFiles(maxAgeMs = 60 * 60 * 1000): Promise<number> {
+  await assertNoSymlinkPath(CONTENT_ROOT, TMP_DIR, 'temporary directory')
   const entries = await fs.readdir(TMP_DIR).catch(() => [] as string[])
   const now = Date.now()
   let removed = 0
@@ -169,25 +188,33 @@ const LOCK_POLL_MS = 40
  */
 async function acquireLock(relativePath: string): Promise<LockHandle> {
   const file = lockPath(relativePath)
+  await assertNoSymlinkPath(CONTENT_ROOT, file, 'content lock')
   const deadline = Date.now() + DEFAULT_LOCK_TIMEOUT_MS
+  const token = randomUUID()
+  const identity = await processIdentity(process.pid)
 
   for (;;) {
     try {
       const handle = await fs.open(file, 'wx')
       await handle.writeFile(
-        JSON.stringify({ pid: process.pid, at: new Date().toISOString() }),
+        JSON.stringify({ pid: process.pid, token, identity, at: new Date().toISOString() }),
       )
       await handle.close()
 
       return {
         release: async () => {
-          await fs.unlink(file).catch(() => undefined)
+          const contents = await fs.readFile(file, 'utf8').catch(() => null)
+          const owner = contents ? parseLock(contents) : null
+          if (owner?.token === token) {
+            await fs.unlink(file).catch(() => undefined)
+          }
         },
       }
     } catch (error) {
       if (!isAlreadyExists(error)) {
         // The lock directory may not exist yet on a cold start.
         if (isNotFound(error)) {
+          await assertNoSymlinkPath(CONTENT_ROOT, LOCK_DIR, 'lock directory')
           await fs.mkdir(LOCK_DIR, { recursive: true })
           continue
         }
@@ -221,13 +248,47 @@ async function isStaleLock(file: string): Promise<boolean> {
 
     // The holder may still be alive but slow. Check the pid before stealing.
     const raw = await fs.readFile(file, 'utf8').catch(() => '')
-    const parsed = JSON.parse(raw) as { pid?: number }
-    if (typeof parsed.pid === 'number' && parsed.pid !== process.pid) {
+    const parsed = JSON.parse(raw) as { pid?: number; identity?: string | null }
+    if (typeof parsed.pid === 'number') {
+      // A PID can name a different process after a restart, particularly PID 1
+      // in Docker. Linux's boot id and kernel process-start ticks identify its
+      // incarnation; a live process with a different identity is not the owner.
+      const actualIdentity = parsed.identity ? await processIdentity(parsed.pid) : null
+      if (parsed.identity && actualIdentity && parsed.identity !== actualIdentity) return true
       if (isProcessAlive(parsed.pid)) return false
     }
     return true
   } catch {
     return true
+  }
+}
+
+async function processIdentity(pid: number): Promise<string | null> {
+  try {
+    const [bootId, processStat] = await Promise.all([
+      fs.readFile('/proc/sys/kernel/random/boot_id', 'utf8'),
+      fs.readFile(`/proc/${pid}/stat`, 'utf8'),
+    ])
+    // The command name (field 2) may contain spaces and parentheses. Fields
+    // after its final ')' start at field 3; starttime is field 22.
+    const fields = processStat.slice(processStat.lastIndexOf(')') + 2).trim().split(/\s+/)
+    const started = fields[19]
+    if (!started || !/^\d+$/.test(started)) return null
+    return `${bootId.trim()}:${started}`
+  } catch {
+    // /proc is Linux-only. Elsewhere PID liveness remains the conservative
+    // fallback: a live process's lock is never stolen merely because it is old.
+    return null
+  }
+}
+
+/** Serialize content mutations and reconciliation across processes sharing this tree. */
+export async function withContentIndexLock<T>(operation: () => Promise<T>): Promise<T> {
+  const lock = await acquireLock('content-index-sync')
+  try {
+    return await operation()
+  } finally {
+    await lock.release()
   }
 }
 
@@ -241,12 +302,52 @@ function isProcessAlive(pid: number): boolean {
   }
 }
 
+function parseLock(raw: string): { pid?: number; token?: string } | null {
+  try {
+    return JSON.parse(raw) as { pid?: number; token?: string }
+  } catch {
+    return null
+  }
+}
+
+/** Called under the content mutation lock, before bytes are replaced. */
+async function assertUniqueSlug(type: ContentType, slug: string, relativePath: string): Promise<void> {
+  const files = await scanContentFiles({ maxFiles: env.CONTENT_MAX_FILES + 1 })
+  if (files.length > env.CONTENT_MAX_FILES) {
+    throw new ContentWriteError(
+      'Cannot verify slug uniqueness: the content scan exceeded CONTENT_MAX_FILES. Increase the limit before creating or renaming content.',
+      relativePath,
+    )
+  }
+  for (const file of files) {
+    if (file.type !== type || file.relativePath === relativePath) continue
+    let document: ContentDocument | null
+    try {
+      document = await readDocument(file.relativePath, { fresh: true })
+    } catch (error) {
+      throw new ContentWriteError(
+        `Cannot verify slug uniqueness while ${file.relativePath} is unreadable or invalid. Fix that file first.`,
+        relativePath,
+        error,
+      )
+    }
+    if (document?.slug === slug) {
+      throw new ContentWriteError(
+        `${file.relativePath} already uses the slug “${slug}”. Choose a different slug.`,
+        relativePath,
+      )
+    }
+  }
+}
+
 /* -------------------------------------------------------------------------- */
 /*  Atomic write                                                               */
 /* -------------------------------------------------------------------------- */
 
 async function atomicWrite(absolutePath: string, content: string): Promise<void> {
   const tmp = tempPath(toPosix(path.relative(CONTENT_ROOT, absolutePath)))
+  await assertNoSymlinkPath(CONTENT_ROOT, absolutePath, 'document')
+  await assertNoSymlinkPath(CONTENT_ROOT, tmp, 'temporary file')
 
   // Both directories this write depends on are created here rather than assumed.
   // `ensureContentDirectories` remembers its work for the life of the process,
@@ -258,6 +359,8 @@ async function atomicWrite(absolutePath: string, content: string): Promise<void>
   // syscall and says what this function actually requires.
   await fs.mkdir(path.dirname(absolutePath), { recursive: true })
   await fs.mkdir(TMP_DIR, { recursive: true })
+  await assertNoSymlinkPath(CONTENT_ROOT, absolutePath, 'document')
+  await assertNoSymlinkPath(CONTENT_ROOT, tmp, 'temporary file')
 
   let handle: Awaited<ReturnType<typeof fs.open>> | undefined
   try {
@@ -313,11 +416,19 @@ export interface CreateDocumentInput {
 export async function createDocument(
   input: CreateDocumentInput,
 ): Promise<WriteResult> {
+  return withContentIndexLock(() => createDocumentUnlocked(input))
+}
+
+async function createDocumentUnlocked(input: CreateDocumentInput): Promise<WriteResult> {
   const slug = assertSafeSlug(input.slug)
   const relativePath = buildRelativePath(input.type, slug)
   const absolutePath = documentPath(relativePath)
 
   await ensureContentDirectories()
+  await assertNoSymlinkPath(CONTENT_ROOT, absolutePath, 'document')
+  if (typeof input.data.slug === 'string') {
+    await assertUniqueSlug(input.type, input.data.slug.trim(), relativePath)
+  }
 
   const lock = await acquireLock(relativePath)
   try {
@@ -365,9 +476,18 @@ export async function createDocument(
  */
 export async function deleteDocument(
   relativePath: string,
-): Promise<{ relativePath: string; content: string } | null> {
+  options: PreservePreviousOptions = {},
+): Promise<{ relativePath: string; content: string; recoveryPath?: string } | null> {
+  return withContentIndexLock(() => deleteDocumentUnlocked(relativePath, options))
+}
+
+async function deleteDocumentUnlocked(
+  relativePath: string,
+  options: PreservePreviousOptions,
+): Promise<{ relativePath: string; content: string; recoveryPath?: string } | null> {
   const relative = toPosix(relativePath)
   const absolutePath = documentPath(relative)
+  await assertNoSymlinkPath(CONTENT_ROOT, absolutePath, 'document')
 
   const lock = await acquireLock(relative)
   try {
@@ -377,11 +497,18 @@ export async function deleteDocument(
     })
     if (content === null) return null
 
+    let recoveryPath: string | undefined
+    try {
+      if (options.preservePrevious) recoveryPath = await preservePreviousContent(relative, content)
+    } catch (error) {
+      throw writeFailure(relative, error)
+    }
+
     await fs.unlink(absolutePath)
     await fsyncDirectory(path.dirname(absolutePath))
     invalidateContentCache(relative)
 
-    return { relativePath: relative, content }
+    return { relativePath: relative, content, ...(recoveryPath ? { recoveryPath } : {}) }
   } finally {
     await lock.release()
   }
@@ -397,6 +524,15 @@ export async function updateDocument(
   mutate: (
     current: ContentDocument,
   ) => { data: Record<string, unknown>; body: string; comment?: string },
+  options: PreservePreviousOptions = {},
+): Promise<WriteResult> {
+  return withContentIndexLock(() => updateDocumentUnlocked(relativePath, mutate, options))
+}
+
+async function updateDocumentUnlocked(
+  relativePath: string,
+  mutate: Parameters<typeof updateDocument>[1],
+  options: PreservePreviousOptions,
 ): Promise<WriteResult> {
   await ensureContentDirectories()
 
@@ -404,10 +540,11 @@ export async function updateDocument(
   // Resolved up front so that a path escaping the content root fails as the
   // path guard, rather than being reported below as a write that did not happen.
   const absolutePath = documentPath(relative)
+  await assertNoSymlinkPath(CONTENT_ROOT, absolutePath, 'document')
 
   const lock = await acquireLock(relative)
   try {
-    const current = await readDocument(relative).catch((error: unknown) => {
+    const current = await readDocument(relative, { fresh: true }).catch((error: unknown) => {
       throw writeFailure(relative, error)
     })
     if (!current) {
@@ -418,14 +555,19 @@ export async function updateDocument(
     // Whatever it throws — a refusal with field errors, a validation failure —
     // is the caller's own control flow and is not translated.
     const { data, body, comment } = mutate(current)
+    if (typeof data.slug === 'string' && data.slug.trim() !== current.slug) {
+      await assertUniqueSlug(current.type, data.slug.trim(), relative)
+    }
 
     let content: string
+    let recoveryPath: string | undefined
     try {
       content = serializeFrontmatter(data, body, {
         extra: current.extra,
         ...(comment ? { comment } : {}),
       })
 
+      if (options.preservePrevious) recoveryPath = await preservePreviousContent(relative, current.raw)
       await atomicWrite(absolutePath, content)
     } catch (error) {
       throw writeFailure(relative, error)
@@ -442,6 +584,7 @@ export async function updateDocument(
       byteSize: Buffer.byteLength(content, 'utf8'),
       previousContent: current.raw,
       created: false,
+      ...(recoveryPath ? { recoveryPath } : {}),
     }
   } finally {
     await lock.release()
@@ -455,21 +598,47 @@ export async function updateDocument(
 export async function writeRawDocument(
   relativePath: string,
   content: string,
+  options: PreservePreviousOptions = {},
+): Promise<WriteResult> {
+  return withContentIndexLock(() => writeRawDocumentUnlocked(relativePath, content, options))
+}
+
+async function writeRawDocumentUnlocked(
+  relativePath: string,
+  content: string,
+  options: PreservePreviousOptions,
 ): Promise<WriteResult> {
   await ensureContentDirectories()
 
   const relative = toPosix(relativePath)
   const absolutePath = documentPath(relative)
+  await assertNoSymlinkPath(CONTENT_ROOT, absolutePath, 'document')
 
   const lock = await acquireLock(relative)
   try {
+    // Restore preserves snapshot bytes, but it must obey the same slug
+    // invariant as an editor save. An external edit can claim the snapshot's
+    // former slug while the database still describes the older state.
+    let restored: ContentDocument
+    try {
+      restored = parseDocument({
+        relativePath: relative, absolutePath, raw: content,
+        stat: { mtime: new Date(), size: Buffer.byteLength(content, 'utf8') },
+      })
+    } catch (error) {
+      throw writeFailure(relative, error)
+    }
+    await assertUniqueSlug(restored.type, restored.slug, relative)
+
     let previous: string | null
+    let recoveryPath: string | undefined
     try {
       previous = await fs.readFile(absolutePath, 'utf8').catch((error) => {
         if (isNotFound(error)) return null
         throw error
       })
 
+      if (options.preservePrevious && previous !== null) recoveryPath = await preservePreviousContent(relative, previous)
       await atomicWrite(absolutePath, content)
     } catch (error) {
       throw writeFailure(relative, error)
@@ -486,6 +655,7 @@ export async function writeRawDocument(
       byteSize: Buffer.byteLength(content, 'utf8'),
       previousContent: previous,
       created: previous === null,
+      ...(recoveryPath ? { recoveryPath } : {}),
     }
   } finally {
     await lock.release()
@@ -502,6 +672,9 @@ export interface ImportWriteInput {
   content: string
   /** When true, an existing file with the same slug is replaced. */
   overwrite: boolean
+  /** Existing filename when the frontmatter slug differs from it. */
+  relativePath?: string
+  preservePrevious?: boolean
 }
 
 /**
@@ -518,6 +691,7 @@ export interface ImportWriteResult {
   skipped: boolean
   /** Contents of the file this replaced, or null when there was none. */
   previousContent: string | null
+  recoveryPath?: string
 }
 
 /**
@@ -531,11 +705,19 @@ export interface ImportWriteResult {
 export async function importDocument(
   input: ImportWriteInput,
 ): Promise<ImportWriteResult> {
+  return withContentIndexLock(() => importDocumentUnlocked(input))
+}
+
+async function importDocumentUnlocked(input: ImportWriteInput): Promise<ImportWriteResult> {
   const slug = assertSafeSlug(input.slug)
-  const relativePath = buildRelativePath(input.type, slug)
+  const relativePath = input.relativePath ?? buildRelativePath(input.type, slug)
+  if (parseRelativePath(relativePath)?.type !== input.type) {
+    throw new ContentWriteError('Not a content path for this import type', relativePath)
+  }
   const absolutePath = documentPath(relativePath)
 
   await ensureContentDirectories()
+  await assertNoSymlinkPath(CONTENT_ROOT, absolutePath, 'document')
 
   const lock = await acquireLock(relativePath)
   try {
@@ -551,9 +733,13 @@ export async function importDocument(
       return { relativePath, skipped: true, previousContent: null }
     }
 
+    await assertUniqueSlug(input.type, slug, relativePath)
+
+    const recoveryPath = input.preservePrevious && previousContent !== null
+      ? await preservePreviousContent(relativePath, previousContent) : undefined
     await atomicWrite(absolutePath, input.content)
     invalidateContentCache(relativePath)
-    return { relativePath, skipped: false, previousContent }
+    return { relativePath, skipped: false, previousContent, ...(recoveryPath ? { recoveryPath } : {}) }
   } finally {
     await lock.release()
   }

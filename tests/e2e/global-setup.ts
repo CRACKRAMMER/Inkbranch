@@ -90,6 +90,16 @@ function runScript(script: string, env: Record<string, string>): void {
  * journal all live there and all go together.
  */
 async function resetDatabase(url: string): Promise<void> {
+  const adminUrl = new URL(url)
+  adminUrl.pathname = '/postgres'
+  const admin = new Client({ connectionString: adminUrl.toString() })
+  await admin.connect()
+  try {
+    const exists = await admin.query('SELECT 1 FROM pg_database WHERE datname = $1', ['myblog_e2e'])
+    if (exists.rowCount === 0) await admin.query('CREATE DATABASE myblog_e2e')
+  } finally {
+    await admin.end()
+  }
   const client = new Client({ connectionString: url })
   await client.connect()
   try {

@@ -143,20 +143,20 @@ export function StatRow({
   children: React.ReactNode
 }) {
   return (
-    <dl
+    <div
       className={cn(
         'mt-6 grid grid-cols-2 gap-px overflow-hidden border border-line bg-line first:mt-0 sm:grid-cols-4',
         className,
       )}
     >
       {children}
-    </dl>
+    </div>
   )
 }
 
 /** One cell of a `StatRow`; `Stat` fills it. */
 export function StatCell({ children }: { children: React.ReactNode }) {
-  return <div className="bg-surface px-4 py-4">{children}</div>
+  return <dl className="bg-surface px-4 py-4">{children}</dl>
 }
 
 /**

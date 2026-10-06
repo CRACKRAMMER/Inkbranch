@@ -114,7 +114,7 @@ export default async function RedirectsPage({
               : 'No redirects yet. A moved post usually wants one: the old URL 404s until a rule points it somewhere.'}
           </InlineNote>
         ) : (
-          <div className="overflow-x-auto border-t border-line">
+          <div className="relative overflow-x-auto border-t border-line">
             <table className="w-full border-collapse text-sm">
               <caption className="sr-only">Stored redirects, most recently changed first</caption>
               <thead>

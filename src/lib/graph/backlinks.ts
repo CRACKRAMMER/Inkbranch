@@ -87,6 +87,7 @@ export interface BacklinkRow {
   slug: string
   title: string
   status: ContentStatus
+  scheduledAt: Date | null
   publishedAt: Date | null
   updatedAt: Date
 }
@@ -114,6 +115,7 @@ export async function getBacklinks(
       slug: contentIndex.slug,
       title: contentIndex.title,
       status: contentIndex.status,
+      scheduledAt: contentIndex.scheduledAt,
       publishedAt: contentIndex.publishedAt,
       updatedAt: contentIndex.updatedAt,
     })

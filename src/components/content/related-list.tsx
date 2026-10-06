@@ -38,7 +38,7 @@ export function RelatedList({
               {post.title}
             </span>
             <span className="shrink-0 font-mono text-[0.6875rem] text-ink-subtle">
-              {reasonFor(post)}
+              {post.reason}
             </span>
             {post.publishedAt ? (
               <time
@@ -53,19 +53,4 @@ export function RelatedList({
       ))}
     </ul>
   )
-}
-
-/**
- * The strongest reason, in the fewest words.
- *
- * Ordered by how specific each signal is rather than by weight: a shared tag
- * says more about *why* two documents belong together than a shared word does,
- * even when the word contributed more to the score. A shared series is the most
- * specific of all — the author declared the relationship.
- */
-function reasonFor(post: RelatedPost): string {
-  if (post.series) return post.series
-  const tag = post.tags[0]
-  if (tag) return `#${tag}`
-  return 'related'
 }

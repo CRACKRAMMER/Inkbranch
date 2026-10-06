@@ -26,6 +26,7 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
+  DialogTrigger,
 } from '@/components/ui/dialog'
 import { Field, FieldDescription, FieldError, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
@@ -251,64 +252,64 @@ function RenameDialog({
   }
 
   return (
-    <>
-      <Button type="button" variant="secondary" size="sm" onClick={() => setOpen(true)}>
-        Rename
-      </Button>
-      <Dialog open={open} onOpenChange={(next) => (pending ? undefined : setOpen(next))}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Rename “{tag.name}”</DialogTitle>
-            <DialogDescription asChild>
-              <div className="space-y-2 text-sm leading-relaxed text-ink-muted">
-                <p>
-                  Renaming rewrites the <span className="font-mono">tags:</span> list in the
-                  frontmatter of all {tag.contentCount} document
-                  {tag.contentCount === 1 ? '' : 's'} carrying it, then reconciles the index. The
-                  files are the source of truth, so anything less would be undone by the next sync.
-                </p>
-                <p>
-                  The tag&rsquo;s URL changes with its slug. A link to{' '}
-                  <span className="font-mono">/tags/{tag.slug}</span> stops resolving unless a
-                  redirect points at the new one.
-                </p>
-              </div>
-            </DialogDescription>
-          </DialogHeader>
+    <Dialog open={open} onOpenChange={(next) => (pending ? undefined : setOpen(next))}>
+      <DialogTrigger asChild>
+        <Button type="button" variant="secondary" size="sm">
+          Rename
+        </Button>
+      </DialogTrigger>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Rename “{tag.name}”</DialogTitle>
+          <DialogDescription asChild>
+            <div className="space-y-2 text-sm leading-relaxed text-ink-muted">
+              <p>
+                Renaming rewrites the <span className="font-mono">tags:</span> list in the
+                frontmatter of all {tag.contentCount} document
+                {tag.contentCount === 1 ? '' : 's'} carrying it, then reconciles the index. The
+                files are the source of truth, so anything less would be undone by the next sync.
+              </p>
+              <p>
+                The tag&rsquo;s URL changes with its slug. A link to{' '}
+                <span className="font-mono">/tags/{tag.slug}</span> stops resolving unless a
+                redirect points at the new one.
+              </p>
+            </div>
+          </DialogDescription>
+        </DialogHeader>
 
-          <Field>
-            <FieldLabel htmlFor={fieldId}>New name</FieldLabel>
-            <Input
-              id={fieldId}
-              value={name}
-              autoComplete="off"
-              aria-invalid={fieldError ? true : undefined}
-              onChange={(event) => setName(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter') {
-                  event.preventDefault()
-                  submit()
-                }
-              }}
-            />
-            <FieldDescription>
-              The slug follows the name. Renaming onto an existing tag is a merge — use Merge for
-              that.
-            </FieldDescription>
-            <FieldError>{fieldError ?? undefined}</FieldError>
-          </Field>
+        <Field>
+          <FieldLabel htmlFor={fieldId}>New name</FieldLabel>
+          <Input
+            id={fieldId}
+            value={name}
+            autoComplete="off"
+            aria-invalid={fieldError ? true : undefined}
+            onChange={(event) => setName(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') {
+                event.preventDefault()
+                submit()
+              }
+            }}
+          />
+          <FieldDescription>
+            The slug follows the name. Renaming onto an existing tag is a merge — use Merge for
+            that.
+          </FieldDescription>
+          <FieldError>{fieldError ?? undefined}</FieldError>
+        </Field>
 
-          <DialogFooter>
-            <Button type="button" variant="ghost" onClick={() => setOpen(false)} disabled={pending}>
-              Cancel
-            </Button>
-            <Button type="button" onClick={submit} disabled={pending}>
-              {pending ? 'Renaming…' : 'Rename'}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-    </>
+        <DialogFooter>
+          <Button type="button" variant="ghost" onClick={() => setOpen(false)} disabled={pending}>
+            Cancel
+          </Button>
+          <Button type="button" onClick={submit} disabled={pending}>
+            {pending ? 'Renaming…' : 'Rename'}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }
 
@@ -372,66 +373,65 @@ function MergeDialog({
   }
 
   return (
-    <>
-      <Button
-        type="button"
-        variant="secondary"
-        size="sm"
-        disabled={others.length === 0}
-        title={others.length === 0 ? 'There is no other tag to merge into' : undefined}
-        onClick={() => setOpen(true)}
-      >
-        Merge
-      </Button>
-      <Dialog open={open} onOpenChange={(next) => (pending ? undefined : setOpen(next))}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Merge “{tag.name}” into another tag</DialogTitle>
-            <DialogDescription asChild>
-              <div className="space-y-2 text-sm leading-relaxed text-ink-muted">
-                <p>
-                  Every document carrying “{tag.name}” is rewritten to carry the tag you pick
-                  instead. A document that already carries both ends up with one.
-                </p>
-                <p>
-                  The files change, so this cannot be undone from here — each document keeps a
-                  revision you can restore individually from its own history.
-                </p>
-              </div>
-            </DialogDescription>
-          </DialogHeader>
+    <Dialog open={open} onOpenChange={(next) => (pending ? undefined : setOpen(next))}>
+      <DialogTrigger asChild>
+        <Button
+          type="button"
+          variant="secondary"
+          size="sm"
+          disabled={others.length === 0}
+          title={others.length === 0 ? 'There is no other tag to merge into' : undefined}
+        >
+          Merge
+        </Button>
+      </DialogTrigger>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Merge “{tag.name}” into another tag</DialogTitle>
+          <DialogDescription asChild>
+            <div className="space-y-2 text-sm leading-relaxed text-ink-muted">
+              <p>
+                Every document carrying “{tag.name}” is rewritten to carry the tag you pick
+                instead. A document that already carries both ends up with one.
+              </p>
+              <p>
+                The files change, so this cannot be undone from here — each document keeps a
+                revision you can restore individually from its own history.
+              </p>
+            </div>
+          </DialogDescription>
+        </DialogHeader>
 
-          <Field>
-            <FieldLabel htmlFor={fieldId}>Merge into</FieldLabel>
-            <select
-              id={fieldId}
-              value={into}
-              onChange={(event) => setInto(event.target.value)}
-              className="h-9 w-full rounded-md border border-input bg-transparent px-2 text-sm"
-            >
-              {others.map((option) => (
-                <option key={option.slug} value={option.slug}>
-                  {option.name} ({option.contentCount} document
-                  {option.contentCount === 1 ? '' : 's'})
-                </option>
-              ))}
-            </select>
-            <FieldDescription>
-              {target ? mergeConsequence(tag, target, consequence) : 'Pick a destination tag.'}
-            </FieldDescription>
-          </Field>
+        <Field>
+          <FieldLabel htmlFor={fieldId}>Merge into</FieldLabel>
+          <select
+            id={fieldId}
+            value={into}
+            onChange={(event) => setInto(event.target.value)}
+            className="h-9 w-full rounded-md border border-input bg-transparent px-2 text-sm"
+          >
+            {others.map((option) => (
+              <option key={option.slug} value={option.slug}>
+                {option.name} ({option.contentCount} document
+                {option.contentCount === 1 ? '' : 's'})
+              </option>
+            ))}
+          </select>
+          <FieldDescription>
+            {target ? mergeConsequence(tag, target, consequence) : 'Pick a destination tag.'}
+          </FieldDescription>
+        </Field>
 
-          <DialogFooter>
-            <Button type="button" variant="ghost" onClick={() => setOpen(false)} disabled={pending}>
-              Cancel
-            </Button>
-            <Button type="button" variant="destructive" onClick={submit} disabled={pending || !into}>
-              {pending ? 'Merging…' : 'Merge'}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-    </>
+        <DialogFooter>
+          <Button type="button" variant="ghost" onClick={() => setOpen(false)} disabled={pending}>
+            Cancel
+          </Button>
+          <Button type="button" variant="destructive" onClick={submit} disabled={pending || !into}>
+            {pending ? 'Merging…' : 'Merge'}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }
 
@@ -448,43 +448,43 @@ function DeleteDialog({
   const { pending, run } = useTagAction()
 
   return (
-    <>
-      <Button type="button" variant="ghost" size="sm" onClick={() => setOpen(true)}>
-        Delete
-      </Button>
-      <Dialog open={open} onOpenChange={(next) => (pending ? undefined : setOpen(next))}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Delete the tag “{tag.name}”?</DialogTitle>
-            <DialogDescription asChild>
-              <div className="space-y-2 text-sm leading-relaxed text-ink-muted">
-                <p>
-                  The tag is removed from the <span className="font-mono">tags:</span> list of all{' '}
-                  {tag.contentCount} document{tag.contentCount === 1 ? '' : 's'} carrying it, and the
-                  tag row is dropped once nothing references it. The documents themselves are kept.
-                </p>
-                <p>
-                  <span className="font-mono">/tags/{tag.slug}</span> will stop resolving. Deleting
-                  a tag is not reversible from here.
-                </p>
-              </div>
-            </DialogDescription>
-          </DialogHeader>
+    <Dialog open={open} onOpenChange={(next) => (pending ? undefined : setOpen(next))}>
+      <DialogTrigger asChild>
+        <Button type="button" variant="ghost" size="sm">
+          Delete
+        </Button>
+      </DialogTrigger>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Delete the tag “{tag.name}”?</DialogTitle>
+          <DialogDescription asChild>
+            <div className="space-y-2 text-sm leading-relaxed text-ink-muted">
+              <p>
+                The tag is removed from the <span className="font-mono">tags:</span> list of all{' '}
+                {tag.contentCount} document{tag.contentCount === 1 ? '' : 's'} carrying it, and the
+                tag row is dropped once nothing references it. The documents themselves are kept.
+              </p>
+              <p>
+                <span className="font-mono">/tags/{tag.slug}</span> will stop resolving. Deleting
+                a tag is not reversible from here.
+              </p>
+            </div>
+          </DialogDescription>
+        </DialogHeader>
 
-          <DialogFooter>
-            <Button type="button" variant="ghost" onClick={() => setOpen(false)} disabled={pending}>
-              Cancel
-            </Button>
-            <Button type="button" variant="destructive" onClick={() => run(() => deleteTagAction({ slug: tag.slug }), {
-              onReport,
-              onFailure,
-              close: () => setOpen(false),
-            })} disabled={pending}>
-              {pending ? 'Deleting…' : 'Delete tag'}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-    </>
+        <DialogFooter>
+          <Button type="button" variant="ghost" onClick={() => setOpen(false)} disabled={pending}>
+            Cancel
+          </Button>
+          <Button type="button" variant="destructive" onClick={() => run(() => deleteTagAction({ slug: tag.slug }), {
+            onReport,
+            onFailure,
+            close: () => setOpen(false),
+          })} disabled={pending}>
+            {pending ? 'Deleting…' : 'Delete tag'}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }

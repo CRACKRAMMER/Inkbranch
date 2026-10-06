@@ -26,7 +26,8 @@ test.skip(
 test('a redirect saved in the admin is served to a request', async ({ page, request }) => {
   // Unique per run: the suite does not delete this one, and a fixed source path
   // would make the second run fail on a duplicate rather than on a defect.
-  const from = `/e2e-moved-${uniqueSlug()}`
+  // Legacy URLs frequently have an extension; the proxy must still run.
+  const from = `/e2e-moved-${uniqueSlug()}.html`
   const to = '/notes'
 
   await test.step('signs in', async () => {
@@ -35,6 +36,7 @@ test('a redirect saved in the admin is served to a request', async ({ page, requ
 
   await test.step('saves the redirect', async () => {
     await page.goto('/admin/redirects')
+    await expect(page.getByLabel('CSV redirect file', { exact: true })).toHaveAttribute('type', 'file')
 
     // Labelled rather than addressed by id: the form builds its ids from
     // `useId()`, so they are stable within a render and meaningless across one.
@@ -75,6 +77,24 @@ test('a redirect saved in the admin is served to a request', async ({ page, requ
      */
     const response = await request.get(from, { maxRedirects: 0 })
 
+    expect(response.status()).toBe(301)
+    expect(response.headers()['location']).toContain(to)
+  })
+
+  await test.step('closes edit and deletion dialogs without losing the selected rule or keyboard focus', async () => {
+    const row = page.getByRole('row').filter({ hasText: from })
+    await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(1)
+    for (const [label, closeLabel] of [['Edit', 'Close'], ['Delete', 'Cancel']] as const) {
+      const trigger = row.getByRole('button', { name: label, exact: true })
+      await trigger.focus()
+      await page.keyboard.press('Enter')
+      const dialog = page.getByRole('dialog')
+      await expect(dialog).toBeVisible()
+      await dialog.locator('[data-slot="dialog-footer"]').getByRole('button', { name: closeLabel, exact: true }).click()
+      await expect(dialog).toBeHidden()
+      await expect(trigger).toBeFocused()
+    }
+    const response = await request.get(from, { maxRedirects: 0 })
     expect(response.status()).toBe(301)
     expect(response.headers()['location']).toContain(to)
   })

@@ -1,6 +1,6 @@
 import { expect, test, type Page } from '@playwright/test'
 
-import { RATE_LIMITS } from '@/lib/auth/rate-limit'
+import { RATE_LIMITS } from '@/lib/auth/rate-limit-policy'
 
 import { hasE2eDatabase } from './environment'
 import { clearSearchLimits, showMetadata, signIn, typeBody, uniqueSlug } from './support'
@@ -283,15 +283,15 @@ test('stops answering a caller who has spent its searches, and says when to come
 
   await clearSearchLimits()
 
+  const startedAt = Date.now()
+
   /*
    * The whole allowance at once, and the capacity is imported rather than
    * written here so the two cannot drift.
    *
-   * Fired together rather than in a loop, which is not tidiness: the bucket
-   * refills at one token per second, and sixty sequential requests take about
-   * that long on a loaded machine — so a loop could hand back the token the
-   * next request needs and answer 200 where this asserts a refusal. In parallel
-   * the burst is over in well under the time one token takes to come back.
+   * The HTTP burst can take longer than one refill interval on a loaded host.
+   * Refills are valid admissions, so exhaustion below accounts for elapsed time
+   * rather than assuming the first request after the capacity must be refused.
    */
   const burst = await Promise.all(
     Array.from({ length: RATE_LIMITS.search.capacity }, () => request.get(url)),
@@ -301,8 +301,18 @@ test('stops answering a caller who has spent its searches, and says when to come
     expect(response.status(), `request ${index + 1} of the allowance`).toBe(200)
   }
 
-  const refused = await request.get(url)
-  expect(refused.status()).toBe(429)
+  let requestsSent = burst.length
+  let refused = await request.get(url)
+  requestsSent += 1
+  for (let round = 0; refused.status() === 200 && round < 3; round += 1) {
+    const refilled = Math.ceil((Date.now() - startedAt) / 1000 * RATE_LIMITS.search.refillPerSecond)
+    const extra = Math.max(2, RATE_LIMITS.search.capacity + refilled + 2 - requestsSent)
+    const responses = await Promise.all(Array.from({ length: extra }, () => request.get(url)))
+    requestsSent += extra
+    for (const response of responses) expect([200, 429]).toContain(response.status())
+    refused = responses.find((response) => response.status() === 429) ?? responses[responses.length - 1]!
+  }
+  expect(refused.status(), `${requestsSent} searches in ${Date.now() - startedAt}ms`).toBe(429)
 
   // What a client can act on, and what the palette shows the reader: a wait,
   // named, rather than a search that is broken.

@@ -176,6 +176,14 @@ test('the graph draws the documents, their link, and the tag they share', async 
     await expect(degreeOf(list, tagName)).toHaveText('2')
   })
 
+  await test.step('keeps the canvas and accessible list within a narrow viewport', async () => {
+    const original = page.viewportSize()
+    await page.setViewportSize({ width: 390, height: 844 })
+    const size = await page.evaluate(() => ({ viewport: innerWidth, document: document.documentElement.scrollWidth }))
+    expect(size.document).toBeLessThanOrEqual(size.viewport)
+    if (original) await page.setViewportSize(original)
+  })
+
   await test.step('narrows to one kind of node, and counts only that kind', async () => {
     // A checkbox list of what to show, not what to hide: an empty selection is
     // the whole graph, and checking Articles is how a reader asks for the

@@ -9,7 +9,7 @@ import {
   syntaxHighlighting,
 } from '@codemirror/language'
 import { languages } from '@codemirror/language-data'
-import { EditorState } from '@codemirror/state'
+import { Compartment, EditorState } from '@codemirror/state'
 import {
   EditorView,
   drawSelection,
@@ -136,6 +136,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
   ) {
     const host = useRef<HTMLDivElement | null>(null)
     const view = useRef<EditorView | null>(null)
+    const editingConfig = useRef(new Compartment())
 
     // Callbacks live in refs so the view is built once. Rebuilding it on a
     // render would discard the undo history, the selection and the scroll
@@ -312,11 +313,14 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
               return true
             },
           }),
-          EditorView.editable.of(!readOnly),
-          EditorView.contentAttributes.of({
-            'aria-label': ariaLabel ?? 'Markdown source',
-            spellcheck: 'true',
-          }),
+          editingConfig.current.of([
+            EditorState.readOnly.of(readOnly),
+            EditorView.editable.of(!readOnly),
+            EditorView.contentAttributes.of({
+              'aria-label': ariaLabel ?? 'Markdown source',
+              spellcheck: 'true',
+            }),
+          ]),
         ],
       })
 
@@ -332,6 +336,16 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
       // string would discard undo history on every save.
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [])
+
+    useEffect(() => {
+      view.current?.dispatch({
+        effects: editingConfig.current.reconfigure([
+          EditorState.readOnly.of(readOnly),
+          EditorView.editable.of(!readOnly),
+          EditorView.contentAttributes.of({ 'aria-label': ariaLabel ?? 'Markdown source', spellcheck: 'true' }),
+        ]),
+      })
+    }, [readOnly, ariaLabel])
 
     return <div ref={host} className="h-full min-h-0 overflow-hidden" />
   },

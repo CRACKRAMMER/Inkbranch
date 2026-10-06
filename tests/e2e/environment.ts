@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { assertSeparateTestDatabase } from '../database-safety'
 
 /**
  * The environment an end-to-end run uses, defined once.
@@ -92,7 +93,10 @@ export function e2eDatabaseUrl(): string {
     )
   }
   const url = new URL(base)
+  assertSeparateTestDatabase(base, process.env.DATABASE_URL)
   url.pathname = `/${E2E_DATABASE_NAME}`
+  assertSeparateTestDatabase(url.toString(), process.env.DATABASE_URL)
+  assertSeparateTestDatabase(url.toString(), base)
   return url.toString()
 }
 

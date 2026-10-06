@@ -19,6 +19,7 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
+  DialogTrigger,
 } from '@/components/ui/dialog'
 import { Field, FieldDescription, FieldError, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
@@ -137,8 +138,7 @@ export function DeleteAssetButton({
   const [checking, startCheck] = useTransition()
   const [pending, startDelete] = useTransition()
 
-  function openDialog() {
-    setOpen(true)
+  function checkUsage() {
     setUsage(null)
     setCheckError(null)
     setDeleteError(null)
@@ -164,124 +164,124 @@ export function DeleteAssetButton({
             ? `The database row is gone; ${result.data.fileErrors.length} file(s) could not be removed from disk.`
             : undefined,
       })
-      router.refresh()
+      if (view === 'detail') router.replace('/admin/assets')
+      else router.refresh()
     })
   }
 
   const referenced = usage !== null && (usage.documents.length > 0 || usage.usedAsSiteAvatar)
 
   return (
-    <>
-      <Button
-        type="button"
-        variant={view === 'detail' ? 'destructive' : 'ghost'}
-        size="sm"
-        onClick={openDialog}
-      >
-        Delete
-      </Button>
-
-      <Dialog open={open} onOpenChange={(next) => (pending ? undefined : setOpen(next))}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Delete {filename}?</DialogTitle>
-            <DialogDescription asChild>
-              <div className="space-y-2 text-sm leading-relaxed text-ink-muted">
-                <p>
-                  The database row and the stored files are removed. Shard directories are left in
-                  place.
-                </p>
-              </div>
-            </DialogDescription>
-          </DialogHeader>
-
-          {checking ? <p className="text-sm text-ink-muted">Checking what references it…</p> : null}
-
-          {checkError ? (
-            <p role="alert" className="border-l-2 border-danger pl-3 text-sm text-ink">
-              {checkError} The check could not be completed, so nothing is known about what uses this
-              file.
-            </p>
-          ) : null}
-
-          {usage && !referenced ? (
-            <p className="text-sm text-ink">
-              Nothing references it: no document links to it, no frontmatter points at it, and it is
-              not the site avatar.
-            </p>
-          ) : null}
-
-          {referenced && usage ? (
-            <div className="border-l-2 border-warning pl-3">
-              <p className="text-sm text-ink">
-                {usage.documents.length > 0
-                  ? `${usage.documents.length} document${usage.documents.length === 1 ? '' : 's'} still point at this file. Deleting it will leave ${usage.documents.length === 1 ? 'that page' : 'those pages'} with a broken image.`
-                  : 'The site avatar points at this file.'}
+    <Dialog open={open} onOpenChange={(next) => (pending ? undefined : setOpen(next))}>
+      <DialogTrigger asChild>
+        <Button
+          type="button"
+          variant={view === 'detail' ? 'destructive' : 'ghost'}
+          size="sm"
+          onClick={checkUsage}
+        >
+          Delete
+        </Button>
+      </DialogTrigger>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Delete {filename}?</DialogTitle>
+          <DialogDescription asChild>
+            <div className="space-y-2 text-sm leading-relaxed text-ink-muted">
+              <p>
+                The database row and the stored files are removed. Shard directories are left in
+                place.
               </p>
-              {usage.usedAsSiteAvatar ? (
-                <p className="mt-2 text-sm text-ink">
-                  It is also the configured site avatar —{' '}
-                  <Link href="/admin/settings" className="text-brand underline underline-offset-2">
-                    change that in Settings
-                  </Link>{' '}
-                  first if you want the avatar to keep working.
-                </p>
-              ) : null}
-              <ul className="mt-2 space-y-1">
-                {usage.documents.map((document) => (
-                  <li key={`${document.id}-${document.via}`} className="text-sm">
-                    <Link
-                      href={document.href}
-                      className="text-brand underline underline-offset-2"
-                    >
-                      {document.title}
-                    </Link>{' '}
-                    <span className="text-xs text-ink-muted">
-                      {document.status} · referenced as{' '}
-                      {document.via === 'link'
-                        ? 'a link in the body'
-                        : document.via === 'cover'
-                          ? 'the cover'
-                          : 'the social image'}
-                    </span>
-                  </li>
-                ))}
-              </ul>
             </div>
-          ) : null}
+          </DialogDescription>
+        </DialogHeader>
 
-          {deleteError ? (
-            <p role="alert" className="border-l-2 border-danger pl-3 text-sm text-ink">
-              {deleteError}
+        {checking ? <p className="text-sm text-ink-muted">Checking what references it…</p> : null}
+
+        {checkError ? (
+          <p role="alert" className="border-l-2 border-danger pl-3 text-sm text-ink">
+            {checkError} The check could not be completed, so nothing is known about what uses this
+            file.
+          </p>
+        ) : null}
+
+        {usage && !referenced ? (
+          <p className="text-sm text-ink">
+            Nothing references it: no document links to it, no frontmatter points at it, and it is
+            not the site avatar.
+          </p>
+        ) : null}
+
+        {referenced && usage ? (
+          <div className="border-l-2 border-warning pl-3">
+            <p className="text-sm text-ink">
+              {usage.documents.length > 0
+                ? `${usage.documents.length} document${usage.documents.length === 1 ? '' : 's'} still point at this file. Deleting it will leave ${usage.documents.length === 1 ? 'that page' : 'those pages'} with a broken image.`
+                : 'The site avatar points at this file.'}
             </p>
-          ) : null}
+            {usage.usedAsSiteAvatar ? (
+              <p className="mt-2 text-sm text-ink">
+                It is also the configured site avatar —{' '}
+                <Link href="/admin/settings" className="text-brand underline underline-offset-2">
+                  change that in Settings
+                </Link>{' '}
+                first if you want the avatar to keep working.
+              </p>
+            ) : null}
+            <ul className="mt-2 space-y-1">
+              {usage.documents.map((document) => (
+                <li key={`${document.id}-${document.via}`} className="text-sm">
+                  <Link
+                    href={document.href}
+                    className="text-brand underline underline-offset-2"
+                  >
+                    {document.title}
+                  </Link>{' '}
+                  <span className="text-xs text-ink-muted">
+                    {document.status} · referenced as{' '}
+                    {document.via === 'link'
+                      ? 'a link in the body'
+                      : document.via === 'cover'
+                        ? 'the cover'
+                        : 'the social image'}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
 
-          <DialogFooter>
-            <Button type="button" variant="ghost" onClick={() => setOpen(false)} disabled={pending}>
-              Cancel
+        {deleteError ? (
+          <p role="alert" className="border-l-2 border-danger pl-3 text-sm text-ink">
+            {deleteError}
+          </p>
+        ) : null}
+
+        <DialogFooter>
+          <Button type="button" variant="ghost" onClick={() => setOpen(false)} disabled={pending}>
+            Cancel
+          </Button>
+          {referenced ? (
+            <Button
+              type="button"
+              variant="destructive"
+              onClick={() => confirm(true)}
+              disabled={pending || checking}
+            >
+              {pending ? 'Deleting…' : 'Delete anyway'}
             </Button>
-            {referenced ? (
-              <Button
-                type="button"
-                variant="destructive"
-                onClick={() => confirm(true)}
-                disabled={pending || checking}
-              >
-                {pending ? 'Deleting…' : 'Delete anyway'}
-              </Button>
-            ) : (
-              <Button
-                type="button"
-                variant="destructive"
-                onClick={() => confirm(false)}
-                disabled={pending || checking || usage === null}
-              >
-                {pending ? 'Deleting…' : 'Delete'}
-              </Button>
-            )}
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-    </>
+          ) : (
+            <Button
+              type="button"
+              variant="destructive"
+              onClick={() => confirm(false)}
+              disabled={pending || checking || usage === null}
+            >
+              {pending ? 'Deleting…' : 'Delete'}
+            </Button>
+          )}
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }

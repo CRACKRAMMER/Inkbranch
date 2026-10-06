@@ -196,7 +196,7 @@ export function describeActionError(error: unknown): ActionFailure {
     '[admin] unexpected action error:',
     error instanceof Error ? (error.stack ?? error.message) : error,
   )
-  return actionFailure('The server hit an unexpected error. Nothing was changed.', {
+  return actionFailure('The server hit an unexpected error. The operation could not be confirmed.', {
     detail: error instanceof Error ? error.name : undefined,
     retryable: true,
   })

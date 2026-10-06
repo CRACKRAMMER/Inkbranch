@@ -4,6 +4,7 @@ import { and, asc, count, desc, eq, ilike, or, sql } from 'drizzle-orm'
 import { z } from 'zod'
 import { recordAudit } from '@/lib/audit'
 import { db } from '@/lib/db'
+import { siteOrigin } from '@/env'
 import { redirects, type RedirectRow } from '@/lib/db/schema'
 import {
   internalPathProblem,
@@ -43,7 +44,7 @@ export const REDIRECT_STATUS_CODES = [301, 302, 307, 308] as const
  * The trailing slash is load-bearing. `/_nextish` is a page the site could
  * serve, and a bare `/_next` prefix would refuse a redirect on it.
  */
-const UNREACHABLE_PREFIXES = ['/_next/', '/api/'] as const
+const UNREACHABLE_PREFIXES = ['/_next/', '/api/', '/uploads/'] as const
 
 /**
  * True for `/admin` and everything beneath it.
@@ -280,7 +281,12 @@ export function detectRedirectLoop(
  * a trailing slash from `https://example.com/` would change the URL.
  */
 function nextHopKey(path: string): string {
-  return isExternalUrl(path) ? path : normalizeRedirectPath(path)
+  if (isExternalUrl(path)) {
+    const url = new URL(path)
+    if (url.origin !== siteOrigin) return path
+    return normalizeRedirectPath(url.pathname)
+  }
+  return normalizeRedirectPath(path)
 }
 
 /* -------------------------------------------------------------------------- */
@@ -738,8 +744,8 @@ export interface RedirectWriteContext {
  * redirect into the database. The table holds one row per moved URL, so this is
  * small in a way the content index is not.
  */
-async function loadRedirectMap(): Promise<Map<string, StoredRedirectTarget>> {
-  const rows = await db
+async function loadRedirectMap(database: Pick<typeof db, 'select'> = db): Promise<Map<string, StoredRedirectTarget>> {
+  const rows = await database
     .select({
       fromPath: redirects.fromPath,
       toPath: redirects.toPath,
@@ -768,52 +774,59 @@ export async function saveRedirect(
 ): Promise<RedirectRow> {
   const validated = validateRedirect(input)
 
-  const known = await loadRedirectMap()
-  const existing = known.get(validated.fromPath)
+  const { row, existing } = await db.transaction(async (tx) => {
+    // Serialize graph validation and mutation across app instances and CSV imports.
+    // Ordinary resolver SELECTs remain unblocked.
+    await tx.execute(sql`lock table ${redirects} in share row exclusive mode`)
+    const known = await loadRedirectMap(tx)
+    const existing = known.get(validated.fromPath)
 
-  // Re-saving the same target cannot close a loop: the walk would follow the
-  // edge that is already there, and it did not loop when it was written.
-  if (existing?.toPath !== validated.toPath) {
-    const check = detectRedirectLoop(
-      validated.fromPath,
-      validated.toPath,
-      (path) => {
-        if (path === validated.fromPath) return validated.toPath
-        return known.get(path)?.toPath ?? null
-      },
-    )
-    if (!check.ok) {
+    // Re-saving the same target cannot close a loop: the walk would follow the
+    // edge that is already there, and it did not loop when it was written.
+    if (existing?.toPath !== validated.toPath) {
+      const check = detectRedirectLoop(
+        validated.fromPath,
+        validated.toPath,
+        (path) => {
+          if (path === validated.fromPath) return validated.toPath
+          return known.get(path)?.toPath ?? null
+        },
+      )
+      if (!check.ok) {
+        throw new RedirectError(
+          'loop',
+          check.reason === 'too_long'
+            ? `That target joins a chain longer than ${MAX_REDIRECT_HOPS} hops: ${check.chain.join(' → ')}`
+            : `That redirect would loop: ${check.chain.join(' → ')}`,
+          { chain: check.chain },
+        )
+      }
+    }
+
+    const [row] = await tx
+      .insert(redirects)
+      .values(validated)
+      .onConflictDoUpdate({
+        target: redirects.fromPath,
+        set: {
+          toPath: validated.toPath,
+          statusCode: validated.statusCode,
+          enabled: validated.enabled,
+          note: validated.note,
+          updatedAt: new Date(),
+        },
+      })
+      .returning()
+
+    if (!row) {
       throw new RedirectError(
-        'loop',
-        check.reason === 'too_long'
-          ? `That target joins a chain longer than ${MAX_REDIRECT_HOPS} hops: ${check.chain.join(' → ')}`
-          : `That redirect would loop: ${check.chain.join(' → ')}`,
-        { chain: check.chain },
+        'invalid_input',
+        `The redirect for ${validated.fromPath} was not written.`,
       )
     }
-  }
 
-  const [row] = await db
-    .insert(redirects)
-    .values(validated)
-    .onConflictDoUpdate({
-      target: redirects.fromPath,
-      set: {
-        toPath: validated.toPath,
-        statusCode: validated.statusCode,
-        enabled: validated.enabled,
-        note: validated.note,
-        updatedAt: new Date(),
-      },
-    })
-    .returning()
-
-  if (!row) {
-    throw new RedirectError(
-      'invalid_input',
-      `The redirect for ${validated.fromPath} was not written.`,
-    )
-  }
+    return { row, existing }
+  })
 
   await recordAudit({
     action: existing ? 'redirect.update' : 'redirect.create',
@@ -952,36 +965,41 @@ export async function importRedirectsFromCsv(
   text: string,
   context: RedirectWriteContext = {},
 ): Promise<RedirectImportReport> {
-  const known = await loadRedirectMap()
-  const { rows, skipped, unterminatedQuote } = parseRedirectsCsv(text, {
-    existing: known,
+  const { rows, skipped, unterminatedQuote, created } = await db.transaction(async (tx) => {
+    await tx.execute(sql`lock table ${redirects} in share row exclusive mode`)
+    const known = await loadRedirectMap(tx)
+    const { rows, skipped, unterminatedQuote } = parseRedirectsCsv(text, {
+      existing: known,
+    })
+
+    const created = rows.filter((row) => !known.has(row.fromPath)).length
+
+    if (rows.length > 0) {
+      await tx
+        .insert(redirects)
+        .values(
+          rows.map((row) => ({
+            fromPath: row.fromPath,
+            toPath: row.toPath,
+            statusCode: row.statusCode,
+            enabled: row.enabled,
+            note: row.note,
+          })),
+        )
+        .onConflictDoUpdate({
+          target: redirects.fromPath,
+          set: {
+            toPath: sql`excluded.to_path`,
+            statusCode: sql`excluded.status_code`,
+            enabled: sql`excluded.enabled`,
+            note: sql`excluded.note`,
+            updatedAt: new Date(),
+          },
+        })
+    }
+
+    return { rows, skipped, unterminatedQuote, created }
   })
-
-  const created = rows.filter((row) => !known.has(row.fromPath)).length
-
-  if (rows.length > 0) {
-    await db
-      .insert(redirects)
-      .values(
-        rows.map((row) => ({
-          fromPath: row.fromPath,
-          toPath: row.toPath,
-          statusCode: row.statusCode,
-          enabled: row.enabled,
-          note: row.note,
-        })),
-      )
-      .onConflictDoUpdate({
-        target: redirects.fromPath,
-        set: {
-          toPath: sql`excluded.to_path`,
-          statusCode: sql`excluded.status_code`,
-          enabled: sql`excluded.enabled`,
-          note: sql`excluded.note`,
-          updatedAt: new Date(),
-        },
-      })
-  }
 
   if (rows.length > 0 || skipped.length > 0) {
     await recordAudit({

@@ -14,7 +14,7 @@ These five rules decide every trade-off in the codebase. When in doubt, re-read 
 | # | Principle | Consequence |
 |---|-----------|-------------|
 | 1 | **Files own content, DB owns state** | Article bodies never live in Postgres. The DB stores metadata, indexes, sessions, analytics. |
-| 2 | **Degrade to the filesystem** | If Postgres disappears, every published page still renders from `content/`. |
+| 2 | **Content survives a database outage** | Markdown remains readable and recoverable on disk; the web site still requires Postgres for settings, navigation and indexes. |
 | 3 | **No silent corruption** | A failed save never touches the original file. Writes are atomic or they do not happen. |
 | 4 | **Server first** | Pages are Server Components. Client JS is opt-in, per feature, and justified. |
 | 5 | **Boring where it counts** | Auth, path handling, and file writes use well-understood primitives. Cleverness is reserved for the reading experience. |
@@ -52,7 +52,7 @@ These five rules decide every trade-off in the codebase. When in doubt, re-read 
 ### Read path
 
 `content/*.md` → parse frontmatter → render Markdown (Shiki, server-side) → cache → RSC payload → HTML.
-No database round-trip is required to render an article.
+The article body is read from disk. The complete route still queries Postgres for settings, navigation, index metadata, linked documents and assets.
 
 ### Pages that are not a document
 
@@ -71,14 +71,18 @@ settings, blocks from the index — and `src/app/(site)/about/page.tsx` carries 
 Admin UI
   → Server Action (Zod validation + CSRF + session check)
   → serialize frontmatter + body
-  → lock → write temp file → fsync → atomic rename → fsync(dir)
+  → lock → private prior-byte recovery snapshot + fsync
+  → write temp file → fsync → atomic rename → fsync(dir)
   → snapshot revision (gzip) + content_index upsert
   → invalidate cache, refresh search doc
   → optional git commit
   → revalidatePath
 ```
 
-Every arrow after "serialize" is transactional or idempotent. If step 3 fails, the original file is untouched and the UI says so explicitly.
+The file rename is atomic; filesystem and database changes form separate commit
+boundaries. A failure before rename leaves the original intact. A failure after
+rename reports the committed path/checksum and retains the old bytes in the
+private recovery snapshot, so a later external edit is never blindly rolled back.
 
 ---
 
@@ -190,7 +194,8 @@ Retention: `revisionsMaxPerContent` (default 50) bounds the named revisions of o
 ### Atomic write contract
 
 ```
-acquire lock (content/.locks/<type>-<slug>.lock, O_EXCL, stale after 10s)
+acquire lock (content/.locks/<sha256>.lock, O_EXCL, live PID is never expired)
+  formal mutation: preserve exact old bytes in .recovery/, fsync (0600, dir 0700)
   write content/.tmp/<uuid>.md
   fsync(file)
   rename(tmp, target)          ← atomic on POSIX, same filesystem
@@ -198,9 +203,19 @@ acquire lock (content/.locks/<type>-<slug>.lock, O_EXCL, stale after 10s)
 release lock
 ```
 
-`rename()` is atomic, so a reader either sees the old file or the new one — never a half-written one. If the process dies mid-write, the tmp file is orphaned and the target is intact. Orphan tmp files are swept on startup.
+Formal saves, deletions, overwriting Admin imports, tag mutations, restores and
+scheduled publication opt into prior-byte preservation under the same locks.
+Preparing the snapshot must succeed before the original changes. Successful
+history capture and follow-up processing remove only that attempt's copy;
+disabled revision policy and intentional deletion also permit this cleanup.
+Failed attempts retain their own copy even after a later successful retry.
+Snapshots are private, unindexed, excluded from imports and Git, and included in
+backups. There is no automatic rollback or expiry; operators inspect and recover
+these bytes deliberately as described in the deployment guide.
 
-Every save also writes a pre-write snapshot into `content_revisions`, so even an accepted-but-wrong edit is recoverable.
+`rename()` is atomic, so a reader either sees the old file or the new one — never a half-written one. If the process dies mid-write, the tmp file is orphaned and the target is intact. `ensureContentDirectories` calls `sweepOrphanTempFiles` during initialization, removing only staging files older than one hour and leaving recent files that may belong to active writes. Private recovery snapshots do not expire through this cleanup.
+
+After a successful write, formal saves capture the previous file bytes in `content_revisions`. Autosave stores draft history without committing the Markdown source. Revision failure is reported separately from file-save success; full sync cannot reconstruct bytes already replaced externally by Git or an editor.
 
 ### Content Sync Engine
 
@@ -211,7 +226,7 @@ scan content/**.md
   → checksum each file (sha256 of raw bytes)
   → compare with content_index
       file missing in DB               → INSERT
-      checksum differs                 → UPDATE (+ new revision)
+      checksum differs                 → UPDATE metadata, tags and links
       DB row whose file is gone        → mark deleted / remove row
       unchanged                        → skip
   → reparse frontmatter, refresh tags + links
@@ -225,7 +240,7 @@ Triggers:
 
 A targeted save resolves the links *in* the document against the index as it stands, which is what keeps a save proportional to one document. The links *at* it are resolved in the same pass, from the other side: the document's candidate keys are looked up against `content_links.target_key` (`content_links_target_key_idx`) and any unresolved row whose spelling this document wins — decided by the same predicate the save path uses — is filled in. So a `[[reference]]` written before its target existed becomes an edge when the target is saved, not at the next full sync.
 
-The scan is bounded: `CONTENT_MAX_FILES` (default 5000) guards against a mis-mounted volume turning boot into a filesystem walk of `/`.
+The scan is bounded: `CONTENT_MAX_FILES` (default 5000) guards against an oversized or mis-mounted tree. An extra entry detects truncation; partial scans retain unscanned index rows and revision history instead of treating them as deleted. A targeted sync stats the known path directly. Index mutations share a cross-process filesystem lock. Scans, reads and writes reject symlinks below the configured content root.
 
 ### Git auto-commit
 
@@ -424,7 +439,7 @@ Secrets (`SESSION_SECRET`, `DATABASE_URL`) are validated at boot by `src/env.ts`
 | `/posts/[slug]`, `/notes/[slug]`, `/projects/[slug]` | Dynamic RSC — the body is read from the file on every request | Same |
 | `/graph`, `/admin/*` | Rendered per request, never prerendered — `/graph` renders a client component that fetches `/api/graph` | — |
 | `/rss.xml`, `/atom.xml`, `/rss/[tag]`, `/rss/category/[category]`, `/sitemap.xml` | Route handlers, `force-dynamic` — the build has no database to read | Nothing to invalidate: rendered per request, then cached by shared caches |
-| `/robots.txt` | `MetadataRoute`, prerendered — it reads `SITE_URL` and nothing else | A rebuild |
+| `/robots.txt` | Dynamic `MetadataRoute`, reads runtime `SITE_URL` | Origin changes take effect when the server restarts |
 
 **Why the reading tree is dynamic** (`src/app/(site)/layout.tsx` argues it at length): the content tree is a volume, and the image is meant to be byte-identical whatever is published alongside it. A build that reads the content tree bakes the published state into the image, which fails quietly and in the wrong direction. Rendering on demand costs a handful of indexed queries against a local Postgres per request and buys three things: a publish is visible immediately, the build needs no database, and the image cannot contain content. It also covers the changes that never pass through the admin — a file dropped into `content/`, a `content:sync`, the worker flipping a scheduled post to published. None of those call `revalidatePath`, and under a time-based cache each would be invisible until the window elapsed.
 
@@ -502,5 +517,5 @@ Recorded honestly, because a design document that only lists wins is marketing.
 2. **In-process search index** does not survive to multi-instance deployments. A second replica would either build its own copy (fine, it is cheap) or talk to an external provider.
 3. **Revisions in `bytea`** grow the database. Pruning happens in the write path rather than in a job: a named save trims the document's named revisions to `revisionsMaxPerContent` (50 by default) as soon as the new one is written, and autosaves are trimmed by the store within its own transaction to a larger bound of their own. The bound is therefore per document — deleting a document cascades its history away, and no background task has to run for the database to stay finite.
 4. **Git auto-commit** shells out to `git` and assumes the content directory is already a repository (or inside one) with a configured identity — a container needs git installed for it to do anything. It is off by default, needs two switches to agree, and never pushes. Commits are serialised within one process only; two processes committing at once contend on the index lock and the loser is logged and skipped.
-5. **No multi-author workflow.** One administrator account, and authorization is authentication: the only question any route asks is whether the request carries a valid session. There is no role column, no review queue and no editorial approval step.
+5. **No editorial multi-author workflow.** The schema retains an owner/editor role enum, but current admin authorization requires authentication rather than role-specific permissions. There is no public registration, user-management UI, review queue or editorial approval step.
 6. **Analytics are aggregate-only by design.** No funnels, no sessions, no cohorts — this is a deliberate product boundary, not an unfinished feature.

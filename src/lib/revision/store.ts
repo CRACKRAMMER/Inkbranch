@@ -6,8 +6,10 @@ import { z } from 'zod'
 import { db } from '@/lib/db'
 import { contentIndex, contentRevisions, type ContentType } from '@/lib/db/schema'
 import { parseFrontmatter, serializeFrontmatter } from '@/lib/content/frontmatter'
-import { checksumOf } from '@/lib/content/reader'
+import { checksumOf, parseDocument } from '@/lib/content/reader'
+import { documentPath } from '@/lib/content/paths'
 import { writeRawDocument, type WriteResult } from '@/lib/content/writer'
+import { discardRecoverySnapshot } from '@/lib/content/recovery'
 import { humanizeFilename } from '@/lib/content/derive'
 import { diffLines, type DiffResult } from './diff'
 
@@ -603,7 +605,21 @@ export async function restoreRevision(
     )
   }
 
-  const written = await writeRawDocument(document.path, revision.content)
+  // A valid gzip is not necessarily a valid document: imports can preserve a
+  // malformed state, and restoring it must not destroy the currently readable
+  // file before the parser notices. Validate the target type before writing.
+  try {
+    parseDocument({
+      relativePath: document.path,
+      absolutePath: documentPath(document.path),
+      raw: revision.content,
+      stat: { mtime: new Date(), size: Buffer.byteLength(revision.content, 'utf8') },
+    })
+  } catch (error) {
+    throw new RevisionError('The revision is not valid Markdown content for this document; nothing was written.', error)
+  }
+
+  const written = await writeRawDocument(document.path, revision.content, { preservePrevious: true })
 
   const parsed = parseFrontmatter(revision.content)
   const captured = await captureRevision({
@@ -616,8 +632,9 @@ export async function restoreRevision(
     reason: 'restore',
     actorId: actorId ?? null,
   })
+  if (!captured.error) await discardRecoverySnapshot(written.recoveryPath)
 
-  return { ...written, restoredRevisionId: id, revision: captured }
+  return { ...written, ...(captured.error ? {} : { recoveryPath: undefined }), restoredRevisionId: id, revision: captured }
 }
 
 /* -------------------------------------------------------------------------- */

@@ -22,6 +22,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterAll } from 'vitest'
+import { assertSeparateTestDatabase } from './database-safety'
 
 const environment = process.env as Record<string, string | undefined>
 
@@ -31,8 +32,12 @@ environment.NODE_ENV ??= 'test'
 // and named so that a leak into a real deployment is obvious on sight.
 environment.SESSION_SECRET ??= 'test-only-secret-not-for-any-real-deployment-0000'
 
-environment.DATABASE_URL ??=
+// Both configs select the test target before setup. The unit config must also
+// override an ambient application URL: DB-backed sections run when the caller
+// supplies TEST_DATABASE_URL, even through the unit command.
+environment.DATABASE_URL =
   environment.TEST_DATABASE_URL ?? 'postgres://unused:unused@127.0.0.1:1/unused'
+assertSeparateTestDatabase(environment.DATABASE_URL)
 
 environment.ANALYTICS_ENABLED ??= '0'
 environment.WORKER_INTERVAL_MS ??= '60000'

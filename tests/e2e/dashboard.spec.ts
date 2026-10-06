@@ -123,6 +123,31 @@ test('the dashboard reports the installation it is running against', async ({ pa
   await signIn(page)
   await expect(page.getByRole('heading', { name: 'Dashboard', level: 1 })).toBeVisible()
 
+  await test.step('keeps the mobile table usable and returns focus after closing navigation', async () => {
+    await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(1)
+    const counts = page.getByRole('region', { name: 'Content counts by type and status' })
+    await counts.focus()
+    await expect(counts).toBeFocused()
+    if (await counts.evaluate(node => node.scrollWidth > node.clientWidth)) {
+      await page.keyboard.press('ArrowRight')
+      await expect.poll(() => counts.evaluate(node => node.scrollLeft)).toBeGreaterThan(0)
+    }
+    const menu = page.getByRole('button', { name: 'Menu', exact: true })
+    if (await menu.isVisible()) {
+      await menu.focus()
+      await page.keyboard.press('Enter')
+      const dialog = page.getByRole('dialog')
+      await expect(dialog).toBeVisible()
+      for (let index = 0; index < 15; index += 1) {
+        await page.keyboard.press('Tab')
+        await expect.poll(() => dialog.evaluate(node => node.contains(document.activeElement))).toBe(true)
+      }
+      await page.keyboard.press('Escape')
+      await expect(dialog).toBeHidden()
+      await expect(menu).toBeFocused()
+    }
+  })
+
   const client = new Client({ connectionString: e2eDatabaseUrl() })
   await client.connect()
 

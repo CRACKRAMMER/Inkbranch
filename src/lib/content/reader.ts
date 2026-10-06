@@ -3,7 +3,7 @@ import type { Dirent } from 'node:fs'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { env } from '@/env'
-import { toPosix } from '@/lib/security/paths'
+import { assertNoSymlinkPath, toPosix } from '@/lib/security/paths'
 import { deriveContent, type Heading } from './derive'
 import { parseFrontmatter, type ParsedDocument } from './frontmatter'
 import { normalizeTagName } from '@/lib/utils/text'
@@ -156,9 +156,11 @@ export function invalidateContentCache(relativePath?: string): void {
  */
 export async function readDocument(
   relativePath: string,
+  options: { fresh?: boolean } = {},
 ): Promise<ContentDocument | null> {
   const key = toPosix(relativePath)
   const absolutePath = documentPath(key)
+  await assertNoSymlinkPath(CONTENT_ROOT, absolutePath, 'document')
 
   let stat: Awaited<ReturnType<typeof fs.stat>>
   try {
@@ -171,7 +173,7 @@ export async function readDocument(
   if (!stat.isFile()) return null
 
   const cached = cache.get(key)
-  if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
+  if (!options.fresh && cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
     return cached.document
   }
 
@@ -180,6 +182,28 @@ export async function readDocument(
 
   cacheSet(key, { mtimeMs: stat.mtimeMs, size: stat.size, document })
   return document
+}
+
+/** Stat one known document without scanning the tree or applying its scan cap. */
+export async function statContentFile(relativePath: string): Promise<ContentFileStat | null> {
+  const key = toPosix(relativePath)
+  const located = parseRelativePath(key)
+  if (!located) throw new ContentReadError(`Not a recognised content path: ${key}`, key)
+  const absolutePath = documentPath(key)
+  await assertNoSymlinkPath(CONTENT_ROOT, absolutePath, 'document')
+  const stat = await fs.stat(absolutePath).catch((error: unknown) => {
+    if (isNotFound(error)) return null
+    throw error
+  })
+  if (!stat?.isFile()) return null
+  return {
+    relativePath: key,
+    absolutePath,
+    type: located.type,
+    filename: located.filename,
+    size: stat.size,
+    mtime: stat.mtime,
+  }
 }
 
 interface ParseInput {
@@ -318,6 +342,7 @@ export async function scanContentFiles(
 
   for (const [type, dir] of typeDirs) {
     const dirPath = path.join(CONTENT_ROOT, dir)
+    await assertNoSymlinkPath(CONTENT_ROOT, dirPath, 'content directory')
 
     let entries: Dirent[]
     try {
@@ -333,16 +358,17 @@ export async function scanContentFiles(
 
       // Documents are flat within a type directory. Nested folders are ignored
       // rather than silently imported with a mangled slug.
-      if (!entry.isFile() && !entry.isSymbolicLink()) continue
+      if (!entry.isFile()) continue
       if (!isMarkdownFile(entry.name)) continue
 
       const absolutePath = path.join(dirPath, entry.name)
+      await assertNoSymlinkPath(CONTENT_ROOT, absolutePath, 'document')
       let stat: Awaited<ReturnType<typeof fs.stat>>
       try {
         stat = await fs.stat(absolutePath)
-      } catch {
-        // A broken symlink or a file deleted mid-scan; skip it.
-        continue
+      } catch (error) {
+        if (isNotFound(error)) continue // A file deleted mid-scan.
+        throw error
       }
       if (!stat.isFile()) continue
 

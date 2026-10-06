@@ -4,6 +4,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
 import { tagSlug } from '@/lib/utils/slug'
 import { hasTestDatabase, testContentRoot } from '../setup'
+import { runMigrations } from '@/lib/db/migrate'
 
 /**
  * The tag nothing carries.
@@ -64,6 +65,7 @@ function post(title: string, tags: string[], body = 'Body.'): string {
 
 describe.skipIf(!hasTestDatabase)('the tag nothing carries', () => {
   beforeAll(async () => {
+    await runMigrations(process.env.TEST_DATABASE_URL as string)
     await fs.mkdir(POSTS, { recursive: true })
   })
 

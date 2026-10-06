@@ -10,6 +10,15 @@
 .env
 .env.*
 !.env.example
+backups/
+**/*.tar.zst
+**/*.tar.zst.partial
+**/*.dump
+config.restored*/
+.restore.lock
+content.before-*/
+uploads.before-*/
+public/uploads.before-*/
 
 # The author's content and media. Mounted as volumes at run time, never baked
 # into an image — the image is the application, and the application is the same
@@ -38,6 +47,9 @@ dist/
 
 # Tests, fixtures and their reports. Not shipped, and their fixtures are large.
 tests/
+playwright.config.ts
+vitest.config.ts
+vitest.integration.config.ts
 playwright-report/
 test-results/
 coverage/

@@ -110,6 +110,7 @@ export function AssetUpload() {
               ref={inputRef}
               id="asset-files"
               type="file"
+              aria-label="Files to upload"
               multiple
               accept={ACCEPT}
               className="sr-only"

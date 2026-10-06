@@ -1,4 +1,5 @@
 import path from 'node:path'
+import { createHash } from 'node:crypto'
 import { env } from '@/env'
 import {
   PathSecurityError,
@@ -31,6 +32,9 @@ export const TMP_DIR = joinRuntimePath(CONTENT_ROOT, '.tmp')
 
 /** Advisory lock files, one per document being written. */
 export const LOCK_DIR = joinRuntimePath(CONTENT_ROOT, '.locks')
+
+/** Private previous versions retained when post-write bookkeeping fails. */
+export const RECOVERY_DIR = joinRuntimePath(CONTENT_ROOT, '.recovery')
 
 export const CONTENT_TYPE_DIRS: Record<ContentType, string> = {
   post: 'posts',
@@ -153,7 +157,7 @@ export function requiredContentDirs(): string[] {
 
 /** Path of a document's lock file. Slug is hashed to stay within name limits. */
 export function lockPath(relativePath: string): string {
-  const safe = relativePath.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 100)
+  const safe = createHash('sha256').update(relativePath).digest('hex')
   return assertInside(LOCK_DIR, joinRuntimePath(LOCK_DIR, `${safe}.lock`), 'lock file')
 }
 

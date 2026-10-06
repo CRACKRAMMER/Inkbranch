@@ -1,7 +1,10 @@
 import { expect, test } from '@playwright/test'
 import sharp from 'sharp'
+import fs from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
 
-import { hasE2eDatabase } from './environment'
+import { E2E_UPLOAD_DIR, hasE2eDatabase } from './environment'
 import { signIn, uniqueSlug } from './support'
 
 /**
@@ -65,6 +68,7 @@ test('a picture too large for a grid cell is served to the library scaled down',
 
   await test.step('uploads it', async () => {
     await page.goto('/admin/assets')
+    await expect(page.getByLabel('Files to upload', { exact: true })).toHaveAttribute('type', 'file')
 
     // Through the button a person clicks rather than by setting the hidden
     // input directly, so the picker wiring is part of what runs.
@@ -140,5 +144,87 @@ test('a picture too large for a grid cell is served to the library scaled down',
 
     const row = page.getByRole('row', { name: new RegExp(name) })
     await expect(row).toContainText(`thumb 480×320`)
+    await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(1)
   })
+
+  await test.step('cancels deletion and returns keyboard focus to the asset action', async () => {
+    const row = page.getByRole('row', { name: new RegExp(name) })
+    const trigger = row.getByRole('button', { name: 'Delete', exact: true })
+    await trigger.focus()
+    await page.keyboard.press('Enter')
+    const dialog = page.getByRole('dialog')
+    await expect(dialog).toBeVisible()
+    await expect(dialog.getByText(/Nothing references it/)).toBeVisible()
+    for (let index = 0; index < 8; index += 1) {
+      await page.keyboard.press('Tab')
+      await expect.poll(() => dialog.evaluate(node => node.contains(document.activeElement))).toBe(true)
+    }
+    await dialog.getByRole('button', { name: 'Cancel', exact: true }).click()
+    await expect(dialog).toBeHidden()
+    await expect(trigger).toBeFocused()
+    expect((await page.request.get(originalUrl)).status()).toBe(200)
+    await page.keyboard.press('Enter')
+    await expect(dialog).toBeVisible()
+    await page.keyboard.press('Escape')
+    await expect(dialog).toBeHidden()
+    await expect(trigger).toBeFocused()
+    await expect(row).toBeVisible()
+  })
+
+  await test.step('deletes from the detail page and returns to the library', async () => {
+    await page.getByRole('row', { name: new RegExp(name) }).getByRole('link', { name }).click()
+    await page.getByRole('button', { name: 'Delete', exact: true }).click()
+    const dialog = page.getByRole('dialog')
+    await expect(dialog.getByText(/Nothing references it/)).toBeVisible()
+    await dialog.getByRole('button', { name: 'Delete', exact: true }).click()
+    await page.waitForURL('/admin/assets')
+    await expect(page.locator('figure').filter({ hasText: name })).toHaveCount(0)
+    expect((await page.request.get(originalUrl)).status()).toBe(404)
+    expect((await page.request.get(thumbnailUrl)).status()).toBe(404)
+  })
+})
+
+test('default upload URLs use the sandboxed route and cannot expose private files', async ({ request }) => {
+  const marker = uniqueSlug()
+  const fixtureRoot = path.join(E2E_UPLOAD_DIR, marker)
+  const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'inkbranch-e2e-asset-jail-'))
+  const temporary = path.join(E2E_UPLOAD_DIR, '.tmp', `${marker}.svg`)
+  const svg = '<svg xmlns="http://www.w3.org/2000/svg"><rect width="20" height="10"/></svg>'
+  try {
+    await fs.mkdir(fixtureRoot, { recursive: true })
+    await fs.mkdir(path.dirname(temporary), { recursive: true })
+    await fs.writeFile(path.join(fixtureRoot, 'safe.svg'), svg)
+    await fs.writeFile(temporary, '<svg>partial private upload</svg>')
+    await fs.writeFile(path.join(outside, 'private.txt'), 'private fixture outside upload tree')
+    await fs.symlink(path.join(outside, 'private.txt'), path.join(fixtureRoot, 'linked.txt'))
+    await fs.symlink(outside, path.join(fixtureRoot, 'linked-directory'))
+
+    for (const prefix of ['/uploads', '/api/assets']) {
+      const safe = await request.get(`${prefix}/${marker}/safe.svg`)
+      expect(safe.status()).toBe(200)
+      expect(await safe.text()).toBe(svg)
+      expect(safe.headers()['content-type']).toBe('image/svg+xml')
+      expect(safe.headers()['content-security-policy']).toBe("default-src 'none'; sandbox")
+      expect(safe.headers()['x-content-type-options']).toBe('nosniff')
+
+      for (const relative of [`${marker}/linked.txt`, `${marker}/linked-directory/private.txt`]) {
+        const denied = await request.get(`${prefix}/${relative}`)
+        expect(denied.status()).toBe(400)
+        expect(await denied.text()).not.toContain('private fixture outside upload tree')
+        expect(denied.headers()['cache-control']).toBe('no-store')
+      }
+      const partial = await request.get(`${prefix}/.tmp/${marker}.svg`)
+      expect(partial.status()).toBe(404)
+      expect(await partial.text()).not.toContain('partial private upload')
+      expect(partial.headers()['cache-control']).toBe('no-store')
+
+      const missing = await request.get(`${prefix}/${marker}/missing.svg`)
+      expect(missing.status()).toBe(404)
+      expect(missing.headers()['cache-control']).toBe('no-store')
+    }
+  } finally {
+    await fs.rm(fixtureRoot, { recursive: true, force: true })
+    await fs.rm(temporary, { force: true })
+    await fs.rm(outside, { recursive: true, force: true })
+  }
 })

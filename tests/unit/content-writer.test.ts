@@ -1,10 +1,12 @@
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { parseFrontmatter } from '@/lib/content/frontmatter'
-import { CONTENT_ROOT, LOCK_DIR, TMP_DIR, documentPath, lockPath } from '@/lib/content/paths'
-import { readDocument } from '@/lib/content/reader'
+import { CONTENT_ROOT, LOCK_DIR, TMP_DIR, RECOVERY_DIR, documentPath, lockPath } from '@/lib/content/paths'
+import { discardRecoverySnapshot } from '@/lib/content/recovery'
+import { readDocument, scanContentFiles } from '@/lib/content/reader'
+import { PathSecurityError } from '@/lib/security/paths'
 import {
   ContentLockError,
   ContentWriteError,
@@ -14,6 +16,7 @@ import {
   sweepOrphanTempFiles,
   updateDocument,
   writeRawDocument,
+  withContentIndexLock,
 } from '@/lib/content/writer'
 
 /**
@@ -40,7 +43,61 @@ function uniqueSlug(prefix = 'doc'): string {
 
 const documents: string[] = []
 
+describe('private prior-byte recovery', () => {
+  it.each(['update', 'raw', 'import', 'delete'] as const)('preserves exact private bytes for an opted-in %s mutation', async (kind) => {
+    const slug = uniqueSlug('recovery')
+    const created = await createDocument({ type: 'post', slug, data: { title: 'Recovery', date: '2024-01-01' }, body: '旧内容。\n' })
+    documents.push(created.absolutePath)
+    const old = (await fs.readFile(created.absolutePath, 'utf8')).replace(/\n/g, '\r\n')
+    await fs.writeFile(created.absolutePath, old)
+    const replacement = old.replace('旧内容。', 'New content.')
+    const result = kind === 'update'
+      ? await updateDocument(created.relativePath, (current) => ({ data: parseFrontmatter(current.raw).data, body: 'New content.\n' }), { preservePrevious: true })
+      : kind === 'raw'
+        ? await writeRawDocument(created.relativePath, replacement, { preservePrevious: true })
+        : kind === 'import'
+          ? await importDocument({ type: 'post', slug, content: replacement, overwrite: true, preservePrevious: true })
+          : await deleteDocument(created.relativePath, { preservePrevious: true })
+    expect(result?.recoveryPath).toMatch(/^\.recovery\/.+\.snapshot$/)
+    const snapshot = path.join(CONTENT_ROOT, result!.recoveryPath!)
+    expect(await fs.readFile(snapshot, 'utf8')).toBe(old)
+    expect((await fs.stat(snapshot)).mode & 0o777).toBe(0o600)
+    expect((await scanContentFiles()).some((entry) => entry.absolutePath === snapshot)).toBe(false)
+    await discardRecoverySnapshot(result!.recoveryPath)
+    await expect(fs.stat(snapshot)).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  it('does not leave snapshots for ordinary library callers', async () => {
+    const slug = uniqueSlug('no-recovery')
+    const created = await createDocument({ type: 'post', slug, data: { title: 'Normal' }, body: 'Original.\n' })
+    documents.push(created.absolutePath)
+    const before = await fs.readdir(RECOVERY_DIR).catch(() => [])
+    const result = await updateDocument(created.relativePath, (current) => ({ data: parseFrontmatter(current.raw).data, body: 'Updated.\n' }))
+    expect(result.recoveryPath).toBeUndefined()
+    expect(await fs.readdir(RECOVERY_DIR).catch(() => [])).toEqual(before)
+  })
+
+  it('rejects a symlinked recovery directory before changing the source or outside files', async () => {
+    const slug = uniqueSlug('recovery-jail')
+    const created = await createDocument({ type: 'post', slug, data: { title: 'Jailed' }, body: 'Original.\n' })
+    documents.push(created.absolutePath)
+    const old = await fs.readFile(created.absolutePath, 'utf8')
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'inkbranch-recovery-outside-'))
+    await fs.rm(RECOVERY_DIR, { recursive: true, force: true })
+    await fs.symlink(outside, RECOVERY_DIR)
+    try {
+      await expect(updateDocument(created.relativePath, (current) => ({ data: parseFrontmatter(current.raw).data, body: 'Refused.\n' }), { preservePrevious: true })).rejects.toBeInstanceOf(ContentWriteError)
+      expect(await fs.readFile(created.absolutePath, 'utf8')).toBe(old)
+      expect(await fs.readdir(outside)).toEqual([])
+    } finally {
+      await fs.unlink(RECOVERY_DIR)
+      await fs.rm(outside, { recursive: true, force: true })
+    }
+  })
+})
+
 afterEach(async () => {
+  vi.restoreAllMocks()
   // Documents written by the test that just ran, plus every lock file — the
   // timeout test deliberately leaves a lock behind, because a caller that never
   // acquired one has nothing to release it with.
@@ -213,6 +270,43 @@ describe('locking', () => {
 })
 
 describe('updateDocument', () => {
+  it('preserves original bytes when atomic rename fails after writing the temporary file', async () => {
+    const created = await createDocument({
+      type: 'post', slug: uniqueSlug('disk-full'), data: { title: 'Original' }, body: 'Safe original.\n',
+    })
+    documents.push(created.absolutePath)
+    const original = await fs.readFile(created.absolutePath, 'utf8')
+    const rename = vi.spyOn(fs, 'rename').mockRejectedValueOnce(
+      Object.assign(new Error('disk full'), { code: 'ENOSPC' }),
+    )
+    await expect(updateDocument(created.relativePath, () => ({
+      data: { title: 'Replacement' }, body: 'Never committed.\n',
+    }))).rejects.toBeInstanceOf(ContentWriteError)
+    rename.mockRestore()
+    expect(await fs.readFile(created.absolutePath, 'utf8')).toBe(original)
+    expect((await fs.readdir(TMP_DIR)).filter((name) => name.includes('disk-full'))).toEqual([])
+  })
+
+  it('reads external edits freshly even when size and mtime match the cached file', async () => {
+    const created = await createDocument({
+      type: 'post', slug: uniqueSlug('fresh'), data: { title: 'Fresh' }, body: 'AAAA\n',
+    })
+    documents.push(created.absolutePath)
+    // Fix the timestamp exactly, rather than relying on sub-ms fs precision.
+    const timestamp = new Date('2026-01-01T00:00:00.000Z')
+    await fs.utimes(created.absolutePath, timestamp, timestamp)
+    await readDocument(created.relativePath)
+    const original = await fs.readFile(created.absolutePath, 'utf8')
+    await fs.writeFile(created.absolutePath, original.replace('AAAA', 'BBBB'))
+    await fs.utimes(created.absolutePath, timestamp, timestamp)
+    let body = ''
+    await updateDocument(created.relativePath, (current) => {
+      body = current.body
+      return { data: { title: current.title }, body: `${current.body}Appended.\n` }
+    })
+    expect(body).toContain('BBBB')
+    expect(await fs.readFile(created.absolutePath, 'utf8')).toContain('BBBB')
+  })
   it('returns the previous contents so a revision can be recorded', async () => {
     const slug = uniqueSlug()
     const created = await createDocument({
@@ -371,6 +465,41 @@ describe('updateDocument', () => {
   })
 })
 
+describe('content index lock ownership', () => {
+  it('recovers an old lock after its PID is reused by a restarted process', async () => {
+    // The production container commonly restarts as PID 1. Simulate the old
+    // owner having the current PID but a different kernel process identity.
+    if (process.platform !== 'linux') return
+    const file = lockPath('content-index-sync')
+    await fs.mkdir(LOCK_DIR, { recursive: true })
+    await fs.writeFile(file, JSON.stringify({
+      pid: process.pid, token: 'previous-incarnation', identity: 'previous-boot:0',
+    }))
+    const old = new Date(Date.now() - 60_000)
+    await fs.utimes(file, old, old)
+    expect(await withContentIndexLock(async () => 'recovered')).toBe('recovered')
+    await expect(fs.stat(file)).rejects.toThrow()
+  })
+
+  it('does not steal an old lock held by this live process', async () => {
+    const file = lockPath('content-index-sync')
+    await fs.mkdir(LOCK_DIR, { recursive: true })
+    await fs.writeFile(file, JSON.stringify({ pid: process.pid, token: 'active-owner' }))
+    const old = new Date(Date.now() - 60_000)
+    await fs.utimes(file, old, old)
+    await expect(withContentIndexLock(async () => 'must not run')).rejects.toBeInstanceOf(ContentLockError)
+    expect(JSON.parse(await fs.readFile(file, 'utf8')).token).toBe('active-owner')
+  }, 10_000)
+
+  it('does not remove a replacement lock when its original owner releases', async () => {
+    const file = lockPath('content-index-sync')
+    await withContentIndexLock(async () => {
+      await fs.writeFile(file, JSON.stringify({ pid: process.pid, token: 'different-owner' }))
+    })
+    expect(JSON.parse(await fs.readFile(file, 'utf8')).token).toBe('different-owner')
+  })
+})
+
 describe('deleteDocument', () => {
   it('returns the contents so a final revision can be kept', async () => {
     const slug = uniqueSlug()
@@ -392,6 +521,25 @@ describe('deleteDocument', () => {
 })
 
 describe('writeRawDocument and importDocument', () => {
+  it('refuses a raw restore whose slug was claimed by an unsynced external file', async () => {
+    const originalSlug = uniqueSlug('old-slug')
+    const currentSlug = uniqueSlug('current-slug')
+    const created = await createDocument({
+      type: 'post', slug: uniqueSlug('restore-target'),
+      data: { title: 'Current', slug: currentSlug }, body: 'Current safe bytes.\n',
+    })
+    documents.push(created.absolutePath)
+    const claimed = documentPath(`posts/${uniqueSlug('externally-added')}.md`)
+    await fs.writeFile(claimed, `---\ntitle: Claimed\nslug: ${originalSlug}\n---\n\nOther file.\n`)
+    documents.push(claimed)
+    const current = await fs.readFile(created.absolutePath, 'utf8')
+    const other = await fs.readFile(claimed, 'utf8')
+    const snapshot = `---\ntitle: Old\nslug: ${originalSlug}\n---\n\nOld snapshot.\n`
+    await expect(writeRawDocument(created.relativePath, snapshot)).rejects.toThrow('already uses the slug')
+    expect(await fs.readFile(created.absolutePath, 'utf8')).toBe(current)
+    expect(await fs.readFile(claimed, 'utf8')).toBe(other)
+  })
+
   it('reproduces raw bytes exactly, including a frontmatter comment', async () => {
     const slug = uniqueSlug()
     const created = await createDocument({
@@ -431,7 +579,7 @@ describe('writeRawDocument and importDocument', () => {
     const directory = documentPath(relativePath)
     await fs.mkdir(directory, { recursive: true })
 
-    const failure = await writeRawDocument(relativePath, 'never written\n').catch(
+    const failure = await writeRawDocument(relativePath, `---\ntitle: Not written\nslug: ${slug}\n---\n\nNever written.\n`).catch(
       (error: unknown) => error,
     )
 
@@ -492,6 +640,17 @@ describe('writeRawDocument and importDocument', () => {
 })
 
 describe('sweepOrphanTempFiles', () => {
+  it('retries directory initialization after a corrected filesystem failure', async () => {
+    vi.resetModules()
+    const isolatedWriter = await import('@/lib/content/writer')
+    const mkdir = vi.spyOn(fs, 'mkdir').mockRejectedValueOnce(
+      Object.assign(new Error('temporary permission failure'), { code: 'EACCES' }),
+    )
+    await expect(isolatedWriter.ensureContentDirectories()).rejects.toThrow('temporary permission failure')
+    mkdir.mockRestore()
+    await expect(isolatedWriter.ensureContentDirectories()).resolves.toBeUndefined()
+  })
+
   it('removes stale temporaries and keeps recent ones', async () => {
     await fs.mkdir(TMP_DIR, { recursive: true })
     const stale = path.join(TMP_DIR, 'stale-test.tmp')
@@ -513,6 +672,26 @@ describe('sweepOrphanTempFiles', () => {
 })
 
 describe('readDocument', () => {
+  it('refuses reading, replacing and deleting a symlink to an external document', async () => {
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'inkbranch-content-outside-'))
+    const external = path.join(outside, 'secret.md')
+    const target = documentPath(`posts/${uniqueSlug('linked')}.md`)
+    const raw = '---\ntitle: Secret\n---\n\nExternal bytes.\n'
+    await fs.mkdir(path.dirname(target), { recursive: true })
+    await fs.writeFile(external, raw)
+    await fs.symlink(external, target)
+    try {
+      const relative = path.relative(CONTENT_ROOT, target)
+      await expect(readDocument(relative)).rejects.toBeInstanceOf(PathSecurityError)
+      await expect(writeRawDocument(relative, 'overwrite')).rejects.toBeInstanceOf(PathSecurityError)
+      await expect(deleteDocument(relative)).rejects.toBeInstanceOf(PathSecurityError)
+      expect((await scanContentFiles()).some((file) => file.absolutePath === target)).toBe(false)
+      expect(await fs.readFile(external, 'utf8')).toBe(raw)
+    } finally {
+      await fs.unlink(target)
+      await fs.rm(outside, { recursive: true, force: true })
+    }
+  })
   it('parses frontmatter, body and derived metadata', async () => {
     const slug = uniqueSlug()
     const created = await createDocument({

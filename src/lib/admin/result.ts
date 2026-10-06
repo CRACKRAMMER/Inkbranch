@@ -38,9 +38,22 @@ export interface ActionFailure {
   /**
    * A stable discriminator for the few failures a UI reacts to differently.
    * Messages are for people and will be reworded; this is what a component is
-   * allowed to branch on. Currently only `stale`, which offers an overwrite.
+   * allowed to branch on. `content-committed` confirms a filesystem mutation
+   * even when the index, history or another follow-up step failed.
    */
-  code?: 'stale'
+  code?: 'stale' | 'content-committed'
+  committed?: CommittedContentChange[]
+}
+
+/** A filesystem change already completed before an action's later failure. */
+export interface CommittedContentChange {
+  path: string
+  slug: string
+  operation: 'write' | 'delete'
+  /** The bytes this action wrote. Deleted files have no current checksum. */
+  checksum: string | null
+  /** Exact previous bytes, relative to the private content root, after failure. */
+  recoveryPath?: string
 }
 
 export type ActionResult<T> = ActionSuccess<T> | ActionFailure

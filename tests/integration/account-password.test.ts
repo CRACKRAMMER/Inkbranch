@@ -1,12 +1,13 @@
 import { randomUUID } from 'node:crypto'
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { eq, inArray } from 'drizzle-orm'
 
 import { hasTestDatabase } from '../setup'
 
 import { PasswordChangeError, changePassword } from '@/lib/auth/account'
 import { hashPassword, verifyPassword } from '@/lib/auth/password'
-import { createSession, resolveSession } from '@/lib/auth/session-store'
+import * as passwordModule from '@/lib/auth/password'
+import { CredentialChangedError, createSession, resolveSession } from '@/lib/auth/session-store'
 import { db } from '@/lib/db'
 import { runMigrations } from '@/lib/db/migrate'
 import { auditLogs, sessions, users } from '@/lib/db/schema'
@@ -222,6 +223,60 @@ describeWithDatabase('changing the password', () => {
     // And it is gone, not merely refused: a row that authenticates nothing has
     // no reason to stay in a table of live sessions.
     expect((await userSessions(user.id)).map((row) => row.id)).toEqual([kept.session.id])
+  })
+
+  it('cannot mint a current session from a credential verified before a password change', async () => {
+    const user = await makeUser()
+    const kept = await createSession(user.id)
+    expect(await verifyPassword(user.passwordHash, OLD_PASSWORD)).toBe(true)
+
+    await changePassword({
+      userId: user.id,
+      currentPassword: OLD_PASSWORD,
+      newPassword: NEW_PASSWORD,
+      keepSessionId: kept.session.id,
+    }, { ipHash: null })
+
+    await expect(createSession(user.id, {
+      expectedSessionVersion: user.sessionVersion,
+    })).rejects.toBeInstanceOf(CredentialChangedError)
+    expect((await userSessions(user.id)).map((row) => row.id)).toEqual([kept.session.id])
+  })
+
+  it('allows only one of two password changes that verified the same retired credential', async () => {
+    const user = await makeUser()
+    const first = await createSession(user.id)
+    const second = await createSession(user.id)
+    const originalHash = passwordModule.hashPassword
+    let arrived = 0
+    let release!: () => void
+    const ready = new Promise<void>((resolve) => { release = resolve })
+    const spy = vi.spyOn(passwordModule, 'hashPassword').mockImplementation(async (value) => {
+      // Both calls have verified the original hash by the time hashing starts.
+      arrived += 1
+      if (arrived === 2) release()
+      await ready
+      return originalHash(value)
+    })
+
+    try {
+      const outcomes = await Promise.allSettled([
+        changePassword({ userId: user.id, currentPassword: OLD_PASSWORD,
+          newPassword: NEW_PASSWORD, keepSessionId: first.session.id }, { ipHash: null }),
+        changePassword({ userId: user.id, currentPassword: OLD_PASSWORD,
+          newPassword: 'another-password-that-must-not-overwrite',
+          keepSessionId: second.session.id }, { ipHash: null }),
+      ])
+      expect(outcomes.filter((result) => result.status === 'fulfilled')).toHaveLength(1)
+      const refused = outcomes.find((result) => result.status === 'rejected')
+      expect(refused).toMatchObject({
+        status: 'rejected', reason: { refusal: 'credential-changed' },
+      })
+      expect((await readUser(user.id)).sessionVersion).toBe(user.sessionVersion + 1)
+      expect(await userSessions(user.id)).toHaveLength(1)
+    } finally {
+      spy.mockRestore()
+    }
   })
 
   it('records the change in the audit log without recording a credential', async () => {

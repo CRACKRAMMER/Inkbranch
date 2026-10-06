@@ -86,7 +86,10 @@ function toRgb([L, C, H]: [number, number, number]): [number, number, number] {
 
 /** WCAG 2.1 relative luminance. */
 function luminance(token: [number, number, number]): number {
-  const [r, g, b] = toRgb(token)
+  return rgbLuminance(toRgb(token))
+}
+
+function rgbLuminance([r, g, b]: [number, number, number]): number {
   const channel = (value: number) =>
     value <= 0.03928 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4
   return 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b)
@@ -168,6 +171,38 @@ const TEXT_TOKENS = [
   'danger',
   'info',
 ] as const
+
+// Status text is painted over its own translucent fill. A token that passes
+// on the plain canvas can still fail on the badge, as published's green did.
+const badges = readFileSync(
+  fileURLToPath(new URL('../../src/components/ui/badge.tsx', import.meta.url)),
+  'utf8',
+)
+const successFill = /bg-success\/(\d+)/.exec(badges)?.[1]
+if (!successFill) throw new Error('The success badge fill could not be read')
+const successAlpha = Number(successFill) / 100
+
+describe.each([
+  ['light', light],
+  ['dark', dark],
+] as const)('the %s published badge', (name, theme) => {
+  it('clears AA on its actual translucent success fill', () => {
+    const token = theme.get('success')
+    if (!token) throw new Error('The success token is missing')
+    const foreground = toRgb(token)
+    for (const background of BACKGROUNDS) {
+      const baseToken = theme.get(background)
+      if (!baseToken) throw new Error(`The ${background} token is missing`)
+      const base = toRgb(baseToken)
+      const painted = foreground.map((channel, index) =>
+        channel * successAlpha + (base[index] as number) * (1 - successAlpha),
+      ) as [number, number, number]
+      const [lighter, darker] = [rgbLuminance(foreground), rgbLuminance(painted)].sort((a, b) => b - a)
+      const ratio = ((lighter as number) + 0.05) / ((darker as number) + 0.05)
+      expect(ratio, `${name} published on ${background}: ${ratio.toFixed(3)}:1`).toBeGreaterThanOrEqual(4.5)
+    }
+  })
+})
 
 describe.each([
   ['light', light],

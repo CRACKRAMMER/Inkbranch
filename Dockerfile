@@ -2,10 +2,11 @@
 #
 # Three stages, and the shape is chosen for two properties.
 #
-# **The runtime image contains no package manager and no `node_modules`.** The
+# **The runtime image contains only traced runtime dependencies.** The
 # build produces a standalone server bundle, and the final stage copies that
 # bundle plus the static assets. What ships is the application and its traced
-# dependencies — nothing that can be used to install anything.
+# dependencies. Corepack remains in the Node base image; no full pnpm install
+# or development dependency tree is copied into the runtime stage.
 #
 # **The content is not in the image.** `content/` and `public/uploads/` are
 # volumes. The image is the application, and the application is byte-identical
@@ -42,7 +43,7 @@ FROM base AS deps
 
 # Only the manifests, so this layer is rebuilt when — and only when — the
 # dependency set changes. Editing a source file does not re-run the install.
-COPY package.json pnpm-lock.yaml ./
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 
 # `--frozen-lockfile` fails rather than resolving anything new: a lockfile that
 # does not match package.json is a build that would produce an image nobody
@@ -66,8 +67,8 @@ COPY . .
 # are read at run time from the environment, and these placeholders only exist
 # to get the compiler past module evaluation.
 #
-# The SESSION_SECRET is a fixed dummy, not a generated one, so that two builds
-# of the same commit produce the same bytes.
+# The SESSION_SECRET is a fixed dummy. It avoids introducing a real credential
+# into image layers; this does not promise byte-identical framework builds.
 ENV DATABASE_URL=postgres://build:build@127.0.0.1:5432/build
 ENV SESSION_SECRET=build-time-placeholder-not-used-at-run-time-000000
 # The build must not reach for a database or a content directory. Every route
@@ -87,9 +88,8 @@ ENV PORT=3000
 ENV HOSTNAME=0.0.0.0
 
 # Unprivileged, and created rather than borrowed from a base image's user so
-# the uid is the same on every platform. A volume mounted over a directory the
-# image owns is chowned to the image's user by Docker, so uploads written by
-# this process work without a chmod step in an entrypoint.
+# the uid is the same on every platform. Bind mounts retain their host ownership;
+# the operator must grant uid 1001 write access before starting Compose.
 RUN addgroup --system --gid 1001 nodejs \
  && adduser --system --uid 1001 --ingroup nodejs nextjs
 

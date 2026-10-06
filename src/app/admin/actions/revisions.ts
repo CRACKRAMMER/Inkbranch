@@ -7,7 +7,7 @@ import { recordAudit } from '@/lib/audit'
 import { syncOneDocument } from '@/lib/content/sync'
 import { getRevision, restoreRevision } from '@/lib/revision/store'
 import { getSettings } from '@/lib/settings'
-import { actionFailure, actionOk, type ActionResult } from '@/lib/admin/result'
+import { actionFailure, actionOk, type ActionResult, type CommittedContentChange } from '@/lib/admin/result'
 import { describeActionError, guardAction, parseActionInput } from '@/lib/admin/guard'
 import { commitContentChange, commitTitle } from '@/lib/admin/git'
 import { revalidateContentChange } from '@/lib/admin/revalidate'
@@ -57,6 +57,7 @@ export interface RestoreRevisionResult {
 export async function restoreRevisionAction(
   input: RestoreRevisionInput,
 ): Promise<ActionResult<RestoreRevisionResult>> {
+  let committed: CommittedContentChange | undefined
   try {
     const context = await guardAction()
     const parsed = parseActionInput(restoreSchema, input)
@@ -69,6 +70,8 @@ export async function restoreRevisionAction(
     }
 
     const result = await restoreRevision(parsed.value.revisionId, context.user.id)
+    committed = { path: result.relativePath, slug: target.slug, operation: 'write', checksum: result.checksum,
+      ...(result.recoveryPath ? { recoveryPath: result.recoveryPath } : {}) }
 
     // The sync is the difference between "the file is restored" and "the site
     // shows the restored text". Its failure is reported as its own state rather
@@ -95,13 +98,17 @@ export async function restoreRevisionAction(
       return actionFailure(
         'The revision was written back to the file, but the content index was not updated.',
         {
+          code: 'content-committed',
+          committed: [committed],
           detail:
-            error instanceof Error
+            (error instanceof Error
               ? `${error.name}: run a content sync from System before trusting the site's pages.`
-              : 'Run a content sync from System before trusting the site’s pages.',
+              : 'Run a content sync from System before trusting the site’s pages.') +
+            (committed.recoveryPath ? ` Previous bytes are retained privately at ${committed.recoveryPath}.` : ''),
         },
       )
     }
+    if (result.revision.error) throw result.revision.error
 
     // The restore path records its own undo row through the revision module, so
     // the bound is enforced here rather than inside it. Restores are not pruned
@@ -148,6 +155,13 @@ export async function restoreRevisionAction(
       git,
     })
   } catch (error) {
+    if (committed) {
+      console.error('[admin] revision restored on disk; follow-up processing failed:', error)
+      return actionFailure('The revision was written back to the file, but follow-up processing did not complete.', {
+        code: 'content-committed', committed: [committed],
+        detail: `Run a content sync from System before trusting the index.${committed.recoveryPath ? ` Previous bytes are retained privately at ${committed.recoveryPath}.` : ''}`,
+      })
+    }
     return describeActionError(error)
   }
 }

@@ -1,8 +1,10 @@
 import { sql } from 'drizzle-orm'
+import { drizzle } from 'drizzle-orm/node-postgres'
 import { migrate } from 'drizzle-orm/node-postgres/migrator'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createDatabase, type Database } from './index'
+import * as schema from './schema'
 
 /**
  * Migration runner.
@@ -33,30 +35,37 @@ export async function runMigrations(
   connectionString: string,
 ): Promise<MigrateResult> {
   const started = Date.now()
-  const { db, close } = createDatabase(connectionString)
+  const { pool, close } = createDatabase(connectionString)
 
   try {
-    // `drizzle-orm`'s migrator needs the raw connection for its own advisory
-    // lock. Two containers starting at once will serialise instead of racing.
-    await db.execute(sql`select pg_advisory_lock(727_101_501)`)
+    // Advisory locks belong to a PostgreSQL session. Keep the lock, migration
+    // transaction and unlock on one checked-out connection; Pool.query() can
+    // otherwise release a different connection's lock after the transaction.
+    const client = await pool.connect()
     try {
-      // `migrate()` reports nothing, so the count is taken around it. The table
-      // may not exist yet on a virgin database, and a missing table is not an
-      // error here — it means zero migrations have ever run, which is what the
-      // count should say.
-      const before = await countApplied(db)
+      const db = drizzle(client, { schema, casing: 'snake_case' })
+      await db.execute(sql`select pg_advisory_lock(${727_101_501})`)
+      try {
+        // `migrate()` reports nothing, so the count is taken around it. The table
+        // may not exist yet on a virgin database, and a missing table is not an
+        // error here — it means zero migrations have ever run, which is what the
+        // count should say.
+        const before = await countApplied(db)
 
-      await migrate(db, {
-        migrationsFolder: migrationsFolder(),
-        migrationsTable: MIGRATIONS_TABLE,
-        migrationsSchema: 'public',
-      })
+        await migrate(db, {
+          migrationsFolder: migrationsFolder(),
+          migrationsTable: MIGRATIONS_TABLE,
+          migrationsSchema: 'public',
+        })
 
-      const after = await countApplied(db)
+        const after = await countApplied(db)
 
-      return { applied: Math.max(0, after - before), durationMs: Date.now() - started }
+        return { applied: Math.max(0, after - before), durationMs: Date.now() - started }
+      } finally {
+        await db.execute(sql`select pg_advisory_unlock(${727_101_501})`)
+      }
     } finally {
-      await db.execute(sql`select pg_advisory_unlock(727_101_501)`)
+      client.release()
     }
   } finally {
     await close()

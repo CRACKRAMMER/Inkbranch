@@ -20,6 +20,7 @@ logs/
 *.log
 content/.locks/
 content/.tmp/
+content/.recovery/
 
 # uploads are user data, but not source.
 #
@@ -52,3 +53,6 @@ backups/
 
 # claude code local settings (machine-specific permissions)
 .claude/settings.local.json
+.restore.lock
+config.restored*/
+*.before-*/

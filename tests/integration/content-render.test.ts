@@ -11,6 +11,8 @@ import { readDocument } from '@/lib/content/reader'
 import { describeImage, documentImages, renderDocument } from '@/lib/content/render'
 import { renderMarkdown } from '@/lib/markdown/renderer'
 import { db } from '@/lib/db'
+import { indexSlugKeys } from '@/lib/admin/queries'
+import { runMigrations } from '@/lib/db/migrate'
 import { assets, contentIndex } from '@/lib/db/schema'
 import { eq, inArray } from 'drizzle-orm'
 
@@ -87,6 +89,7 @@ async function store(bytes: Buffer) {
 }
 
 describe.skipIf(!hasTestDatabase)('a document and its images', () => {
+  beforeAll(async () => { await runMigrations(process.env.TEST_DATABASE_URL as string) })
   afterAll(async () => {
     if (storedAssets.length === 0) return
 
@@ -343,6 +346,7 @@ const WIKI_PATHS = ['posts/wiki-source.md', 'posts/why-not-catch.md']
 
 describe.skipIf(!hasTestDatabase)('a document and its wiki links', () => {
   beforeAll(async () => {
+    await runMigrations(process.env.TEST_DATABASE_URL as string)
     const dir = path.join(testContentRoot, 'posts')
     await fs.mkdir(dir, { recursive: true })
     await fs.writeFile(path.join(dir, 'wiki-source.md'), WIKI_POST, 'utf8')
@@ -378,6 +382,15 @@ describe.skipIf(!hasTestDatabase)('a document and its wiki links', () => {
     expect(hrefsToPosts(html)).toEqual([`/posts/${NOTE_SLUG}`])
     // And the words are the author's, not the slug's.
     expect(html).toContain('>why-not-catch</a>')
+  })
+
+  it('uses public route keys so the editor accepts existing links and flags missing ones', async () => {
+    const known = new Set(await indexSlugKeys())
+    expect(known.has(`posts/${NOTE_SLUG}`)).toBe(true)
+    const body = `${await wikiPostBody()}\n\n[Missing project](/projects/preview-missing)`
+    const { html } = await renderDocument(body, { knownSlugs: known })
+    expect(html).not.toContain(`data-broken-target="posts/${NOTE_SLUG}"`)
+    expect(html).toContain('data-broken-target="projects/preview-missing"')
   })
 
   it('leaves a wiki link that names nothing as the text it was written as', async () => {

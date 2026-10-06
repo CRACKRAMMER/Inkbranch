@@ -1,11 +1,12 @@
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import { inArray } from 'drizzle-orm'
-import { afterAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { CONTENT_ROOT } from '@/lib/content/paths'
 import { checksumOf } from '@/lib/content/reader'
 import { createDocument, updateDocument, type WriteResult } from '@/lib/content/writer'
 import { db } from '@/lib/db'
+import { runMigrations } from '@/lib/db/migrate'
 import { contentIndex } from '@/lib/db/schema'
 import {
   AUTOSAVE_REVISIONS_KEPT,
@@ -360,6 +361,7 @@ describe('captureRevision input handling', () => {
  * this file created rather than about whatever else is in the database.
  */
 describe.skipIf(!hasTestDatabase)('revisions against a database', () => {
+  beforeAll(async () => { await runMigrations(process.env.TEST_DATABASE_URL as string) })
   const RUN = `revtest-${Date.now().toString(36)}`
   const contentIds: string[] = []
   const files: string[] = []

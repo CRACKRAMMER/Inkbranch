@@ -199,65 +199,72 @@ export default async function DashboardPage() {
           </Link>
         }
       >
-        <table className="w-full border-collapse text-sm">
-          <thead>
-            <tr className="border-b border-line text-left">
-              <th scope="col" className="py-2 pr-4 font-medium text-ink-muted">
-                Type
-              </th>
-              {(['draft', 'scheduled', 'published', 'archived'] as const).map((status) => (
-                <th key={status} scope="col" className="py-2 pr-4 font-medium text-ink-muted">
-                  {status}
-                </th>
-              ))}
-              <th scope="col" className="py-2 pr-4 font-medium text-ink-muted">
-                Total
-              </th>
-              {/*
-                A time axis next to a status axis, which is why it says what the
-                window is in the header rather than leaving a bare `+3` to be
-                interpreted. Published-and-since-archived counts here and not in
-                the Total beside it; that is the difference between the column
-                and its neighbour, so both are labelled.
-              */}
-              <th
-                scope="col"
-                title={`Became public in the last ${WEEK_DAYS} days, whatever their status now`}
-                className="py-2 font-medium text-ink-muted"
-              >
-                New ({WEEK_DAYS}d)
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            {(['post', 'note', 'project'] as const).map((type) => (
-              <tr key={type} className="border-b border-line last:border-0">
-                <th scope="row" className="py-2 pr-4 text-left font-normal">
-                  <Link
-                    href={`/admin/${segmentForType(type)}`}
-                    className="text-ink hover:text-brand"
-                  >
-                    {TYPE_COPY[type].plural}
-                  </Link>
+        <div
+          role="region"
+          aria-label="Content counts by type and status"
+          tabIndex={0}
+          className="overflow-x-auto rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          <table className="w-full border-collapse text-sm">
+            <thead>
+              <tr className="border-b border-line text-left">
+                <th scope="col" className="py-2 pr-4 font-medium text-ink-muted">
+                  Type
                 </th>
                 {(['draft', 'scheduled', 'published', 'archived'] as const).map((status) => (
-                  <td key={status} className="py-2 pr-4 tabular-nums text-ink-muted">
-                    {counts.byStatus[status].byType[type]}
-                  </td>
+                  <th key={status} scope="col" className="py-2 pr-4 font-medium text-ink-muted">
+                    {status}
+                  </th>
                 ))}
-                <td className="py-2 pr-4 tabular-nums text-ink">{counts.byType[type]}</td>
+                <th scope="col" className="py-2 pr-4 font-medium text-ink-muted">
+                  Total
+                </th>
                 {/*
-                  A dash rather than `+0`: a week without a post is not a
-                  measurement of zero, it is nothing to report, and a column of
-                  zeroes is what the eye stops reading.
+                  A time axis next to a status axis, which is why it says what the
+                  window is in the header rather than leaving a bare `+3` to be
+                  interpreted. Published-and-since-archived counts here and not in
+                  the Total beside it; that is the difference between the column
+                  and its neighbour, so both are labelled.
                 */}
-                <td className="py-2 tabular-nums text-ink-muted">
-                  {publishedThisWeek[type] > 0 ? `+${publishedThisWeek[type]}` : '—'}
-                </td>
+                <th
+                  scope="col"
+                  title={`Became public in the last ${WEEK_DAYS} days, whatever their status now`}
+                  className="py-2 font-medium text-ink-muted"
+                >
+                  New ({WEEK_DAYS}d)
+                </th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {(['post', 'note', 'project'] as const).map((type) => (
+                <tr key={type} className="border-b border-line last:border-0">
+                  <th scope="row" className="py-2 pr-4 text-left font-normal">
+                    <Link
+                      href={`/admin/${segmentForType(type)}`}
+                      className="text-ink hover:text-brand"
+                    >
+                      {TYPE_COPY[type].plural}
+                    </Link>
+                  </th>
+                  {(['draft', 'scheduled', 'published', 'archived'] as const).map((status) => (
+                    <td key={status} className="py-2 pr-4 tabular-nums text-ink-muted">
+                      {counts.byStatus[status].byType[type]}
+                    </td>
+                  ))}
+                  <td className="py-2 pr-4 tabular-nums text-ink">{counts.byType[type]}</td>
+                  {/*
+                    A dash rather than `+0`: a week without a post is not a
+                    measurement of zero, it is nothing to report, and a column of
+                    zeroes is what the eye stops reading.
+                  */}
+                  <td className="py-2 tabular-nums text-ink-muted">
+                    {publishedThisWeek[type] > 0 ? `+${publishedThisWeek[type]}` : '—'}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </Section>
 
       <Section

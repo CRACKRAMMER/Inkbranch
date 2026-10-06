@@ -99,7 +99,7 @@ export default async function TagsPage({
         ) : filtered.length === 0 ? (
           <InlineNote>No tag matches “{q}”.</InlineNote>
         ) : (
-          <div className="overflow-x-auto border-t border-line">
+          <div className="relative overflow-x-auto border-t border-line">
             <table className="w-full border-collapse text-sm">
               <caption className="sr-only">
                 Every tag, with the number of documents carrying it

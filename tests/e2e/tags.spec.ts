@@ -79,8 +79,21 @@ test('merges a tag after stating how many documents it will touch', async ({ pag
   })
 
   await test.step('states the union of the two tags, and how many already carry both', async () => {
+    await page.goto('/admin/tags')
+    await expect(page.getByRole('table')).toBeVisible()
+    await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(1)
     await page.goto(`/admin/tags/${source.slug}`)
-    await page.getByRole('button', { name: 'Merge' }).click()
+    for (const label of ['Rename', 'Delete', 'Merge']) {
+      const trigger = page.getByRole('button', { name: label, exact: true })
+      await trigger.focus()
+      await page.keyboard.press('Enter')
+      const dialog = page.getByRole('dialog')
+      await expect(dialog).toBeVisible()
+      await dialog.getByRole('button', { name: 'Cancel', exact: true }).click()
+      await expect(dialog).toBeHidden()
+      await expect(trigger).toBeFocused()
+    }
+    await page.keyboard.press('Enter')
 
     const dialog = page.getByRole('dialog')
     // The dialog opens on whichever tag the list happens to lead with, which is

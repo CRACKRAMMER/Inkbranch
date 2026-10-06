@@ -12,6 +12,7 @@ import { parseFrontmatter } from '@/lib/content/frontmatter'
 import { documentUrl } from '@/lib/content/paths'
 import { CONTENT_TYPES, type ContentStatus, type ContentType } from '@/lib/content/schema'
 import { syncOneDocument } from '@/lib/content/sync'
+import { discardRecoverySnapshot } from '@/lib/content/recovery'
 import { captureWithPolicy } from '@/lib/revision/policy'
 import { formatBytes } from '@/lib/utils/format'
 import {
@@ -449,13 +450,14 @@ async function applyAndIndex(
 
   const result = await applyImport(plan, {
     applyFixes: options.applyFixes,
+    preservePrevious: true,
     afterWrite: async (write) => {
       const synced = await syncOneDocument(write.targetPath)
       indexed += 1
-      if (!synced) return
+      if (!synced) throw new Error(`The imported file could not be indexed. Previous bytes: ${write.recoveryPath ?? 'no previous file'}`)
 
       const parsed = parseFrontmatter(write.content)
-      await captureWithPolicy({
+      const revision = await captureWithPolicy({
         contentId: synced.row.id,
         type: write.type,
         slug: write.slug,
@@ -465,6 +467,8 @@ async function applyAndIndex(
         reason: 'import',
         actorId: options.actorId,
       })
+      if (revision.error) throw new Error(`The imported file was saved but its revision failed. Previous bytes: ${write.recoveryPath ?? 'no previous file'}`)
+      await discardRecoverySnapshot(write.recoveryPath)
     },
   })
 

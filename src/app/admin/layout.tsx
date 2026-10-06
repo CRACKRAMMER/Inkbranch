@@ -1,4 +1,5 @@
 import type { Metadata } from 'next'
+import { Toaster } from '@/components/ui/toaster'
 
 import './admin.css'
 
@@ -22,5 +23,10 @@ export const metadata: Metadata = {
 }
 
 export default function AdminRootLayout({ children }: { children: React.ReactNode }) {
-  return <>{children}</>
+  return (
+    <>
+      {children}
+      <Toaster />
+    </>
+  )
 }
