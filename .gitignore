@@ -27,6 +27,7 @@ content/.recovery/
 
 # Logs and editor files
 *.log
+*.tsbuildinfo
 logs/
 .cache/
 .DS_Store

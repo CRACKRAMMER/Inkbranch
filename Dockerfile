@@ -1,13 +1,13 @@
-# syntax=docker/dockerfile:1.7
+ARG BASE_REGISTRY=docker.io/library
 
-FROM node:22-alpine AS web-builder
+FROM ${BASE_REGISTRY}/node:22-alpine AS web-builder
 WORKDIR /src/web
 COPY web/package.json web/package-lock.json ./
 RUN npm ci --no-audit --no-fund
 COPY web/ ./
 RUN npm run build
 
-FROM golang:1.26-alpine AS go-builder
+FROM ${BASE_REGISTRY}/golang:1.26-alpine AS go-builder
 WORKDIR /src
 ARG VERSION=2.0.0
 ARG COMMIT=unknown
@@ -23,8 +23,8 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath \
     -ldflags="-s -w -X main.version=${VERSION} -X main.commit=${COMMIT} -X main.buildDate=${BUILD_DATE}" \
     -o /out/inkbranch ./cmd/inkbranch
 
-FROM alpine:3.21 AS runtime
-RUN apk add --no-cache ca-certificates tzdata postgresql17-client zstd wget && \
+FROM ${BASE_REGISTRY}/alpine:3.21 AS runtime
+RUN apk add --no-cache ca-certificates tzdata && \
     addgroup -g 1001 -S inkbranch && \
     adduser -u 1001 -S -G inkbranch -h /app -s /sbin/nologin inkbranch && \
     mkdir -p /app/content /app/uploads /app/backups && \

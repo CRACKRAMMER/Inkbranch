@@ -78,7 +78,7 @@ func Load() (*Config, error) {
 		ResendAPIKey:       strings.TrimSpace(os.Getenv("RESEND_API_KEY")),
 		AdminEmail:         getEnvOr("ADMIN_EMAIL", "crackrammer@gmail.com"),
 		AdminName:          getEnvOr("ADMIN_NAME", "CRACKRAMMER"),
-		AdminInitPassword:  strings.TrimSpace(os.Getenv("ADMIN_INITIAL_PASSWORD")),
+		AdminInitPassword:  firstNonEmptyEnv("ADMIN_INITIAL_PASSWORD", "ADMIN_PASSWORD"),
 		AdminPasswordFile:  getEnvOr("ADMIN_INITIAL_PASSWORD_FILE", "./.inkbranch-initial-admin-password"),
 	}
 
@@ -120,6 +120,15 @@ func (c *Config) EffectiveSecretKey() []byte {
 	out := make([]byte, len(c.secretKey))
 	copy(out, c.secretKey)
 	return out
+}
+
+func firstNonEmptyEnv(keys ...string) string {
+	for _, k := range keys {
+		if v := strings.TrimSpace(os.Getenv(k)); v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 func getEnvOr(key, fallback string) string {

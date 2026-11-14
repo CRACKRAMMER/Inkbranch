@@ -267,13 +267,17 @@ func (p *PostgresStore) CreatePasskey(ctx context.Context, pk PasskeyRecord) err
 }
 
 func (p *PostgresStore) UpdatePasskeyUsage(ctx context.Context, passkeyID uuid.UUID, signCount uint32, credentialJSON []byte, usedAt time.Time) error {
+	credText := ""
+	if len(credentialJSON) > 2 {
+		credText = string(credentialJSON)
+	}
 	_, err := p.pool.Exec(ctx, `
 		UPDATE passkey_credentials
 		SET sign_count = $1,
-		    credential_json = CASE WHEN length($2::bytea) > 2 THEN $2::jsonb ELSE credential_json END,
+		    credential_json = CASE WHEN $2::text <> '' THEN $2::jsonb ELSE credential_json END,
 		    last_used_at = $3
 		WHERE id = $4
-	`, int64(signCount), credentialJSON, usedAt.UTC(), passkeyID)
+	`, int64(signCount), credText, usedAt.UTC(), passkeyID)
 	return err
 }
 
@@ -383,6 +387,18 @@ func (p *PostgresStore) CreateRevision(ctx context.Context, rec RevisionRecord) 
 		rec.ID = uuid.New()
 	}
 	cid := rec.ContentID
+	if rec.Path != "" || (rec.ContentType != "" && rec.ContentSlug != "") {
+		var existingID uuid.UUID
+		err := p.pool.QueryRow(ctx, `
+			SELECT id FROM content_index
+			WHERE ($1 <> '' AND path = $1)
+			   OR ($2 <> '' AND $3 <> '' AND type = $2 AND slug = $3)
+			LIMIT 1
+		`, rec.Path, rec.ContentType, rec.ContentSlug).Scan(&existingID)
+		if err == nil && existingID != uuid.Nil {
+			cid = existingID
+		}
+	}
 	if cid == uuid.Nil {
 		cid = ContentUUID(rec.Path)
 	}

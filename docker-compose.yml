@@ -1,6 +1,6 @@
 services:
   postgres:
-    image: postgres:17-alpine
+    image: docker.io/library/postgres:17-alpine
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-inkbranch}
@@ -25,10 +25,7 @@ services:
       postgres:
         condition: service_healthy
     ports:
-      - "${HOST_PORT:-3000}:3000"
-    env_file:
-      - path: .env
-        required: false
+      - "${BIND_ADDR:-127.0.0.1}:${PORT:-3000}:3000"
     environment:
       PORT: "3000"
       HOST: "0.0.0.0"
@@ -56,9 +53,10 @@ services:
       SMTP_PASS: ${SMTP_PASS:-}
       SMTP_FROM: ${SMTP_FROM:-Inkbranch <noreply@localhost>}
       RESEND_API_KEY: ${RESEND_API_KEY:-}
-      ADMIN_EMAIL: ${ADMIN_EMAIL:-}
-      ADMIN_NAME: ${ADMIN_NAME:-Admin}
-      ADMIN_INITIAL_PASSWORD: ${ADMIN_INITIAL_PASSWORD:-}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-crackrammer@gmail.com}
+      ADMIN_NAME: ${ADMIN_NAME:-CRACKRAMMER}
+      ADMIN_INITIAL_PASSWORD: ${ADMIN_INITIAL_PASSWORD:-${ADMIN_PASSWORD:-}}
+      ADMIN_INITIAL_PASSWORD_FILE: ${ADMIN_INITIAL_PASSWORD_FILE:-/app/backups/.initial-admin-password}
     volumes:
       - ./content:/app/content
       - ./uploads:/app/uploads

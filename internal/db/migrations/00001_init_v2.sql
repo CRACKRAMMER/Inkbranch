@@ -3,9 +3,62 @@
 
 CREATE EXTENSION IF NOT EXISTS pg_trgm;
 
+-- +goose StatementBegin
+DO $$
+BEGIN
+    -- Upgrade path from Inkbranch v1 (Drizzle) databases: preserve users, redirects, and assets.
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'users' AND column_name = 'session_version'
+    ) THEN
+        CREATE TEMP TABLE _v1_users_mig AS
+        SELECT id, email, name, password_hash, created_at, updated_at FROM users;
+
+        IF EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = 'redirects' AND column_name = 'from_path'
+        ) THEN
+            CREATE TEMP TABLE _v1_redirects_mig AS
+            SELECT id,
+                   from_path AS source_path,
+                   to_path AS target_path,
+                   CASE WHEN status_code IN (301, 302, 307, 308) THEN status_code::integer ELSE 301 END AS status_code,
+                   coalesce(hits, 0)::bigint AS hits,
+                   created_at
+            FROM redirects
+            WHERE coalesce(enabled, true) = true;
+        END IF;
+
+        IF EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = 'assets' AND column_name = 'mime'
+        ) THEN
+            CREATE TEMP TABLE _v1_assets_mig AS
+            SELECT id,
+                   path AS storage_key,
+                   url AS public_url,
+                   filename,
+                   mime AS mime_type,
+                   size::bigint AS byte_size,
+                   width,
+                   height,
+                   coalesce(alt, '') AS alt_text,
+                   uploaded_by AS created_by,
+                   created_at
+            FROM assets;
+        END IF;
+
+        DROP TABLE IF EXISTS analytics_daily, analytics_events, redirects, navigation, site_settings,
+            scheduled_jobs, audit_logs, rate_limits, assets, content_links, content_tags, tags,
+            content_revisions, content_index, sessions, users, __drizzle_migrations CASCADE;
+        DROP TYPE IF EXISTS content_type, content_status, project_status, link_kind, job_status, device_type, user_role CASCADE;
+    END IF;
+END $$;
+-- +goose StatementEnd
+
 -- 1. Content & Knowledge Graph Domain
 
-CREATE TABLE content_index (
+CREATE TABLE IF NOT EXISTS content_index (
     id                uuid PRIMARY KEY,
     type              text NOT NULL CHECK (type IN ('post', 'note', 'project')),
     slug              text NOT NULL,
@@ -46,13 +99,13 @@ CREATE TABLE content_index (
     UNIQUE (type, slug)
 );
 
-CREATE INDEX content_index_status_pub_idx ON content_index (status, type, published_at DESC);
-CREATE INDEX content_index_series_idx ON content_index (series, series_order, published_at ASC) WHERE series IS NOT NULL;
-CREATE INDEX content_index_translation_idx ON content_index (translation_key) WHERE translation_key IS NOT NULL;
-CREATE INDEX content_index_search_vec_idx ON content_index USING GIN (search_vector);
-CREATE INDEX content_index_title_trgm_idx ON content_index USING GIN (title gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS content_index_status_pub_idx ON content_index (status, type, published_at DESC);
+CREATE INDEX IF NOT EXISTS content_index_series_idx ON content_index (series, series_order, published_at ASC) WHERE series IS NOT NULL;
+CREATE INDEX IF NOT EXISTS content_index_translation_idx ON content_index (translation_key) WHERE translation_key IS NOT NULL;
+CREATE INDEX IF NOT EXISTS content_index_search_vec_idx ON content_index USING GIN (search_vector);
+CREATE INDEX IF NOT EXISTS content_index_title_trgm_idx ON content_index USING GIN (title gin_trgm_ops);
 
-CREATE TABLE content_revisions (
+CREATE TABLE IF NOT EXISTS content_revisions (
     id              uuid PRIMARY KEY,
     content_id      uuid NOT NULL REFERENCES content_index(id) ON DELETE CASCADE,
     revision_num    integer NOT NULL,
@@ -65,7 +118,7 @@ CREATE TABLE content_revisions (
     UNIQUE (content_id, revision_num)
 );
 
-CREATE TABLE draft_previews (
+CREATE TABLE IF NOT EXISTS draft_previews (
     id            uuid PRIMARY KEY,
     token_hash    text NOT NULL UNIQUE,
     content_type  text NOT NULL,
@@ -77,22 +130,22 @@ CREATE TABLE draft_previews (
     created_at    timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE INDEX draft_previews_target_idx ON draft_previews (content_type, content_slug, expires_at DESC);
+CREATE INDEX IF NOT EXISTS draft_previews_target_idx ON draft_previews (content_type, content_slug, expires_at DESC);
 
-CREATE TABLE tags (
+CREATE TABLE IF NOT EXISTS tags (
     id          uuid PRIMARY KEY,
     name        text NOT NULL UNIQUE,
     slug        text NOT NULL UNIQUE,
     created_at  timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE TABLE content_tags (
+CREATE TABLE IF NOT EXISTS content_tags (
     content_id  uuid NOT NULL REFERENCES content_index(id) ON DELETE CASCADE,
     tag_id      uuid NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
     PRIMARY KEY (content_id, tag_id)
 );
 
-CREATE TABLE content_links (
+CREATE TABLE IF NOT EXISTS content_links (
     id               uuid PRIMARY KEY,
     source_id        uuid NOT NULL REFERENCES content_index(id) ON DELETE CASCADE,
     target_type      text,
@@ -102,12 +155,12 @@ CREATE TABLE content_links (
     context_snippet  text NOT NULL DEFAULT ''
 );
 
-CREATE INDEX content_links_source_idx ON content_links (source_id);
-CREATE INDEX content_links_target_idx ON content_links (target_id) WHERE target_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS content_links_source_idx ON content_links (source_id);
+CREATE INDEX IF NOT EXISTS content_links_target_idx ON content_links (target_id) WHERE target_id IS NOT NULL;
 
 -- 2. Auth & Security Domain
 
-CREATE TABLE users (
+CREATE TABLE IF NOT EXISTS users (
     id            uuid PRIMARY KEY,
     email         text NOT NULL UNIQUE,
     name          text NOT NULL,
@@ -119,7 +172,7 @@ CREATE TABLE users (
     updated_at    timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE TABLE sessions (
+CREATE TABLE IF NOT EXISTS sessions (
     id            uuid PRIMARY KEY,
     user_id       uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     token_hash    text NOT NULL UNIQUE,
@@ -131,9 +184,9 @@ CREATE TABLE sessions (
     created_at    timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE INDEX sessions_user_idx ON sessions (user_id, expires_at DESC);
+CREATE INDEX IF NOT EXISTS sessions_user_idx ON sessions (user_id, expires_at DESC);
 
-CREATE TABLE passkey_credentials (
+CREATE TABLE IF NOT EXISTS passkey_credentials (
     id               uuid PRIMARY KEY,
     user_id          uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     credential_id    bytea NOT NULL UNIQUE,
@@ -148,7 +201,7 @@ CREATE TABLE passkey_credentials (
     created_at       timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE TABLE totp_secrets (
+CREATE TABLE IF NOT EXISTS totp_secrets (
     user_id             uuid PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
     encrypted_secret    bytea NOT NULL,
     recovery_code_hashes text[] NOT NULL DEFAULT '{}',
@@ -157,7 +210,7 @@ CREATE TABLE totp_secrets (
     created_at          timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE TABLE api_tokens (
+CREATE TABLE IF NOT EXISTS api_tokens (
     id            uuid PRIMARY KEY,
     user_id       uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     name          text NOT NULL,
@@ -170,14 +223,14 @@ CREATE TABLE api_tokens (
     created_at    timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE TABLE rate_limits (
+CREATE TABLE IF NOT EXISTS rate_limits (
     key           text PRIMARY KEY,
     count         integer NOT NULL DEFAULT 0,
     window_start  timestamptz NOT NULL,
     expires_at    timestamptz NOT NULL
 );
 
-CREATE TABLE audit_logs (
+CREATE TABLE IF NOT EXISTS audit_logs (
     id          uuid PRIMARY KEY,
     actor_type  text NOT NULL,
     actor_id    uuid,
@@ -189,11 +242,11 @@ CREATE TABLE audit_logs (
     created_at  timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE INDEX audit_logs_created_idx ON audit_logs (created_at DESC);
+CREATE INDEX IF NOT EXISTS audit_logs_created_idx ON audit_logs (created_at DESC);
 
 -- 3. Media & Ops Domain
 
-CREATE TABLE assets (
+CREATE TABLE IF NOT EXISTS assets (
     id             uuid PRIMARY KEY,
     storage_driver text NOT NULL DEFAULT 'local' CHECK (storage_driver IN ('local', 'r2')),
     storage_key    text NOT NULL UNIQUE,
@@ -211,7 +264,7 @@ CREATE TABLE assets (
     created_at     timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE TABLE backups (
+CREATE TABLE IF NOT EXISTS backups (
     id             uuid PRIMARY KEY,
     filename       text NOT NULL,
     storage_driver text NOT NULL DEFAULT 'local' CHECK (storage_driver IN ('local', 'r2')),
@@ -224,7 +277,7 @@ CREATE TABLE backups (
     created_at     timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE TABLE webhooks (
+CREATE TABLE IF NOT EXISTS webhooks (
     id          uuid PRIMARY KEY,
     name        text NOT NULL,
     target_url  text NOT NULL,
@@ -235,7 +288,7 @@ CREATE TABLE webhooks (
     updated_at  timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE TABLE webhook_deliveries (
+CREATE TABLE IF NOT EXISTS webhook_deliveries (
     id            uuid PRIMARY KEY,
     webhook_id    uuid NOT NULL REFERENCES webhooks(id) ON DELETE CASCADE,
     event_name    text NOT NULL,
@@ -248,7 +301,7 @@ CREATE TABLE webhook_deliveries (
     created_at    timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE TABLE scheduled_jobs (
+CREATE TABLE IF NOT EXISTS scheduled_jobs (
     id            uuid PRIMARY KEY,
     kind          text NOT NULL,
     payload_json  jsonb NOT NULL DEFAULT '{}'::jsonb,
@@ -263,11 +316,11 @@ CREATE TABLE scheduled_jobs (
     updated_at    timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE INDEX scheduled_jobs_poll_idx ON scheduled_jobs (status, run_at) WHERE status IN ('pending', 'running');
+CREATE INDEX IF NOT EXISTS scheduled_jobs_poll_idx ON scheduled_jobs (status, run_at) WHERE status IN ('pending', 'running');
 
 -- 4. Community, Subscriptions & Site Config Domain
 
-CREATE TABLE comments (
+CREATE TABLE IF NOT EXISTS comments (
     id            uuid PRIMARY KEY,
     content_type  text NOT NULL,
     content_slug  text NOT NULL,
@@ -287,9 +340,9 @@ CREATE TABLE comments (
     updated_at    timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE INDEX comments_target_idx ON comments (content_type, content_slug, status, created_at ASC);
+CREATE INDEX IF NOT EXISTS comments_target_idx ON comments (content_type, content_slug, status, created_at ASC);
 
-CREATE TABLE reactions (
+CREATE TABLE IF NOT EXISTS reactions (
     id           uuid PRIMARY KEY,
     content_type text NOT NULL,
     content_slug text NOT NULL,
@@ -299,9 +352,9 @@ CREATE TABLE reactions (
     UNIQUE (content_type, content_slug, emoji, voter_hash)
 );
 
-CREATE INDEX reactions_target_idx ON reactions (content_type, content_slug);
+CREATE INDEX IF NOT EXISTS reactions_target_idx ON reactions (content_type, content_slug);
 
-CREATE TABLE subscribers (
+CREATE TABLE IF NOT EXISTS subscribers (
     id                uuid PRIMARY KEY,
     email             text NOT NULL UNIQUE,
     status            text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'active', 'unsubscribed')),
@@ -312,7 +365,7 @@ CREATE TABLE subscribers (
     created_at        timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE TABLE newsletters (
+CREATE TABLE IF NOT EXISTS newsletters (
     id            uuid PRIMARY KEY,
     subject       text NOT NULL,
     body_markdown text NOT NULL,
@@ -326,7 +379,7 @@ CREATE TABLE newsletters (
     created_at    timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE TABLE friend_links (
+CREATE TABLE IF NOT EXISTS friend_links (
     id           uuid PRIMARY KEY,
     name         text NOT NULL,
     url          text NOT NULL UNIQUE,
@@ -342,7 +395,7 @@ CREATE TABLE friend_links (
     created_at   timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE TABLE friend_feeds (
+CREATE TABLE IF NOT EXISTS friend_feeds (
     id            uuid PRIMARY KEY,
     friend_id     uuid NOT NULL REFERENCES friend_links(id) ON DELETE CASCADE,
     item_guid     text NOT NULL,
@@ -354,15 +407,15 @@ CREATE TABLE friend_feeds (
     UNIQUE (friend_id, item_guid)
 );
 
-CREATE INDEX friend_feeds_published_idx ON friend_feeds (published_at DESC);
+CREATE INDEX IF NOT EXISTS friend_feeds_published_idx ON friend_feeds (published_at DESC);
 
-CREATE TABLE site_settings (
+CREATE TABLE IF NOT EXISTS site_settings (
     key        text PRIMARY KEY,
     value_json jsonb NOT NULL,
     updated_at timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE TABLE navigation (
+CREATE TABLE IF NOT EXISTS navigation (
     id         uuid PRIMARY KEY,
     label      text NOT NULL,
     href       text NOT NULL,
@@ -371,7 +424,7 @@ CREATE TABLE navigation (
     visible    boolean NOT NULL DEFAULT true
 );
 
-CREATE TABLE redirects (
+CREATE TABLE IF NOT EXISTS redirects (
     id          uuid PRIMARY KEY,
     source_path text NOT NULL UNIQUE,
     target_path text NOT NULL,
@@ -380,7 +433,7 @@ CREATE TABLE redirects (
     created_at  timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE TABLE analytics_events (
+CREATE TABLE IF NOT EXISTS analytics_events (
     id          uuid PRIMARY KEY,
     path        text NOT NULL,
     content_type text,
@@ -393,9 +446,9 @@ CREATE TABLE analytics_events (
     occurred_at timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE INDEX analytics_events_occurred_idx ON analytics_events (occurred_at DESC);
+CREATE INDEX IF NOT EXISTS analytics_events_occurred_idx ON analytics_events (occurred_at DESC);
 
-CREATE TABLE analytics_daily (
+CREATE TABLE IF NOT EXISTS analytics_daily (
     day           date NOT NULL,
     path          text NOT NULL,
     views         integer NOT NULL DEFAULT 0,
@@ -404,6 +457,35 @@ CREATE TABLE analytics_daily (
     avg_scroll_pct integer NOT NULL DEFAULT 0,
     PRIMARY KEY (day, path)
 );
+
+-- +goose StatementBegin
+DO $$
+BEGIN
+    IF to_regclass('pg_temp._v1_users_mig') IS NOT NULL THEN
+        INSERT INTO users (id, email, name, password_hash, role, bio, created_at, updated_at)
+        SELECT id, lower(email), name, password_hash, 'admin', '', created_at, updated_at
+        FROM pg_temp._v1_users_mig
+        ON CONFLICT DO NOTHING;
+        DROP TABLE IF EXISTS pg_temp._v1_users_mig;
+    END IF;
+
+    IF to_regclass('pg_temp._v1_redirects_mig') IS NOT NULL THEN
+        INSERT INTO redirects (id, source_path, target_path, status_code, hits, created_at)
+        SELECT id, source_path, target_path, status_code, hits, created_at
+        FROM pg_temp._v1_redirects_mig
+        ON CONFLICT DO NOTHING;
+        DROP TABLE IF EXISTS pg_temp._v1_redirects_mig;
+    END IF;
+
+    IF to_regclass('pg_temp._v1_assets_mig') IS NOT NULL THEN
+        INSERT INTO assets (id, storage_driver, storage_key, public_url, filename, mime_type, byte_size, width, height, exif_stripped, alt_text, created_by, created_at)
+        SELECT id, 'local', storage_key, public_url, filename, mime_type, byte_size, width, height, true, alt_text, created_by, created_at
+        FROM pg_temp._v1_assets_mig
+        ON CONFLICT DO NOTHING;
+        DROP TABLE IF EXISTS pg_temp._v1_assets_mig;
+    END IF;
+END $$;
+-- +goose StatementEnd
 
 -- +goose Down
 DROP TABLE IF EXISTS analytics_daily;
