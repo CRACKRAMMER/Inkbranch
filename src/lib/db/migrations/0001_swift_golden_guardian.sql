@@ -1,1 +1,0 @@
-ALTER TABLE "assets" ADD COLUMN "thumbnail" jsonb;

@@ -1,58 +1,35 @@
-# dependencies
-node_modules/
-.pnpm-store/
+# Binaries and build outputs
+/inkbranch
+/bin/
+/dist/
+coverage.out
 
-# next
-.next/
-out/
-next-env.d.ts
-*.tsbuildinfo
+# Web frontend build & dependencies
+web/node_modules/
+web/dist/*
+!web/dist/.gitkeep
 
-# env
+# Local environment secrets
 .env
 .env.local
 .env.*.local
+.inkbranch-initial-admin-password
 
-# runtime state
-.cache/
-data/
-logs/
-*.log
+# Uploads are user data, not source
+uploads/*
+!uploads/.gitkeep
+
+# Backups and runtime content locks/temp/recovery state
+backups/
 content/.locks/
 content/.tmp/
 content/.recovery/
 
-# uploads are user data, but not source.
-#
-# Two directories, and they are not duplicates. `public/uploads` is where a
-# local `pnpm dev` writes: Next serves that path statically with no extra
-# machinery. `uploads/` is the host side of the compose bind mount — the
-# container sees it at `/app/public/uploads`, which is what lets the same static
-# handler serve it there. Both are ignored; the `.gitkeep` files exist so a
-# clone has the directories, because Docker creates a missing bind-mount source
-# as root and the container could not then write to it.
-public/uploads/*
-!public/uploads/.gitkeep
-uploads/*
-!uploads/.gitkeep
-
-# test artifacts
-coverage/
-playwright-report/
-test-results/
-tests/.tmp/
-
-# editor / os
+# Logs and editor files
+*.log
+logs/
+.cache/
 .DS_Store
 .idea/
 .vscode/*
 !.vscode/extensions.json
-
-# backups
-backups/
-
-# claude code local settings (machine-specific permissions)
-.claude/settings.local.json
-.restore.lock
-config.restored*/
-*.before-*/

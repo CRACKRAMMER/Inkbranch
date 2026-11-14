@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
+    <script>
+      try {
+        var s = localStorage.getItem('color-scheme');
+        if (s === 'light' || s === 'dark') {
+          document.querySelector('meta[name="color-scheme"]').content = s;
+        }
+      } catch (e) {}
+    </script>
+    <link rel="icon" href="/favicon.ico" sizes="any" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="alternate" type="application/rss+xml" title="Inkbranch RSS" href="/feed.xml" />
+    <link rel="alternate" type="application/atom+xml" title="Inkbranch Atom" href="/atom.xml" />
+    <link rel="alternate" type="application/feed+json" title="Inkbranch JSON Feed" href="/feed.json" />
+    <!--INKBRANCH_HEAD_START-->
+    <title>Inkbranch</title>
+    <meta name="description" content="Personal Knowledge System &amp; Modern Publishing Platform" />
+    <!--INKBRANCH_HEAD_END-->
+  </head>
+  <body>
+    <div id="root">
+      <noscript>
+        <!--INKBRANCH_NOSCRIPT-->
+      </noscript>
+    </div>
+    <!--INKBRANCH_PRELOAD-->
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

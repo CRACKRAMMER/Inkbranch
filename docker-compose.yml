@@ -1,198 +1,74 @@
-# A single-host deployment: the application, its database, and the two
-# directories that hold everything the application is not.
-#
-# ## The shape
-#
-# `web` and `postgres` always; `migrate` runs once and exits; `reverse-proxy` is
-# behind a profile and off unless asked for. There is no cache and no queue,
-# because the application needs neither: search is local, sessions are in
-# Postgres, and scheduled work is a worker loop inside the app. A compose file
-# that provisioned Redis and Meilisearch for a personal blog would be
-# provisioning for an architecture this site does not have.
-#
-#   docker compose up -d                          # web + postgres
-#   docker compose --profile proxy up -d          # the same, behind Caddy
-#
-# ## Why the data is bind-mounted
-#
-# `./content` and `./uploads` are bind mounts rather than named volumes, and both
-# are read-write. Markdown is the source of truth and the author edits it — in an
-# editor, in git, on the host — so it has to be a directory you can open, not a
-# blob Docker manages. Uploaded media is the same: the files are meant to be
-# reachable, copyable, and backed up by the same script that copies the Markdown.
-#
-# The host names are `./content` and `./uploads` while the container paths are
-# `/app/content` and `/app/public/uploads`. `/uploads/**` is rewritten to the
-# sandboxed asset route; the volume location also preserves the default local
-# upload directory.
-#
-# **On a fresh Linux host, make both directories writable by uid 1001 before the
-# first `up`.** A bind mount keeps the host's ownership and the container runs as
-# `nextjs` (1001), so a directory owned by anyone else fails every save with
-# `EACCES`:
-#
-#   mkdir -p content uploads && sudo chown -R 1001:1001 content uploads
-#
-# Docker creates a missing bind-mount source as **root**, which is why the
-# `mkdir` is part of that line rather than something to discover afterwards.
-#
-# ## Why the migration is its own service
-#
-# `migrate` builds the same source at the `build` stage, which has `tsx` and the
-# dev dependencies the migrator needs. `web` waits for it to exit successfully
-# before starting, so a deploy can never serve a schema it does not match.
-
-name: myblog
-
 services:
   postgres:
     image: postgres:17-alpine
     restart: unless-stopped
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-myblog}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
-      POSTGRES_DB: ${POSTGRES_DB:-myblog}
-      # Deterministic collation, so an index built on one machine sorts the same
-      # way on another. The default depends on the locale the cluster was
-      # initialised in, which is the classic way two "identical" databases
-      # disagree.
-      POSTGRES_INITDB_ARGS: '--encoding=UTF8 --locale=C'
+      POSTGRES_USER: ${POSTGRES_USER:-inkbranch}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me}
+      POSTGRES_DB: ${POSTGRES_DB:-inkbranch}
     volumes:
-      - postgres-data:/var/lib/postgresql/data
+      - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      # `-U` and `-d` are not optional here: without them `pg_isready` checks
-      # for a database named after the OS user, reports ready, and the app
-      # starts against a database that is still initialising.
-      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-myblog} -d ${POSTGRES_DB:-myblog}']
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-inkbranch} -d $${POSTGRES_DB:-inkbranch}"]
       interval: 10s
       timeout: 5s
       retries: 5
-      start_period: 30s
-    # Not published to the host by default. Uncomment to reach it with `psql`
-    # from the host; leaving it closed means the database is reachable only from
-    # the compose network.
-    # ports:
-    #   - '127.0.0.1:5432:5432'
-
-  migrate:
-    build:
-      context: .
-      # The build stage: it has pnpm, tsx and the full dependency set.
-      target: build
-    environment:
-      DATABASE_URL: postgres://${POSTGRES_USER:-myblog}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-myblog}
-      SESSION_SECRET: ${SESSION_SECRET:?SESSION_SECRET is required}
-      DATABASE_POOL_MAX: ${DATABASE_POOL_MAX:-10}
-    depends_on:
-      postgres:
-        condition: service_healthy
-    # Runs to completion and exits. `--` so the flag reaches pnpm rather than
-    # being eaten by the shell.
-    command: ['pnpm', 'db:migrate']
-    restart: 'no'
+      start_period: 10s
 
   web:
     build:
       context: .
-      target: runner
+      dockerfile: Dockerfile
+    image: ${INKBRANCH_IMAGE:-ghcr.io/crackrammer/inkbranch:latest}
     restart: unless-stopped
-    environment:
-      DATABASE_URL: postgres://${POSTGRES_USER:-myblog}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-myblog}
-      SESSION_SECRET: ${SESSION_SECRET:?SESSION_SECRET is required}
-      DATABASE_POOL_MAX: ${DATABASE_POOL_MAX:-10}
-      SESSION_COOKIE_NAME: ${SESSION_COOKIE_NAME:-myblog_session}
-      SESSION_ABSOLUTE_TTL: ${SESSION_ABSOLUTE_TTL:-2592000}
-      SESSION_IDLE_TTL: ${SESSION_IDLE_TTL:-604800}
-
-      # The public origin. Used for canonical URLs, the sitemap, feeds and
-      # generated OG cards, so it has to be the address a reader types — an
-      # internal service name here produces a sitemap full of hostnames nobody
-      # can resolve.
-      SITE_URL: ${SITE_URL:-http://localhost:3000}
-      TRUSTED_ORIGINS: ${TRUSTED_ORIGINS:-}
-
-      # The shipped production runner requires 1 and an HTTPS SITE_URL.
-      # Plain-HTTP development uses 0 with `pnpm dev`; it is not supported by
-      # this production container.
-      COOKIE_SECURE: ${COOKIE_SECURE:-0}
-
-      CONTENT_DIR: /app/content
-      UPLOAD_DIR: /app/public/uploads
-      UPLOAD_URL_PREFIX: /uploads
-      MAX_UPLOAD_SIZE: ${MAX_UPLOAD_SIZE:-20971520}
-      CONTENT_MAX_FILES: ${CONTENT_MAX_FILES:-5000}
-      SEARCH_PROVIDER: ${SEARCH_PROVIDER:-local}
-
-      # Reconcile the content tree against the index on boot. This is what makes
-      # dropping a `.md` file into `./content` and restarting a publish.
-      CONTENT_SYNC_ON_BOOT: ${CONTENT_SYNC_ON_BOOT:-1}
-
-      # Analytics is on by default and stores no IP addresses. Set to 0 to turn
-      # it off entirely — no collection, no aggregation, no page.
-      ANALYTICS_ENABLED: ${ANALYTICS_ENABLED:-1}
-      ANALYTICS_RAW_RETENTION_DAYS: ${ANALYTICS_RAW_RETENTION_DAYS:-30}
-      GIT_INTEGRATION_ENABLED: ${GIT_INTEGRATION_ENABLED:-0}
-
-      # The worker loop inside the app: scheduled publishing, analytics
-      # rollups, orphan pruning. `WORKER_ENABLED=0` leaves an instance serving
-      # requests and nothing else — the queue claims with a lease, so several
-      # instances with the loop on divide the work rather than duplicating it.
-      WORKER_ENABLED: ${WORKER_ENABLED:-1}
-      WORKER_INTERVAL_MS: ${WORKER_INTERVAL_MS:-60000}
-      # Days of finished job history to keep. Failed jobs are what an operator
-      # reads after an incident; the table would otherwise grow without bound.
-      JOB_RETENTION_DAYS: ${JOB_RETENTION_DAYS:-7}
-    volumes:
-      - ./content:/app/content
-      - ./uploads:/app/public/uploads
-    # Loopback only, in both deployment shapes. Production requires TLS
-    # (`SITE_URL` must be `https://` and `COOKIE_SECURE=1`), so the port exists
-    # for the proxy on this host and for `curl` from a shell on it — publishing
-    # it on every interface would put an HTTP origin in front of a site that is
-    # only safe over HTTPS. Change it to `'${PORT:-3000}:3000'` if a TLS
-    # terminator elsewhere on the network is the arrangement.
-    ports:
-      - '127.0.0.1:${PORT:-3000}:3000'
     depends_on:
       postgres:
         condition: service_healthy
-      migrate:
-        condition: service_completed_successfully
-
-  # Optional: `docker compose --profile proxy up -d`.
-  #
-  # Caddy rather than nginx because the whole configuration is the three lines in
-  # `proxy/Caddyfile` and certificates are obtained and renewed without a
-  # certbot timer to forget about. It exists because `web` binds to loopback: a
-  # host with this profile running has no other way in, and a host without it is
-  # serving plain HTTP to whoever asks.
-  #
-  # `SITE_URL` and `DOMAIN` must be the same hostname. Caddy asks for a
-  # certificate for `DOMAIN`; the application refuses admin writes whose `Origin`
-  # is not in `SITE_URL` plus `TRUSTED_ORIGINS`, so a mismatch is a site that
-  # loads and cannot be logged into.
-  reverse-proxy:
-    image: caddy:2-alpine
-    profiles: ['proxy']
-    restart: unless-stopped
-    environment:
-      # The default is `localhost`, which Caddy serves over its own internal CA —
-      # right for a first run on a laptop, and the reason a real deploy has to set
-      # this rather than relying on a default that would look like it worked.
-      DOMAIN: ${DOMAIN:-localhost}
-    volumes:
-      - ./proxy/Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy-data:/data
-      - caddy-config:/config
     ports:
-      - '80:80'
-      - '443:443'
-      - '443:443/udp' # HTTP/3
-    depends_on:
-      web:
-        condition: service_started
+      - "${HOST_PORT:-3000}:3000"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      PORT: "3000"
+      HOST: "0.0.0.0"
+      SITE_URL: ${SITE_URL:-http://localhost:3000}
+      SITE_NAME: ${SITE_NAME:-Inkbranch}
+      SITE_DESCRIPTION: ${SITE_DESCRIPTION:-Personal Knowledge System & Modern Publishing Platform}
+      DATABASE_URL: postgres://${POSTGRES_USER:-inkbranch}:${POSTGRES_PASSWORD:-change-me}@postgres:5432/${POSTGRES_DB:-inkbranch}?sslmode=disable
+      DATABASE_POOL_MAX: ${DATABASE_POOL_MAX:-10}
+      SESSION_SECRET: ${SESSION_SECRET:-replace-with-32-byte-random-secret}
+      TRUST_PROXY: ${TRUST_PROXY:-true}
+      CONTENT_DIR: /app/content
+      UPLOADS_DIR: /app/uploads
+      BACKUPS_DIR: /app/backups
+      STORAGE_DRIVER: ${STORAGE_DRIVER:-local}
+      R2_ACCOUNT_ID: ${R2_ACCOUNT_ID:-}
+      R2_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID:-}
+      R2_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY:-}
+      R2_BUCKET: ${R2_BUCKET:-}
+      R2_PUBLIC_URL: ${R2_PUBLIC_URL:-}
+      TURNSTILE_SITE_KEY: ${TURNSTILE_SITE_KEY:-}
+      TURNSTILE_SECRET_KEY: ${TURNSTILE_SECRET_KEY:-}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASS: ${SMTP_PASS:-}
+      SMTP_FROM: ${SMTP_FROM:-Inkbranch <noreply@localhost>}
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-}
+      ADMIN_NAME: ${ADMIN_NAME:-Admin}
+      ADMIN_INITIAL_PASSWORD: ${ADMIN_INITIAL_PASSWORD:-}
+    volumes:
+      - ./content:/app/content
+      - ./uploads:/app/uploads
+      - ./backups:/app/backups
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/api/health >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
 
 volumes:
-  postgres-data:
-  caddy-data:
-  caddy-config:
+  postgres_data:

@@ -1,0 +1,802 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    color-scheme: light dark;
+
+    /* Modern Editorial Craft OKLCH 3-layer surface system */
+    --bg-canvas: light-dark(oklch(98.2% 0.005 82), oklch(15.5% 0.012 255));
+    --bg-surface: light-dark(oklch(99.6% 0.002 82), oklch(19.8% 0.014 255));
+    --bg-elevated: light-dark(oklch(95.8% 0.008 78), oklch(24.2% 0.016 255));
+    --bg-subtle: light-dark(oklch(93.8% 0.009 78), oklch(27.5% 0.016 255));
+    --bg-code: light-dark(oklch(96.5% 0.006 80), oklch(13.5% 0.012 255));
+
+    --text-primary: light-dark(oklch(21% 0.018 55), oklch(93.5% 0.008 85));
+    --text-secondary: light-dark(oklch(42% 0.016 55), oklch(75% 0.012 250));
+    --text-muted: light-dark(oklch(54% 0.012 55), oklch(59% 0.012 250));
+
+    --accent-light: oklch(48% 0.145 42);
+    --accent-dark: oklch(76% 0.13 68);
+    --accent: light-dark(var(--accent-light), var(--accent-dark));
+    --accent-hover: light-dark(oklch(42% 0.15 42), oklch(82% 0.125 68));
+    --accent-soft: light-dark(oklch(48% 0.145 42 / 0.1), oklch(76% 0.13 68 / 0.14));
+    --accent-ink: light-dark(oklch(99% 0.004 82), oklch(16% 0.014 255));
+
+    --border-subtle: light-dark(oklch(88.5% 0.009 75), oklch(29% 0.014 255));
+    --border-strong: light-dark(oklch(76% 0.014 70), oklch(40% 0.016 255));
+
+    --shadow-card: light-dark(
+      0 1px 2px oklch(20% 0.02 55 / 0.05), 0 8px 24px -12px oklch(20% 0.02 55 / 0.08),
+      0 1px 2px oklch(0% 0 0 / 0.3), 0 12px 28px -12px oklch(0% 0 0 / 0.45)
+    );
+    --shadow-float: light-dark(
+      0 12px 32px -8px oklch(20% 0.02 55 / 0.14), 0 2px 6px oklch(20% 0.02 55 / 0.06),
+      0 18px 40px -8px oklch(0% 0 0 / 0.65), 0 2px 8px oklch(0% 0 0 / 0.4)
+    );
+
+    --tone-note: light-dark(oklch(52% 0.14 245), oklch(74% 0.12 240));
+    --tone-tip: light-dark(oklch(50% 0.13 155), oklch(74% 0.13 155));
+    --tone-warning: light-dark(oklch(56% 0.15 72), oklch(78% 0.14 78));
+    --tone-danger: light-dark(oklch(52% 0.18 25), oklch(73% 0.16 25));
+
+    --font-sans: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Noto Sans SC", "Microsoft YaHei", "Segoe UI", sans-serif;
+    --font-serif: "Source Han Serif SC", "Noto Serif SC", "Songti SC", "STSong", Georgia, Cambria, "Times New Roman", serif;
+    --font-mono: "JetBrains Mono", "Fira Code", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+
+    &:has(> head > meta[name="color-scheme"][content="dark"]) {
+      color-scheme: dark;
+    }
+    &:has(> head > meta[name="color-scheme"][content="light"]) {
+      color-scheme: light;
+    }
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    html {
+      scroll-behavior: smooth;
+    }
+  }
+
+  html,
+  body {
+    background-color: var(--bg-canvas);
+    color: var(--text-primary);
+    font-family: var(--font-sans);
+    line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4 {
+    text-wrap: balance;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
+  dialog:modal {
+    overscroll-behavior: contain;
+  }
+
+  dialog::backdrop {
+    background: oklch(12% 0.012 255 / 0.56);
+    backdrop-filter: blur(5px);
+    overflow: hidden;
+    overscroll-behavior: contain;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    ::view-transition-group(*),
+    ::view-transition-old(*),
+    ::view-transition-new(*) {
+      animation: none !important;
+    }
+  }
+
+  @media (forced-colors: active) {
+    .editorial-card,
+    .editorial-dialog[open],
+    .wikilink-hovercard {
+      border: 1px solid CanvasText;
+    }
+
+    .nav-link[aria-current="page"]::after {
+      background-color: Highlight;
+    }
+
+    .md-code-block {
+      forced-color-adjust: none;
+      background-color: #16181d;
+      color: #f4f4f6;
+      border: 1px solid ButtonBorder;
+    }
+  }
+}
+
+@layer components {
+  .visually-hidden:where(:not(:focus-within, :active)) {
+    position: absolute !important;
+    clip-path: inset(50%) !important;
+    overflow: hidden !important;
+    width: 1px !important;
+    height: 1px !important;
+    margin: -1px !important;
+    padding: 0 !important;
+    border: 0 !important;
+    white-space: nowrap !important;
+  }
+
+  .skip-link:focus-visible {
+    position: fixed;
+    top: 0.75rem;
+    left: 0.75rem;
+    z-index: 100;
+    border-radius: 9999px;
+    background-color: var(--accent);
+    color: var(--accent-ink);
+    padding: 0.5rem 1rem;
+    font-size: 0.875rem;
+    font-weight: 600;
+    box-shadow: var(--shadow-float);
+  }
+
+  .editorial-card {
+    background-color: var(--bg-surface);
+    border: 1px solid var(--border-subtle);
+    border-radius: 1rem;
+    box-shadow: var(--shadow-card);
+    transition: border-color 180ms ease, transform 180ms ease, box-shadow 180ms ease;
+  }
+
+  .editorial-card-interactive:hover {
+    border-color: var(--border-strong);
+    box-shadow: var(--shadow-float);
+  }
+
+  .nav-link {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.375rem 0.625rem;
+    border-radius: 0.5rem;
+    color: var(--text-secondary);
+    font-size: 0.875rem;
+    font-weight: 500;
+    transition: color 150ms ease, background-color 150ms ease;
+  }
+
+  .nav-link:hover {
+    color: var(--text-primary);
+    background-color: var(--bg-elevated);
+  }
+
+  .nav-link[aria-current="page"] {
+    color: var(--text-primary);
+    font-weight: 600;
+  }
+
+  .nav-link[aria-current="page"]::after {
+    content: "";
+    position: absolute;
+    left: 0.625rem;
+    right: 0.625rem;
+    bottom: -0.375rem;
+    height: 2px;
+    border-radius: 9999px;
+    background-color: var(--accent);
+  }
+
+  .deferred-item {
+    content-visibility: auto;
+    contain-intrinsic-size: auto none auto 200px;
+  }
+
+  .editorial-input {
+    width: 100%;
+    min-height: 3rem;
+    border-radius: 0.75rem;
+    border: 1px solid var(--border-subtle);
+    background-color: var(--bg-surface);
+    padding: 0.625rem 0.875rem;
+    font-size: max(1rem, 1em);
+    color: var(--text-primary);
+    transition: border-color 150ms ease, box-shadow 150ms ease;
+  }
+
+  .editorial-input::placeholder {
+    color: var(--text-muted);
+  }
+
+  .editorial-input:focus-visible {
+    border-color: var(--accent);
+    outline: none;
+    box-shadow: 0 0 0 3px var(--accent-soft);
+  }
+
+  .editorial-input:user-invalid {
+    border-color: var(--tone-danger);
+    box-shadow: 0 0 0 3px oklch(55% 0.18 25 / 0.16);
+  }
+
+  .editorial-textarea {
+    min-height: 7.5rem;
+    resize: vertical;
+  }
+
+  .editorial-dialog {
+    margin: auto;
+    max-width: min(44rem, calc(100vw - 2rem));
+    width: 100%;
+    max-height: calc(100dvh - 3rem);
+    border-radius: 1.25rem;
+    border: 1px solid var(--border-subtle);
+    background-color: var(--bg-surface);
+    color: var(--text-primary);
+    padding: 0;
+    box-shadow: var(--shadow-float);
+  }
+
+  .editorial-dialog[open] {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .editorial-lightbox {
+    margin: auto;
+    max-width: min(92vw, 76rem);
+    max-height: 92dvh;
+    border-radius: 1rem;
+    border: 1px solid var(--border-subtle);
+    background-color: var(--bg-surface);
+    color: var(--text-primary);
+    padding: 0.75rem;
+    box-shadow: var(--shadow-float);
+  }
+
+  .editorial-lightbox[open] {
+    display: flex;
+    flex-direction: column;
+    gap: 0.625rem;
+  }
+
+  /* Wikilink Hovercard popover with progressive CSS Anchor Positioning */
+  .wikilink-hovercard {
+    width: min(22rem, calc(100vw - 2rem));
+    border-radius: 0.875rem;
+    border: 1px solid var(--border-strong);
+    background-color: var(--bg-surface);
+    color: var(--text-primary);
+    padding: 0.875rem 1rem;
+    box-shadow: var(--shadow-float);
+    pointer-events: auto;
+  }
+
+  @supports (position-area: block-end) {
+    .wikilink-hovercard.has-anchor-support {
+      inset: auto;
+      margin: 0;
+      margin-block-start: 0.5rem;
+      position-area: block-end span-inline-end;
+      position-try-fallbacks: flip-block, flip-inline;
+    }
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .wikilink-hovercard {
+      opacity: 0;
+      transform: translateY(4px) scale(0.985);
+      transition: opacity 150ms ease, transform 150ms ease, display 150ms ease, overlay 150ms ease;
+      transition-behavior: allow-discrete;
+    }
+
+    .wikilink-hovercard:is(:popover-open, .\:popover-open) {
+      opacity: 1;
+      transform: translateY(0) scale(1);
+    }
+
+    @starting-style {
+      .wikilink-hovercard:is(:popover-open, .\:popover-open) {
+        opacity: 0;
+        transform: translateY(4px) scale(0.985);
+      }
+    }
+  }
+
+  /* Reading typography modes */
+  .reading-font-serif .editorial-prose {
+    font-family: var(--font-serif);
+    font-size: 1.09rem;
+    line-height: 1.88;
+  }
+
+  .reading-font-sans .editorial-prose {
+    font-family: var(--font-sans);
+    font-size: 1.03rem;
+    line-height: 1.8;
+  }
+
+  /* Rendered Markdown prose workbench */
+  .editorial-prose {
+    color: var(--text-primary);
+    overflow-wrap: anywhere;
+  }
+
+  .editorial-prose :where(p, li, blockquote) {
+    text-wrap: pretty;
+  }
+
+  .editorial-prose > :first-child {
+    margin-top: 0;
+  }
+
+  .editorial-prose p {
+    margin-block: 1.15em;
+  }
+
+  .editorial-prose :where(h1, h2, h3, h4) {
+    scroll-margin-top: 5.5rem;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    color: var(--text-primary);
+    line-height: 1.3;
+  }
+
+  .editorial-prose h2 {
+    margin-top: 2.3em;
+    margin-bottom: 0.75em;
+    padding-bottom: 0.35em;
+    border-bottom: 1px solid var(--border-subtle);
+    font-size: 1.5rem;
+  }
+
+  .editorial-prose h3 {
+    margin-top: 1.75em;
+    margin-bottom: 0.6em;
+    font-size: 1.24rem;
+  }
+
+  .editorial-prose h4 {
+    margin-top: 1.4em;
+    margin-bottom: 0.5em;
+    font-size: 1.08rem;
+  }
+
+  .editorial-prose .md-heading-anchor {
+    margin-inline-start: 0.4rem;
+    color: var(--text-muted);
+    text-decoration: none;
+    opacity: 0;
+    transition: opacity 120ms ease, color 120ms ease;
+    font-weight: 400;
+  }
+
+  .editorial-prose :where(h1, h2, h3, h4):hover .md-heading-anchor,
+  .editorial-prose .md-heading-anchor:focus-visible {
+    opacity: 1;
+    color: var(--accent);
+  }
+
+  .editorial-prose a:not(.md-heading-anchor) {
+    color: var(--accent);
+    text-decoration: underline;
+    text-decoration-thickness: 1px;
+    text-underline-offset: 0.22em;
+    transition: color 120ms ease;
+  }
+
+  .editorial-prose a:not(.md-heading-anchor):hover {
+    color: var(--accent-hover);
+  }
+
+  .editorial-prose a.md-wikilink {
+    display: inline;
+    border-radius: 0.375rem;
+    background-color: var(--accent-soft);
+    padding: 0.05em 0.35em;
+    text-decoration: none;
+    font-weight: 500;
+  }
+
+  .editorial-prose .md-wikilink-broken {
+    border-radius: 0.375rem;
+    border: 1px dashed var(--border-strong);
+    padding: 0.05em 0.35em;
+    color: var(--text-muted);
+    font-size: 0.94em;
+  }
+
+  .editorial-prose ul,
+  .editorial-prose ol {
+    margin-block: 1.1em;
+    padding-inline-start: 1.55rem;
+  }
+
+  .editorial-prose ul {
+    list-style-type: disc;
+  }
+
+  .editorial-prose ol {
+    list-style-type: decimal;
+  }
+
+  .editorial-prose li {
+    margin-block: 0.35em;
+  }
+
+  .editorial-prose li > input[type="checkbox"] {
+    margin-inline-end: 0.45rem;
+    accent-color: var(--accent);
+  }
+
+  .editorial-prose blockquote {
+    margin-block: 1.4em;
+    border-inline-start: 3px solid var(--accent);
+    background-color: var(--bg-elevated);
+    border-radius: 0 0.75rem 0.75rem 0;
+    padding: 0.75rem 1.1rem;
+    color: var(--text-secondary);
+  }
+
+  .editorial-prose blockquote > :first-child {
+    margin-top: 0;
+  }
+  .editorial-prose blockquote > :last-child {
+    margin-bottom: 0;
+  }
+
+  .editorial-prose hr {
+    margin-block: 2.25rem;
+    border: 0;
+    border-top: 1px solid var(--border-subtle);
+  }
+
+  .editorial-prose :not(pre) > code {
+    font-family: var(--font-mono);
+    font-size: 0.86em;
+    border-radius: 0.375rem;
+    border: 1px solid var(--border-subtle);
+    background-color: var(--bg-elevated);
+    padding: 0.12em 0.38em;
+    color: var(--text-primary);
+  }
+
+  .editorial-prose img {
+    display: block;
+    max-width: 100%;
+    height: auto;
+    margin-block: 1.5rem;
+    border-radius: 0.875rem;
+    border: 1px solid var(--border-subtle);
+    cursor: zoom-in;
+    box-shadow: var(--shadow-card);
+  }
+
+  .editorial-prose table {
+    display: block;
+    width: 100%;
+    max-width: 100%;
+    overflow-x: auto;
+    border-collapse: collapse;
+    margin-block: 1.5rem;
+    font-size: 0.92rem;
+  }
+
+  .editorial-prose th,
+  .editorial-prose td {
+    border: 1px solid var(--border-subtle);
+    padding: 0.55rem 0.85rem;
+    text-align: left;
+  }
+
+  .editorial-prose th {
+    background-color: var(--bg-elevated);
+    font-weight: 600;
+  }
+
+  /* Enhanced server-rendered code blocks */
+  .editorial-prose figure.md-code-block {
+    position: relative;
+    margin-block: 1.5rem;
+    border-radius: 0.875rem;
+    border: 1px solid var(--border-subtle);
+    background-color: var(--bg-code);
+    overflow: hidden;
+    box-shadow: var(--shadow-card);
+    font-family: var(--font-mono);
+  }
+
+  .editorial-prose figcaption.md-code-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    padding: 0.55rem 0.9rem;
+    border-bottom: 1px solid var(--border-subtle);
+    background-color: var(--bg-elevated);
+    font-size: 0.78rem;
+  }
+
+  .editorial-prose .md-code-title {
+    font-weight: 600;
+    color: var(--text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .editorial-prose .md-code-badge {
+    margin-inline-end: auto;
+    border-radius: 9999px;
+    border: 1px solid var(--border-subtle);
+    background-color: var(--bg-surface);
+    padding: 0.1rem 0.5rem;
+    font-size: 0.7rem;
+    color: var(--text-secondary);
+  }
+
+  .editorial-prose .md-code-copy {
+    margin-inline-start: auto;
+    border-radius: 0.5rem;
+    border: 1px solid var(--border-subtle);
+    background-color: var(--bg-surface);
+    padding: 0.22rem 0.65rem;
+    font-family: var(--font-sans);
+    font-size: 0.75rem;
+    font-weight: 500;
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: color 120ms ease, border-color 120ms ease, background-color 120ms ease;
+  }
+
+  .editorial-prose .md-code-copy:hover {
+    color: var(--text-primary);
+    border-color: var(--border-strong);
+  }
+
+  .editorial-prose figure.md-code-block pre {
+    margin: 0;
+    padding: 0.85rem 0;
+    overflow-x: auto;
+    font-family: var(--font-mono);
+    font-size: 0.85rem;
+    line-height: 1.6;
+  }
+
+  .editorial-prose figure.md-code-block[data-collapsed="true"] pre {
+    max-height: 22rem;
+    overflow-y: hidden;
+  }
+
+  .editorial-prose .md-code-expand {
+    display: flex;
+    width: 100%;
+    justify-content: center;
+    align-items: center;
+    gap: 0.35rem;
+    border-top: 1px solid var(--border-subtle);
+    background-color: var(--bg-elevated);
+    padding: 0.45rem 0.75rem;
+    font-family: var(--font-sans);
+    font-size: 0.78rem;
+    font-weight: 500;
+    color: var(--accent);
+    cursor: pointer;
+  }
+
+  .editorial-prose .md-code-expand:hover {
+    background-color: var(--bg-subtle);
+  }
+
+  .editorial-prose code.chroma {
+    display: block;
+    min-width: max-content;
+  }
+
+  .editorial-prose .md-code-line {
+    display: flex;
+    align-items: baseline;
+    padding-inline: 0.9rem;
+    min-height: 1.35rem;
+  }
+
+  .editorial-prose .md-code-line.is-highlighted {
+    background-color: var(--accent-soft);
+    box-shadow: inset 3px 0 0 var(--accent);
+  }
+
+  .editorial-prose .md-code-line.is-diff-add {
+    background-color: oklch(65% 0.14 150 / 0.14);
+    box-shadow: inset 3px 0 0 var(--tone-tip);
+  }
+
+  .editorial-prose .md-code-line.is-diff-del {
+    background-color: oklch(62% 0.17 25 / 0.14);
+    box-shadow: inset 3px 0 0 var(--tone-danger);
+  }
+
+  .editorial-prose .md-ln {
+    display: inline-block;
+    width: 2.3rem;
+    flex-shrink: 0;
+    padding-inline-end: 0.85rem;
+    text-align: right;
+    color: var(--text-muted);
+    user-select: none;
+    font-size: 0.78rem;
+  }
+
+  .editorial-prose .md-cl {
+    flex: 1 1 auto;
+    white-space: pre;
+  }
+
+  .editorial-prose .md-code-word {
+    border-radius: 0.25rem;
+    background-color: var(--accent-soft);
+    color: inherit;
+    padding: 0 0.18em;
+  }
+
+  /* Directives: callouts, details, tabs, file-tree, math, kbd */
+  .editorial-prose aside.md-callout {
+    margin-block: 1.4rem;
+    border-radius: 0.875rem;
+    border: 1px solid var(--border-subtle);
+    border-inline-start-width: 4px;
+    background-color: var(--bg-surface);
+    padding: 0.9rem 1.1rem;
+  }
+
+  .editorial-prose aside.md-callout-note {
+    border-inline-start-color: var(--tone-note);
+  }
+  .editorial-prose aside.md-callout-tip {
+    border-inline-start-color: var(--tone-tip);
+  }
+  .editorial-prose aside.md-callout-warning {
+    border-inline-start-color: var(--tone-warning);
+  }
+  .editorial-prose aside.md-callout-danger {
+    border-inline-start-color: var(--tone-danger);
+  }
+
+  .editorial-prose .md-callout-title {
+    font-weight: 600;
+    font-size: 0.9rem;
+    margin-bottom: 0.35rem;
+    color: var(--text-primary);
+  }
+
+  .editorial-prose .md-callout-body > :first-child {
+    margin-top: 0;
+  }
+  .editorial-prose .md-callout-body > :last-child {
+    margin-bottom: 0;
+  }
+
+  .editorial-prose details.md-details {
+    margin-block: 1.25rem;
+    border-radius: 0.875rem;
+    border: 1px solid var(--border-subtle);
+    background-color: var(--bg-surface);
+    padding: 0.75rem 1rem;
+  }
+
+  .editorial-prose summary.md-details-summary {
+    cursor: pointer;
+    font-weight: 600;
+    font-size: 0.95rem;
+  }
+
+  .editorial-prose .md-details-body {
+    margin-top: 0.65rem;
+    padding-top: 0.65rem;
+    border-top: 1px solid var(--border-subtle);
+  }
+
+  .editorial-prose .md-tabs {
+    margin-block: 1.4rem;
+    border-radius: 0.875rem;
+    border: 1px solid var(--border-subtle);
+    background-color: var(--bg-surface);
+    overflow: hidden;
+  }
+
+  .editorial-prose .md-tab-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.25rem;
+    padding: 0.45rem 0.6rem;
+    border-bottom: 1px solid var(--border-subtle);
+    background-color: var(--bg-elevated);
+  }
+
+  .editorial-prose .md-tab-button {
+    border-radius: 0.5rem;
+    padding: 0.32rem 0.75rem;
+    font-size: 0.84rem;
+    font-weight: 500;
+    color: var(--text-secondary);
+    cursor: pointer;
+  }
+
+  .editorial-prose .md-tab-button.is-active {
+    background-color: var(--bg-surface);
+    color: var(--text-primary);
+    box-shadow: var(--shadow-card);
+  }
+
+  .editorial-prose .md-tab-panel {
+    padding: 0.9rem 1rem;
+  }
+
+  .editorial-prose pre.md-file-tree,
+  .editorial-prose .md-mermaid-source {
+    margin-block: 1.4rem;
+    border-radius: 0.875rem;
+    border: 1px solid var(--border-subtle);
+    background-color: var(--bg-code);
+    padding: 0.9rem 1.1rem;
+    font-family: var(--font-mono);
+    font-size: 0.86rem;
+    overflow-x: auto;
+  }
+
+  .editorial-prose .math-display {
+    margin-block: 1.25rem;
+    overflow-x: auto;
+    border-radius: 0.75rem;
+    background-color: var(--bg-elevated);
+    padding: 0.85rem 1rem;
+    font-family: var(--font-mono);
+    font-size: 0.92rem;
+    text-align: center;
+  }
+
+  .editorial-prose .math-inline {
+    font-family: var(--font-mono);
+    font-size: 0.92em;
+    background-color: var(--bg-elevated);
+    border-radius: 0.3rem;
+    padding: 0.05em 0.32em;
+  }
+
+  .editorial-prose .md-kbd,
+  .kbd-chip {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 0.4rem;
+    border: 1px solid var(--border-strong);
+    border-bottom-width: 2px;
+    background-color: var(--bg-surface);
+    padding: 0.08rem 0.38rem;
+    font-family: var(--font-mono);
+    font-size: 0.75em;
+    color: var(--text-secondary);
+    line-height: 1.3;
+  }
+
+  .editorial-prose mark {
+    border-radius: 0.25rem;
+    background-color: oklch(86% 0.14 85 / 0.55);
+    color: inherit;
+    padding: 0.05em 0.22em;
+  }
+
+  /* Search snippet mark */
+  .search-snippet mark {
+    border-radius: 0.25rem;
+    background-color: var(--accent-soft);
+    color: var(--accent);
+    font-weight: 600;
+    padding: 0 0.15em;
+  }
+}
