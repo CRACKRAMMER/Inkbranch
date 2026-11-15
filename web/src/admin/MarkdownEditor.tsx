@@ -31,6 +31,7 @@ import {
 import type { ContentStatus, ContentType } from '../lib/types'
 import {
   adminApi,
+  isBlogStudioPath,
   type AdminContentSummary,
   type DraftPreviewRecord,
   type RevisionRecord,
@@ -236,7 +237,13 @@ function applyMetaToMarkdown(raw: string, meta: EditorDocMeta): string {
   return `---\n${nextLines.join('\n')}\n---\n\n${body.replace(/^\n+/, '')}`
 }
 
-export function MarkdownWorkspace({ onDirtyNotice }: { onDirtyNotice?: (msg: string) => void }) {
+export function MarkdownWorkspace({
+  onDirtyNotice,
+  siteUrl,
+}: {
+  onDirtyNotice?: (msg: string) => void
+  siteUrl?: string
+}) {
   const [items, setItems] = useState<AdminContentSummary[]>([])
   const [filterType, setFilterType] = useState<string>('')
   const [filterStatus, setFilterStatus] = useState<string>('')
@@ -530,7 +537,10 @@ export function MarkdownWorkspace({ onDirtyNotice }: { onDirtyNotice?: (msg: str
     const timer = window.setTimeout(async () => {
       try {
         const res = await adminApi.previewMarkdown(docType, rawMarkdown)
-        setPreviewHtml(res.renderedHtml)
+        const html = isBlogStudioPath()
+          ? res.renderedHtml.replace(/(<img\b[^>]*?\bsrc=["'])\/uploads\//gi, '$1/blog/uploads/')
+          : res.renderedHtml
+        setPreviewHtml(html)
         setPreviewErr(res.frontmatterError)
       } catch (err) {
         setPreviewErr(err instanceof Error ? err.message : '预览渲染错误')
@@ -587,7 +597,8 @@ export function MarkdownWorkspace({ onDirtyNotice }: { onDirtyNotice?: (msg: str
         label: `${docType}/${activeSlug}`,
         ttlHours: 72,
       })
-      const full = `${window.location.origin}${res.previewUrl}`
+      const baseOrigin = siteUrl ? siteUrl.replace(/\/$/, '') : window.location.origin
+      const full = `${baseOrigin}${res.previewUrl}`
       setGeneratedPreviewUrl(full)
       const detail = await adminApi.getContent(docType, activeSlug)
       setPreviews(detail.previews ?? [])

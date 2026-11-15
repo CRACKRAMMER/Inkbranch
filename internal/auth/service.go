@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/CRACKRAMMER/Inkbranch/internal/citadel"
 	"github.com/CRACKRAMMER/Inkbranch/internal/config"
 	"github.com/CRACKRAMMER/Inkbranch/internal/state"
 	"github.com/go-webauthn/webauthn/protocol"
@@ -30,11 +31,14 @@ var (
 )
 
 type Principal struct {
-	User     *state.User
-	AuthKind string // "session" or "pat"
-	Session  *state.Session
-	APIToken *state.APITokenRecord
-	Scopes   []string
+	User         *state.User
+	AuthKind     string // "session", "pat", "forward_auth", "citadel_pat", "citadel_oauth"
+	AuthProvider string // "local" or "citadel"
+	GlobalRole   string
+	AppRole      string
+	Session      *state.Session
+	APIToken     *state.APITokenRecord
+	Scopes       []string
 }
 
 func (p *Principal) HasScope(scope string) bool {
@@ -44,8 +48,13 @@ func (p *Principal) HasScope(scope string) bool {
 	if p.AuthKind == "session" {
 		return true
 	}
+	if strings.EqualFold(p.GlobalRole, "super_admin") {
+		if p.AuthKind == "forward_auth" || len(p.Scopes) == 0 {
+			return true
+		}
+	}
 	for _, s := range p.Scopes {
-		if s == "admin:*" || s == scope {
+		if s == "*" || s == "admin:*" || s == scope {
 			return true
 		}
 	}
@@ -65,10 +74,11 @@ type passkeyCeremony struct {
 }
 
 type Service struct {
-	cfg   *config.Config
-	state state.Store
+	cfg     *config.Config
+	state   state.Store
+	citadel *citadel.Client
 
-	mu          sync.Mutex
+	mu            sync.Mutex
 	mfaChallenges map[string]mfaPending
 	regSessions   map[string]passkeyCeremony
 	loginSessions map[string]passkeyCeremony
@@ -116,6 +126,9 @@ type LoginOutcome struct {
 
 // LoginWithPassword verifies email/password and either completes login or issues an MFA challenge.
 func (s *Service) LoginWithPassword(ctx context.Context, email, password string, r *http.Request) (*LoginOutcome, error) {
+	if s.cfg.AuthMode == config.AuthModeCitadelOnly {
+		return nil, ErrLocalAuthDisabled
+	}
 	u, err := s.state.GetUserByEmail(ctx, email)
 	if err != nil || u == nil {
 		return nil, ErrUnauthorized
@@ -150,6 +163,9 @@ func (s *Service) LoginWithPassword(ctx context.Context, email, password string,
 
 // VerifyMFACode completes a pending TOTP/recovery login challenge and issues a full session.
 func (s *Service) VerifyMFACode(ctx context.Context, mfaToken, code string, r *http.Request) (*LoginOutcome, error) {
+	if s.cfg.AuthMode == config.AuthModeCitadelOnly {
+		return nil, ErrLocalAuthDisabled
+	}
 	hashKey := HashToken(strings.TrimSpace(mfaToken))
 	s.mu.Lock()
 	s.cleanupExpiredLocked()
@@ -275,36 +291,28 @@ func (s *Service) ClearSessionCookie(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// AuthenticateRequest resolves the active Principal via Bearer PAT or HttpOnly Session cookie.
+// AuthenticateRequest resolves the active Principal via Citadel ForwardAuth headers,
+// Bearer PAT/OAuth token (Citadel or local), or HttpOnly local Session cookie.
 func (s *Service) AuthenticateRequest(r *http.Request) (*Principal, error) {
 	ctx := r.Context()
+	if s.cfg.UsesCitadel() && s.hasCitadelHeaders(r) {
+		return s.AuthenticateCitadelHeaders(r)
+	}
+
 	authHeader := strings.TrimSpace(r.Header.Get("Authorization"))
 	if strings.HasPrefix(strings.ToLower(authHeader), "bearer ") {
 		rawTok := strings.TrimSpace(authHeader[len("bearer "):])
 		if rawTok == "" {
 			return nil, ErrUnauthorized
 		}
-		tokRec, err := s.state.GetAPITokenByHash(ctx, HashToken(rawTok))
-		if err != nil || tokRec == nil {
-			return nil, ErrUnauthorized
+		if strings.HasPrefix(rawTok, "cit_pat_") || strings.HasPrefix(rawTok, "cit_at_") {
+			return s.authenticateCitadelBearer(ctx, rawTok)
 		}
-		if tokRec.RevokedAt != nil {
-			return nil, ErrUnauthorized
-		}
-		if tokRec.ExpiresAt != nil && time.Now().UTC().After(*tokRec.ExpiresAt) {
-			return nil, ErrUnauthorized
-		}
-		user, err := s.state.GetUserByID(ctx, tokRec.UserID)
-		if err != nil || user == nil {
-			return nil, ErrUnauthorized
-		}
-		_ = s.state.TouchAPIToken(ctx, tokRec.ID, time.Now().UTC())
-		return &Principal{
-			User:     user,
-			AuthKind: "pat",
-			APIToken: tokRec,
-			Scopes:   tokRec.Scopes,
-		}, nil
+		return s.authenticateLocalPAT(ctx, rawTok)
+	}
+
+	if s.cfg.AuthMode == config.AuthModeCitadelOnly {
+		return nil, ErrUnauthorized
 	}
 
 	cookie, err := r.Cookie(SessionCookieName)
@@ -328,22 +336,28 @@ func (s *Service) AuthenticateRequest(r *http.Request) (*Principal, error) {
 		_ = s.state.TouchSession(ctx, sess.ID, now)
 	}
 	return &Principal{
-		User:     user,
-		AuthKind: "session",
-		Session:  sess,
-		Scopes:   []string{"admin:*"},
+		User:         user,
+		AuthKind:     "session",
+		AuthProvider: "local",
+		GlobalRole:   user.Role,
+		AppRole:      user.Role,
+		Session:      sess,
+		Scopes:       []string{"admin:*"},
 	}, nil
 }
 
-// VerifyCSRF checks X-CSRF-Token against the session's CSRFSecret on cookie-authenticated mutations.
+// VerifyCSRF checks Origin on ForwardAuth mutations and X-CSRF-Token on local session cookie mutations.
 func (s *Service) VerifyCSRF(r *http.Request, p *Principal) bool {
 	if p == nil {
 		return false
 	}
-	if p.AuthKind != "session" {
+	if !isMutatingMethod(r.Method) {
 		return true
 	}
-	if r.Method == http.MethodGet || r.Method == http.MethodHead || r.Method == http.MethodOptions {
+	if p.AuthKind == "forward_auth" {
+		return s.VerifyCitadelOrigin(r)
+	}
+	if p.AuthKind != "session" {
 		return true
 	}
 	if p.Session == nil || p.Session.CSRFSecret == "" {
@@ -590,6 +604,9 @@ func (s *Service) FinishPasskeyRegistration(ctx context.Context, u *state.User, 
 }
 
 func (s *Service) BeginPasskeyLogin(ctx context.Context, email string, r *http.Request) (ceremonyID string, assertion *protocol.CredentialAssertion, err error) {
+	if s.cfg.AuthMode == config.AuthModeCitadelOnly {
+		return "", nil, ErrLocalAuthDisabled
+	}
 	wa, err := s.newWebAuthn(r)
 	if err != nil {
 		return "", nil, err
@@ -635,6 +652,9 @@ func (s *Service) BeginPasskeyLogin(ctx context.Context, email string, r *http.R
 }
 
 func (s *Service) FinishPasskeyLogin(ctx context.Context, ceremonyID string, r *http.Request) (*LoginOutcome, error) {
+	if s.cfg.AuthMode == config.AuthModeCitadelOnly {
+		return nil, ErrLocalAuthDisabled
+	}
 	s.mu.Lock()
 	s.cleanupExpiredLocked()
 	cer, ok := s.loginSessions[ceremonyID]

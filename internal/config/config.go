@@ -43,43 +43,75 @@ type Config struct {
 	AdminInitPassword  string
 	AdminPasswordFile  string
 
+	// Citadel unified identity & ForwardAuth integration
+	AuthMode                string // "local", "hybrid", or "citadel_only"
+	CitadelAppID            string
+	CitadelInternalURL      string
+	CitadelPublicURL        string
+	CitadelInternalSecret   string
+	CitadelHeaderHMACSecret string
+
 	secretOnce sync.Once
 	secretKey  []byte
 }
 
+const (
+	AuthModeLocal       = "local"
+	AuthModeHybrid      = "hybrid"
+	AuthModeCitadelOnly = "citadel_only"
+)
+
 // Load reads environment variables into Config with safe defaults.
 func Load() (*Config, error) {
+	citadelInternalSecret := strings.TrimSpace(os.Getenv("CITADEL_INTERNAL_SECRET"))
+	citadelHeaderSecret := strings.TrimSpace(os.Getenv("CITADEL_HEADER_HMAC_SECRET"))
+	defaultAuthMode := AuthModeLocal
+	if citadelHeaderSecret != "" || citadelInternalSecret != "" {
+		defaultAuthMode = AuthModeHybrid
+	}
+
+	rawAuthMode := firstNonEmptyEnv("AUTH_MODE", "CITADEL_AUTH_MODE")
+	if rawAuthMode == "" {
+		rawAuthMode = defaultAuthMode
+	}
+
 	cfg := &Config{
-		Port:               getEnvInt("PORT", 3000),
-		Host:               getEnvOr("HOST", "0.0.0.0"),
-		SiteURL:            strings.TrimRight(getEnvOr("SITE_URL", "http://localhost:3000"), "/"),
-		SiteName:           getEnvOr("SITE_NAME", "Inkbranch"),
-		SiteDescription:    getEnvOr("SITE_DESCRIPTION", "Personal Knowledge System & Modern Publishing Platform"),
-		DatabaseURL:        strings.TrimSpace(os.Getenv("DATABASE_URL")),
-		DatabasePoolMax:    int32(getEnvInt("DATABASE_POOL_MAX", 10)),
-		SessionSecret:      strings.TrimSpace(os.Getenv("SESSION_SECRET")),
-		TrustProxy:         getEnvBool("TRUST_PROXY", true),
-		ContentDir:         getEnvOr("CONTENT_DIR", "./content"),
-		UploadsDir:         getEnvOr("UPLOADS_DIR", "./uploads"),
-		BackupsDir:         getEnvOr("BACKUPS_DIR", "./backups"),
-		StorageDriver:      strings.ToLower(getEnvOr("STORAGE_DRIVER", "local")),
-		R2AccountID:        strings.TrimSpace(os.Getenv("R2_ACCOUNT_ID")),
-		R2AccessKeyID:      strings.TrimSpace(os.Getenv("R2_ACCESS_KEY_ID")),
-		R2SecretAccessKey:  strings.TrimSpace(os.Getenv("R2_SECRET_ACCESS_KEY")),
-		R2Bucket:           strings.TrimSpace(os.Getenv("R2_BUCKET")),
-		R2PublicURL:        strings.TrimRight(strings.TrimSpace(os.Getenv("R2_PUBLIC_URL")), "/"),
-		TurnstileSiteKey:   strings.TrimSpace(os.Getenv("TURNSTILE_SITE_KEY")),
-		TurnstileSecretKey: strings.TrimSpace(os.Getenv("TURNSTILE_SECRET_KEY")),
-		SMTPHost:           strings.TrimSpace(os.Getenv("SMTP_HOST")),
-		SMTPPort:           getEnvInt("SMTP_PORT", 587),
-		SMTPUser:           strings.TrimSpace(os.Getenv("SMTP_USER")),
-		SMTPPass:           strings.TrimSpace(os.Getenv("SMTP_PASS")),
-		SMTPFrom:           getEnvOr("SMTP_FROM", "Inkbranch <noreply@localhost>"),
-		ResendAPIKey:       strings.TrimSpace(os.Getenv("RESEND_API_KEY")),
-		AdminEmail:         getEnvOr("ADMIN_EMAIL", "crackrammer@gmail.com"),
-		AdminName:          getEnvOr("ADMIN_NAME", "CRACKRAMMER"),
-		AdminInitPassword:  firstNonEmptyEnv("ADMIN_INITIAL_PASSWORD", "ADMIN_PASSWORD"),
-		AdminPasswordFile:  getEnvOr("ADMIN_INITIAL_PASSWORD_FILE", "./.inkbranch-initial-admin-password"),
+		Port:                    getEnvInt("PORT", 3000),
+		Host:                    getEnvOr("HOST", "0.0.0.0"),
+		SiteURL:                 strings.TrimRight(getEnvOr("SITE_URL", "http://localhost:3000"), "/"),
+		SiteName:                getEnvOr("SITE_NAME", "Inkbranch"),
+		SiteDescription:         getEnvOr("SITE_DESCRIPTION", "Personal Knowledge System & Modern Publishing Platform"),
+		DatabaseURL:             strings.TrimSpace(os.Getenv("DATABASE_URL")),
+		DatabasePoolMax:         int32(getEnvInt("DATABASE_POOL_MAX", 10)),
+		SessionSecret:           strings.TrimSpace(os.Getenv("SESSION_SECRET")),
+		TrustProxy:              getEnvBool("TRUST_PROXY", true),
+		ContentDir:              getEnvOr("CONTENT_DIR", "./content"),
+		UploadsDir:              getEnvOr("UPLOADS_DIR", "./uploads"),
+		BackupsDir:              getEnvOr("BACKUPS_DIR", "./backups"),
+		StorageDriver:           strings.ToLower(getEnvOr("STORAGE_DRIVER", "local")),
+		R2AccountID:             strings.TrimSpace(os.Getenv("R2_ACCOUNT_ID")),
+		R2AccessKeyID:           strings.TrimSpace(os.Getenv("R2_ACCESS_KEY_ID")),
+		R2SecretAccessKey:       strings.TrimSpace(os.Getenv("R2_SECRET_ACCESS_KEY")),
+		R2Bucket:                strings.TrimSpace(os.Getenv("R2_BUCKET")),
+		R2PublicURL:             strings.TrimRight(strings.TrimSpace(os.Getenv("R2_PUBLIC_URL")), "/"),
+		TurnstileSiteKey:        strings.TrimSpace(os.Getenv("TURNSTILE_SITE_KEY")),
+		TurnstileSecretKey:      strings.TrimSpace(os.Getenv("TURNSTILE_SECRET_KEY")),
+		SMTPHost:                strings.TrimSpace(os.Getenv("SMTP_HOST")),
+		SMTPPort:                getEnvInt("SMTP_PORT", 587),
+		SMTPUser:                strings.TrimSpace(os.Getenv("SMTP_USER")),
+		SMTPPass:                strings.TrimSpace(os.Getenv("SMTP_PASS")),
+		SMTPFrom:                getEnvOr("SMTP_FROM", "Inkbranch <noreply@localhost>"),
+		ResendAPIKey:            strings.TrimSpace(os.Getenv("RESEND_API_KEY")),
+		AdminEmail:              getEnvOr("ADMIN_EMAIL", "crackrammer@gmail.com"),
+		AdminName:               getEnvOr("ADMIN_NAME", "CRACKRAMMER"),
+		AdminInitPassword:       firstNonEmptyEnv("ADMIN_INITIAL_PASSWORD", "ADMIN_PASSWORD"),
+		AdminPasswordFile:       getEnvOr("ADMIN_INITIAL_PASSWORD_FILE", "./.inkbranch-initial-admin-password"),
+		AuthMode:                strings.ToLower(rawAuthMode),
+		CitadelAppID:            getEnvOr("CITADEL_APP_ID", "inkbranch"),
+		CitadelInternalURL:      strings.TrimRight(getEnvOr("CITADEL_INTERNAL_URL", "http://127.0.0.1:8082"), "/"),
+		CitadelPublicURL:        strings.TrimRight(getEnvOr("CITADEL_PUBLIC_URL", "https://admin.crackrammer.com"), "/"),
+		CitadelInternalSecret:   citadelInternalSecret,
+		CitadelHeaderHMACSecret: citadelHeaderSecret,
 	}
 
 	if cfg.Port <= 0 || cfg.Port > 65535 {
@@ -93,7 +125,52 @@ func Load() (*Config, error) {
 			return nil, fmt.Errorf("STORAGE_DRIVER=r2 requires R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, and R2_BUCKET")
 		}
 	}
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
 	return cfg, nil
+}
+
+// Validate normalizes defaults and checks authentication configuration consistency.
+func (c *Config) Validate() error {
+	c.AuthMode = strings.ToLower(strings.TrimSpace(c.AuthMode))
+	if c.AuthMode == "" {
+		c.AuthMode = AuthModeLocal
+	}
+	switch c.AuthMode {
+	case AuthModeLocal, AuthModeHybrid, AuthModeCitadelOnly:
+	default:
+		return fmt.Errorf("invalid AUTH_MODE %q (must be local, hybrid, or citadel_only)", c.AuthMode)
+	}
+	if strings.TrimSpace(c.CitadelAppID) == "" {
+		c.CitadelAppID = "inkbranch"
+	} else {
+		c.CitadelAppID = strings.TrimSpace(c.CitadelAppID)
+	}
+	if strings.TrimSpace(c.CitadelInternalURL) == "" {
+		c.CitadelInternalURL = "http://127.0.0.1:8082"
+	} else {
+		c.CitadelInternalURL = strings.TrimRight(strings.TrimSpace(c.CitadelInternalURL), "/")
+	}
+	if strings.TrimSpace(c.CitadelPublicURL) == "" {
+		c.CitadelPublicURL = "https://admin.crackrammer.com"
+	} else {
+		c.CitadelPublicURL = strings.TrimRight(strings.TrimSpace(c.CitadelPublicURL), "/")
+	}
+	if c.AuthMode == AuthModeHybrid || c.AuthMode == AuthModeCitadelOnly {
+		if strings.TrimSpace(c.CitadelHeaderHMACSecret) == "" {
+			return fmt.Errorf("AUTH_MODE=%s requires CITADEL_HEADER_HMAC_SECRET", c.AuthMode)
+		}
+		if strings.TrimSpace(c.CitadelInternalSecret) == "" {
+			return fmt.Errorf("AUTH_MODE=%s requires CITADEL_INTERNAL_SECRET", c.AuthMode)
+		}
+	}
+	return nil
+}
+
+// UsesCitadel reports whether Citadel SSO/ForwardAuth is enabled (hybrid or citadel_only).
+func (c *Config) UsesCitadel() bool {
+	return c.AuthMode == AuthModeHybrid || c.AuthMode == AuthModeCitadelOnly
 }
 
 // HasConfiguredSecret reports whether SESSION_SECRET was explicitly configured.

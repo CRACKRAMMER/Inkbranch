@@ -61,11 +61,13 @@ export function setReadingFont(font: ReadingFont): void {
 
 export function ensureChromaStylesheet(): void {
   if (typeof document === 'undefined') return
-  const existing = document.querySelector('link[href="/api/chroma.css"]')
+  const pathname = typeof window !== 'undefined' ? window.location.pathname : ''
+  const href = pathname === '/blog' || pathname.startsWith('/blog/') ? '/blog/api/chroma.css' : '/api/chroma.css'
+  const existing = document.querySelector(`link[href="${href}"]`)
   if (existing) return
   const link = document.createElement('link')
   link.rel = 'stylesheet'
-  link.href = '/api/chroma.css'
+  link.href = href
   link.setAttribute('data-inkbranch-chroma', 'true')
   document.head.appendChild(link)
 }

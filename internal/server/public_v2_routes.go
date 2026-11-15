@@ -23,6 +23,7 @@ import (
 )
 
 func (s *Server) registerPublicV2Routes() {
+	s.registerPublicAuthRoutes()
 	s.router.Get("/api/v1/reactions", s.handleGetReactions)
 	s.router.Post("/api/v1/reactions", s.handleToggleReaction)
 
@@ -153,6 +154,29 @@ func (s *Server) handleGetComments(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleCreateComment(w http.ResponseWriter, r *http.Request) {
+	var reader *auth.ReaderSession
+	if s.cfg.UsesCitadel() {
+		if !s.auth.VerifyPublicOrigin(r) {
+			writeAPIError(w, http.StatusForbidden, "CSRF verification failed", "Missing or invalid Origin header.")
+			return
+		}
+		var err error
+		reader, err = s.auth.AuthenticateOrRefreshReader(w, r)
+		if err != nil || reader == nil {
+			writeAPIError(w, http.StatusUnauthorized, "Authentication required", "请先使用 Citadel 账号登录后再发表评论。")
+			return
+		}
+		if cit := s.auth.Citadel(); cit != nil {
+			if intro, ierr := cit.IntrospectToken(r.Context(), reader.AccessToken); ierr == nil && intro != nil {
+				if !intro.Active || (!intro.AllowLogin && !strings.EqualFold(intro.User.GlobalRole, "super_admin")) {
+					s.auth.ClearReaderSessionCookie(w, r)
+					writeAPIError(w, http.StatusUnauthorized, "Authentication required", "Citadel 会话已失效，请重新登录。")
+					return
+				}
+			}
+		}
+	}
+
 	var body struct {
 		Type           string `json:"type"`
 		Slug           string `json:"slug"`
@@ -202,15 +226,52 @@ func (s *Server) handleCreateComment(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	name := strings.TrimSpace(body.AuthorName)
-	if len([]rune(name)) == 0 || len([]rune(name)) > 80 {
-		writeAPIError(w, http.StatusBadRequest, "Invalid authorName", "Name must be 1 to 80 characters.")
-		return
-	}
-	parsedMail, err := mail.ParseAddress(strings.TrimSpace(body.AuthorEmail))
-	if err != nil || parsedMail.Address == "" || len(parsedMail.Address) > 254 {
-		writeAPIError(w, http.StatusBadRequest, "Invalid email address", "")
-		return
+	var name string
+	var parsedMail *mail.Address
+	var isAdmin bool
+	if reader != nil {
+		rawEmail := strings.TrimSpace(reader.Email)
+		parsed, perr := mail.ParseAddress(rawEmail)
+		if perr != nil || parsed.Address == "" || len(parsed.Address) > 254 {
+			writeAPIError(w, http.StatusUnauthorized, "Invalid user profile", "Authenticated Citadel account lacks a valid email address.")
+			return
+		}
+		parsedMail = parsed
+		name = strings.TrimSpace(reader.Name)
+		if name == "" {
+			if localPart, _, ok := strings.Cut(parsed.Address, "@"); ok && strings.TrimSpace(localPart) != "" {
+				name = strings.TrimSpace(localPart)
+			} else {
+				name = "Reader"
+			}
+		}
+		isAdmin = strings.EqualFold(reader.GlobalRole, "super_admin") ||
+			reader.AllowAdmin ||
+			strings.EqualFold(reader.AppRole, "admin") ||
+			strings.EqualFold(reader.AppRole, "editor")
+		if uid, uerr := uuid.Parse(strings.TrimSpace(reader.UserID)); uerr == nil {
+			syncRole := "reader"
+			if isAdmin {
+				if strings.EqualFold(reader.GlobalRole, "super_admin") {
+					syncRole = "admin"
+				} else if strings.TrimSpace(reader.AppRole) != "" {
+					syncRole = strings.ToLower(strings.TrimSpace(reader.AppRole))
+				}
+			}
+			_, _ = s.state.EnsureCitadelUser(r.Context(), uid, parsed.Address, name, reader.AvatarURL, syncRole)
+		}
+	} else {
+		name = strings.TrimSpace(body.AuthorName)
+		if len([]rune(name)) == 0 || len([]rune(name)) > 80 {
+			writeAPIError(w, http.StatusBadRequest, "Invalid authorName", "Name must be 1 to 80 characters.")
+			return
+		}
+		parsed, err := mail.ParseAddress(strings.TrimSpace(body.AuthorEmail))
+		if err != nil || parsed.Address == "" || len(parsed.Address) > 254 {
+			writeAPIError(w, http.StatusBadRequest, "Invalid email address", "")
+			return
+		}
+		parsedMail = parsed
 	}
 	authorURL, err := community.ValidateOptionalURL(body.AuthorURL)
 	if err != nil {
@@ -247,7 +308,7 @@ func (s *Server) handleCreateComment(w http.ResponseWriter, r *http.Request) {
 
 	status := "pending"
 	msg := "评论已提交，审核通过后将显示。"
-	if s.siteSettingBool(r.Context(), "comment_auto_approve", false) {
+	if isAdmin || s.siteSettingBool(r.Context(), "comment_auto_approve", false) {
 		status = "approved"
 		msg = "评论已发布。"
 	}
@@ -260,7 +321,7 @@ func (s *Server) handleCreateComment(w http.ResponseWriter, r *http.Request) {
 		AuthorName:      name,
 		AuthorEmailHash: community.EmailHash(parsedMail.Address),
 		AuthorURL:       authorURL,
-		IsAdmin:         false,
+		IsAdmin:         isAdmin,
 		BodyMarkdown:    strings.TrimSpace(body.BodyMarkdown),
 		BodyHTML:        renderedHTML,
 		Status:          status,

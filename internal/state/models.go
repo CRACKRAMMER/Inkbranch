@@ -322,6 +322,7 @@ type Store interface {
 	// Users & Auth
 	CountUsers(ctx context.Context) (int, error)
 	CreateUser(ctx context.Context, u User) (User, error)
+	EnsureCitadelUser(ctx context.Context, id uuid.UUID, email, name, avatarURL, role string) (User, error)
 	GetUserByID(ctx context.Context, id uuid.UUID) (*User, error)
 	GetUserByEmail(ctx context.Context, email string) (*User, error)
 	UpdateUserPassword(ctx context.Context, userID uuid.UUID, passwordHash string) error
@@ -454,7 +455,7 @@ func ValidateRedirectGraph(existing []RedirectRecord, sourcePath, targetPath str
 	if !strings.HasPrefix(src, "/") || len(src) > 512 {
 		return fmt.Errorf("sourcePath must start with /")
 	}
-	if src == "/" || strings.HasPrefix(src, "/api/") || src == "/api" || strings.HasPrefix(src, "/admin") {
+	if src == "/" || strings.HasPrefix(src, "/api/") || src == "/api" || src == "/admin" || strings.HasPrefix(src, "/admin/") || src == "/blog" || strings.HasPrefix(src, "/blog/") {
 		return fmt.Errorf("sourcePath %q is reserved", src)
 	}
 	if dst == "" || len(dst) > 1024 {

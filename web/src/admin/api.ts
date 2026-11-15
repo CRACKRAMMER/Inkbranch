@@ -2,6 +2,31 @@ import type { ContentDetail, ContentSummary, ContentType, Heading } from '../lib
 
 let csrfTokenMemory = ''
 
+export function isBlogStudioPath(): boolean {
+  if (typeof window === 'undefined') return false
+  const p = window.location.pathname
+  return p === '/blog' || p.startsWith('/blog/')
+}
+
+export function resolveAdminPath(path: string): string {
+  if (!isBlogStudioPath()) return path
+  if (path === '/api' || path.startsWith('/api/') || path.startsWith('/uploads/')) {
+    return `/blog${path}`
+  }
+  return path
+}
+
+export function adminBackupDownloadUrl(id: string): string {
+  return resolveAdminPath(`/api/v1/admin/backups/${encodeURIComponent(id)}/download`)
+}
+
+export function resolveStudioAssetUrl(url: string): string {
+  if (isBlogStudioPath() && url.startsWith('/uploads/')) {
+    return `/blog${url}`
+  }
+  return url
+}
+
 export function setCSRFToken(token: string | undefined) {
   if (typeof token === 'string' && token) {
     csrfTokenMemory = token
@@ -37,7 +62,7 @@ async function adminRequest<T>(path: string, init?: RequestInit): Promise<T> {
     headers.set('X-CSRF-Token', csrfTokenMemory)
   }
 
-  const res = await fetch(path, {
+  const res = await fetch(resolveAdminPath(path), {
     credentials: 'same-origin',
     ...init,
     headers,
@@ -75,7 +100,14 @@ export interface AdminUser {
 
 export interface AuthMeResponse {
   authenticated: boolean
+  authMode?: 'local' | 'hybrid' | 'citadel_only' | string
   authKind?: string
+  authProvider?: 'local' | 'citadel' | string
+  globalRole?: string
+  appRole?: string
+  scopes?: string[]
+  siteUrl?: string
+  citadelPublicUrl?: string
   user?: AdminUser
   csrfToken?: string
   totpEnabled?: boolean
@@ -472,9 +504,12 @@ export const adminApi = {
     return res.passkey
   },
 
-  async logout(): Promise<void> {
-    await adminRequest('/api/v1/auth/logout', { method: 'POST' })
+  async logout(): Promise<{ ok?: boolean; citadelLogoutUrl?: string }> {
+    const res = await adminRequest<{ ok?: boolean; citadelLogoutUrl?: string }>('/api/v1/auth/logout', {
+      method: 'POST',
+    })
     clearCSRFToken()
+    return res
   },
 
   overview: () => adminRequest<AdminOverviewResponse>('/api/v1/admin/overview'),
@@ -632,6 +667,8 @@ export const adminApi = {
       passkeys: PasskeyRecord[]
       sessions: SessionRecord[]
       currentSessionId: string
+      managedByCitadel?: boolean
+      citadelSecurityUrl?: string
     }>('/api/v1/admin/security'),
   changePassword: (currentPassword: string, newPassword: string) =>
     adminRequest<{ ok: boolean }>('/api/v1/admin/security/password', {

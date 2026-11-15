@@ -3,9 +3,11 @@ package server
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -14,6 +16,7 @@ import (
 
 	"github.com/CRACKRAMMER/Inkbranch/internal/auth"
 	"github.com/CRACKRAMMER/Inkbranch/internal/community"
+	"github.com/CRACKRAMMER/Inkbranch/internal/config"
 	"github.com/CRACKRAMMER/Inkbranch/internal/content"
 	"github.com/CRACKRAMMER/Inkbranch/internal/distribution"
 	"github.com/CRACKRAMMER/Inkbranch/internal/media"
@@ -110,11 +113,15 @@ func (s *Server) withAdminAuth(requiredScope string, fn adminHandlerFunc) http.H
 	return func(w http.ResponseWriter, r *http.Request) {
 		p, err := s.auth.AuthenticateRequest(r)
 		if err != nil {
+			if errors.Is(err, auth.ErrForbiddenApp) || errors.Is(err, auth.ErrCSRFMismatch) || errors.Is(err, auth.ErrForbidden) {
+				writeAPIError(w, http.StatusForbidden, "Forbidden", err.Error())
+				return
+			}
 			writeAPIError(w, http.StatusUnauthorized, "Authentication required", err.Error())
 			return
 		}
 		if !s.auth.VerifyCSRF(r, p) {
-			writeAPIError(w, http.StatusForbidden, "CSRF verification failed", "Missing or invalid X-CSRF-Token header.")
+			writeAPIError(w, http.StatusForbidden, "CSRF verification failed", "Missing or invalid X-CSRF-Token or Origin header.")
 			return
 		}
 		if requiredScope != "" && !p.HasScope(requiredScope) {
@@ -128,6 +135,10 @@ func (s *Server) withAdminAuth(requiredScope string, fn adminHandlerFunc) http.H
 
 func (s *Server) withAdminSessionOnly(fn adminHandlerFunc) http.HandlerFunc {
 	return s.withAdminAuth("", func(w http.ResponseWriter, r *http.Request, p *auth.Principal) {
+		if p.AuthProvider == "citadel" || s.cfg.AuthMode == config.AuthModeCitadelOnly {
+			writeAPIError(w, http.StatusForbidden, "Managed by Citadel", "Password, TOTP, Passkeys, and sessions are managed centrally in Citadel Security Center.")
+			return
+		}
 		if p.AuthKind != "session" {
 			writeAPIError(w, http.StatusForbidden, "Session required", "Security changes require an interactive browser session.")
 			return
@@ -140,7 +151,12 @@ func (s *Server) handleAuthMe(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	p, err := s.auth.AuthenticateRequest(r)
 	if err != nil {
-		writeJSON(w, http.StatusOK, map[string]any{"authenticated": false})
+		writeJSON(w, http.StatusOK, map[string]any{
+			"authenticated":    false,
+			"authMode":         s.cfg.AuthMode,
+			"siteUrl":          s.cfg.SiteURL,
+			"citadelPublicUrl": s.cfg.CitadelPublicURL,
+		})
 		return
 	}
 	csrf := ""
@@ -155,7 +171,14 @@ func (s *Server) handleAuthMe(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"authenticated":          true,
+		"authMode":               s.cfg.AuthMode,
 		"authKind":               p.AuthKind,
+		"authProvider":           p.AuthProvider,
+		"globalRole":             p.GlobalRole,
+		"appRole":                p.AppRole,
+		"scopes":                 p.Scopes,
+		"siteUrl":                s.cfg.SiteURL,
+		"citadelPublicUrl":       s.cfg.CitadelPublicURL,
 		"user":                   p.User,
 		"csrfToken":              csrf,
 		"totpEnabled":            totpEnabled,
@@ -165,6 +188,10 @@ func (s *Server) handleAuthMe(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
+	if s.cfg.AuthMode == config.AuthModeCitadelOnly {
+		writeAPIError(w, http.StatusForbidden, "Local login disabled", "Please sign in via Citadel.")
+		return
+	}
 	ipHash := s.auth.ClientIPHash(r)
 	if !s.auth.AllowRate("login", ipHash, 10, 10*time.Minute) {
 		writeAPIError(w, http.StatusTooManyRequests, "Too many login attempts", "Please wait 10 minutes before trying again.")
@@ -180,6 +207,10 @@ func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	outcome, err := s.auth.LoginWithPassword(r.Context(), body.Email, body.Password, r)
 	if err != nil {
+		if errors.Is(err, auth.ErrLocalAuthDisabled) {
+			writeAPIError(w, http.StatusForbidden, "Local login disabled", "Please sign in via Citadel.")
+			return
+		}
 		_ = s.state.AppendAuditLog(r.Context(), state.AuditLogRecord{
 			ActorType: "anonymous",
 			Action:    "auth.login.failed",
@@ -212,6 +243,10 @@ func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleAuthMFAVerify(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
+	if s.cfg.AuthMode == config.AuthModeCitadelOnly {
+		writeAPIError(w, http.StatusForbidden, "Local login disabled", "Please sign in via Citadel.")
+		return
+	}
 	ipHash := s.auth.ClientIPHash(r)
 	if !s.auth.AllowRate("mfa", ipHash, 10, 10*time.Minute) {
 		writeAPIError(w, http.StatusTooManyRequests, "Too many attempts", "")
@@ -227,6 +262,10 @@ func (s *Server) handleAuthMFAVerify(w http.ResponseWriter, r *http.Request) {
 	}
 	outcome, err := s.auth.VerifyMFACode(r.Context(), body.MFAToken, body.Code, r)
 	if err != nil {
+		if errors.Is(err, auth.ErrLocalAuthDisabled) {
+			writeAPIError(w, http.StatusForbidden, "Local login disabled", "Please sign in via Citadel.")
+			return
+		}
 		writeAPIError(w, http.StatusUnauthorized, "Verification failed", err.Error())
 		return
 	}
@@ -246,12 +285,20 @@ func (s *Server) handleAuthMFAVerify(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handlePasskeyLoginBegin(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
+	if s.cfg.AuthMode == config.AuthModeCitadelOnly {
+		writeAPIError(w, http.StatusForbidden, "Local login disabled", "Please sign in via Citadel.")
+		return
+	}
 	var body struct {
 		Email string `json:"email"`
 	}
 	_ = decodeJSON(r, &body)
 	cid, options, err := s.auth.BeginPasskeyLogin(r.Context(), body.Email, r)
 	if err != nil {
+		if errors.Is(err, auth.ErrLocalAuthDisabled) {
+			writeAPIError(w, http.StatusForbidden, "Local login disabled", "Please sign in via Citadel.")
+			return
+		}
 		writeAPIError(w, http.StatusBadRequest, "Passkey login unavailable", err.Error())
 		return
 	}
@@ -263,6 +310,10 @@ func (s *Server) handlePasskeyLoginBegin(w http.ResponseWriter, r *http.Request)
 
 func (s *Server) handlePasskeyLoginFinish(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
+	if s.cfg.AuthMode == config.AuthModeCitadelOnly {
+		writeAPIError(w, http.StatusForbidden, "Local login disabled", "Please sign in via Citadel.")
+		return
+	}
 	cid := strings.TrimSpace(r.URL.Query().Get("ceremonyId"))
 	if cid == "" {
 		cid = strings.TrimSpace(r.Header.Get("X-WebAuthn-Ceremony"))
@@ -273,6 +324,10 @@ func (s *Server) handlePasskeyLoginFinish(w http.ResponseWriter, r *http.Request
 	}
 	outcome, err := s.auth.FinishPasskeyLogin(r.Context(), cid, r)
 	if err != nil {
+		if errors.Is(err, auth.ErrLocalAuthDisabled) {
+			writeAPIError(w, http.StatusForbidden, "Local login disabled", "Please sign in via Citadel.")
+			return
+		}
 		writeAPIError(w, http.StatusUnauthorized, "Passkey verification failed", err.Error())
 		return
 	}
@@ -295,13 +350,19 @@ func (s *Server) handleAuthLogout(w http.ResponseWriter, r *http.Request, p *aut
 		_ = s.state.DeleteSession(r.Context(), p.Session.ID)
 	}
 	s.auth.ClearSessionCookie(w, r)
+	s.auth.ClearReaderSessionCookie(w, r)
+	w.Header().Set("Clear-Site-Data", `"cookies", "storage"`)
 	_ = s.state.AppendAuditLog(r.Context(), state.AuditLogRecord{
 		ActorType: "user",
 		ActorID:   &p.User.ID,
 		Action:    "auth.logout",
 		IPHash:    s.auth.ClientIPHash(r),
 	})
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	resp := map[string]any{"ok": true}
+	if s.cfg.UsesCitadel() && strings.TrimSpace(s.cfg.CitadelPublicURL) != "" {
+		resp["citadelLogoutUrl"] = strings.TrimRight(s.cfg.CitadelPublicURL, "/") + "/oauth/logout?rd=" + url.QueryEscape(s.cfg.SiteURL)
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *Server) handleAdminOverview(w http.ResponseWriter, r *http.Request, _ *auth.Principal) {
@@ -1582,12 +1643,18 @@ func (s *Server) handleAdminSecurityOverview(w http.ResponseWriter, r *http.Requ
 	if p.Session != nil {
 		currentSessID = p.Session.ID.String()
 	}
+	citadelSecurityURL := ""
+	if strings.TrimSpace(s.cfg.CitadelPublicURL) != "" {
+		citadelSecurityURL = strings.TrimRight(s.cfg.CitadelPublicURL, "/") + "/security"
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"totpEnabled":            totpRec != nil && totpRec.Enabled,
 		"recoveryCodesRemaining": func() int { if totpRec != nil { return len(totpRec.RecoveryCodeHashes) }; return 0 }(),
 		"passkeys":               passkeys,
 		"sessions":               sessions,
 		"currentSessionId":       currentSessID,
+		"managedByCitadel":       p.AuthProvider == "citadel" || s.cfg.AuthMode == config.AuthModeCitadelOnly,
+		"citadelSecurityUrl":     citadelSecurityURL,
 	})
 }
 

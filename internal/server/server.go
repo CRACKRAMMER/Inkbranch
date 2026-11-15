@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/CRACKRAMMER/Inkbranch/internal/auth"
+	"github.com/CRACKRAMMER/Inkbranch/internal/citadel"
 	"github.com/CRACKRAMMER/Inkbranch/internal/community"
 	"github.com/CRACKRAMMER/Inkbranch/internal/config"
 	"github.com/CRACKRAMMER/Inkbranch/internal/content"
@@ -120,10 +121,11 @@ type Server struct {
 	store     *content.Store
 	md        *markdown.Renderer
 	og        *media.OGRenderer
-	router    *chi.Mux
-	humaAPI   huma.API
-	distSubFS fs.FS
-	shell     shellTemplate
+	router         *chi.Mux
+	humaAPI        huma.API
+	distSubFS      fs.FS
+	adminDistSubFS fs.FS
+	shell          shellTemplate
 	chromaCSS string
 	version   string
 }
@@ -132,6 +134,12 @@ type Server struct {
 func New(opts Options) (*Server, error) {
 	if opts.Config == nil {
 		return nil, fmt.Errorf("config is required")
+	}
+	if strings.TrimSpace(opts.Config.AuthMode) == "" {
+		opts.Config.AuthMode = config.AuthModeLocal
+	}
+	if err := opts.Config.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid config: %w", err)
 	}
 	if opts.Store == nil {
 		return nil, fmt.Errorf("content store is required")
@@ -164,6 +172,17 @@ func New(opts Options) (*Server, error) {
 	if authSvc == nil {
 		authSvc = auth.NewService(opts.Config, st)
 	}
+	if opts.Config.UsesCitadel() && authSvc.Citadel() == nil {
+		citClient := citadel.NewClient(citadel.Config{
+			AppID:          opts.Config.CitadelAppID,
+			InternalURL:    opts.Config.CitadelInternalURL,
+			PublicURL:      opts.Config.CitadelPublicURL,
+			InternalSecret: opts.Config.CitadelInternalSecret,
+			SiteURL:        opts.Config.SiteURL,
+			UpstreamURL:    "http://127.0.0.1:3000",
+		}, logger)
+		authSvc.SetCitadel(citClient)
+	}
 	storageDriver := opts.Storage
 	if storageDriver == nil {
 		storageDriver = media.NewLocalStorage(opts.Config.UploadsDir)
@@ -193,6 +212,10 @@ func New(opts Options) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("mount embedded web/dist: %w", err)
 	}
+	var adminDistSubFS fs.FS
+	if sub, subErr := fs.Sub(webassets.DistFS, "dist/admin"); subErr == nil {
+		adminDistSubFS = sub
+	}
 	shellRaw := fallbackShellHTML
 	if bytes, err := fs.ReadFile(distSubFS, "index.html"); err == nil {
 		if parsed, ok := splitShellTemplate(string(bytes)); ok {
@@ -221,11 +244,12 @@ func New(opts Options) (*Server, error) {
 		store:     opts.Store,
 		md:        mdRenderer,
 		og:        ogRenderer,
-		router:    r,
-		distSubFS: distSubFS,
-		shell:     tmpl,
-		chromaCSS: markdown.ChromaLightCSS() + "\n" + markdown.ChromaDarkCSS(),
-		version:   version,
+		router:         r,
+		distSubFS:      distSubFS,
+		adminDistSubFS: adminDistSubFS,
+		shell:          tmpl,
+		chromaCSS:      markdown.ChromaLightCSS() + "\n" + markdown.ChromaDarkCSS(),
+		version:        version,
 	}
 
 	// Register all middlewares before any route registration (required by chi).
@@ -234,6 +258,7 @@ func New(opts Options) (*Server, error) {
 	if s.cfg.TrustProxy {
 		r.Use(middleware.RealIP)
 	}
+	r.Use(s.blogPrefixRewriteMiddleware)
 	r.Use(middleware.StripSlashes)
 	r.Use(s.securityHeadersMiddleware)
 	r.Use(s.requestLogMiddleware)
@@ -365,7 +390,7 @@ func (s *Server) redirectMiddleware(next http.Handler) http.Handler {
 			return
 		}
 		p := r.URL.Path
-		if strings.HasPrefix(p, "/api/") || strings.HasPrefix(p, "/assets/") || strings.HasPrefix(p, "/uploads/") || strings.HasPrefix(p, "/admin") {
+		if strings.HasPrefix(p, "/api/") || strings.HasPrefix(p, "/assets/") || strings.HasPrefix(p, "/uploads/") || strings.HasPrefix(p, "/admin") || p == "/blog" || strings.HasPrefix(p, "/blog/") {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -397,9 +422,57 @@ func (s *Server) redirectMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+func (s *Server) blogPrefixRewriteMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p := r.URL.Path
+		if p == "/blog/api" || strings.HasPrefix(p, "/blog/api/") || strings.HasPrefix(p, "/blog/uploads/") {
+			r2 := r.Clone(r.Context())
+			r2.URL.Path = strings.TrimPrefix(p, "/blog")
+			if r2.URL.RawPath != "" && (r2.URL.RawPath == "/blog/api" || strings.HasPrefix(r2.URL.RawPath, "/blog/api/") || strings.HasPrefix(r2.URL.RawPath, "/blog/uploads/")) {
+				r2.URL.RawPath = strings.TrimPrefix(r2.URL.RawPath, "/blog")
+			}
+			next.ServeHTTP(w, r2)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (s *Server) handleAdminLegacyShell(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.AuthMode == config.AuthModeCitadelOnly && strings.TrimSpace(s.cfg.CitadelPublicURL) != "" {
+		target := strings.TrimRight(s.cfg.CitadelPublicURL, "/") + "/blog/"
+		w.Header().Set("Cache-Control", "no-store")
+		http.Redirect(w, r, target, http.StatusFound)
+		return
+	}
+	s.handleNoIndexShell("admin", "Admin Studio")(w, r)
+}
+
+func (s *Server) handleBlogStudioShell(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/blog" {
+		w.Header().Set("Cache-Control", "no-store")
+		http.Redirect(w, r, "/blog/", http.StatusFound)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Robots-Tag", "noindex, nofollow")
+	if s.adminDistSubFS != nil {
+		if data, err := fs.ReadFile(s.adminDistSubFS, "admin.html"); err == nil {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(data)
+			return
+		}
+	}
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(`<!doctype html><html lang="zh-CN"><head><meta charset="utf-8" /><title>Inkbranch Studio</title></head><body><div id="root">Inkbranch Studio</div></body></html>`))
+}
+
 func (s *Server) registerAssetRoutes() {
 	s.router.Get("/favicon.ico", s.serveEmbeddedFile("favicon.ico", "image/x-icon", "public, max-age=86400"))
 	s.router.Get("/favicon.svg", s.serveEmbeddedFile("favicon.svg", "image/svg+xml; charset=utf-8", "public, max-age=86400"))
+	s.router.Get("/blog/favicon.ico", s.serveEmbeddedFile("favicon.ico", "image/x-icon", "public, max-age=86400"))
+	s.router.Get("/blog/favicon.svg", s.serveEmbeddedFile("favicon.svg", "image/svg+xml; charset=utf-8", "public, max-age=86400"))
 
 	assetHandler := http.FileServer(http.FS(s.distSubFS))
 	s.router.Get("/assets/*", func(w http.ResponseWriter, r *http.Request) {
@@ -411,6 +484,25 @@ func (s *Server) registerAssetRoutes() {
 		}
 		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 		assetHandler.ServeHTTP(w, r)
+	})
+
+	var blogAssetHandler http.Handler
+	if s.adminDistSubFS != nil {
+		blogAssetHandler = http.StripPrefix("/blog/", http.FileServer(http.FS(s.adminDistSubFS)))
+	}
+	s.router.Get("/blog/assets/*", func(w http.ResponseWriter, r *http.Request) {
+		if blogAssetHandler == nil {
+			http.NotFound(w, r)
+			return
+		}
+		reqPath := chi.URLParam(r, "*")
+		clean := path.Clean("/" + reqPath)
+		if clean == "/" || strings.Contains(clean, "..") {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		blogAssetHandler.ServeHTTP(w, r)
 	})
 
 	s.router.Get("/uploads/*", s.handleUploads)

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/CRACKRAMMER/Inkbranch/internal/auth"
+	"github.com/CRACKRAMMER/Inkbranch/internal/citadel"
 	"github.com/CRACKRAMMER/Inkbranch/internal/community"
 	"github.com/CRACKRAMMER/Inkbranch/internal/config"
 	"github.com/CRACKRAMMER/Inkbranch/internal/content"
@@ -495,14 +496,18 @@ func runServe(args []string) int {
 	}
 
 	initCtx, initCancel := context.WithTimeout(ctx, 30*time.Second)
-	seeded, wrotePassFile, err := auth.EnsureInitialAdmin(initCtx, stateStore, cfg)
-	if err != nil {
-		initCancel()
-		logger.Error("initial admin seed failed", "error", err)
-		return 1
-	}
-	if seeded {
-		logger.Info("initial admin user seeded", "email", cfg.AdminEmail, "password_file", wrotePassFile)
+	if cfg.AuthMode != config.AuthModeCitadelOnly {
+		seeded, wrotePassFile, err := auth.EnsureInitialAdmin(initCtx, stateStore, cfg)
+		if err != nil {
+			initCancel()
+			logger.Error("initial admin seed failed", "error", err)
+			return 1
+		}
+		if seeded {
+			logger.Info("initial admin user seeded", "email", cfg.AdminEmail, "password_file", wrotePassFile)
+		}
+	} else {
+		logger.Info("skipping initial local admin seed in citadel_only mode")
 	}
 
 	mdRenderer := markdown.NewRenderer()
@@ -538,6 +543,18 @@ func runServe(args []string) int {
 	}
 
 	authSvc := auth.NewService(cfg, stateStore)
+	if cfg.UsesCitadel() {
+		citClient := citadel.NewClient(citadel.Config{
+			AppID:          cfg.CitadelAppID,
+			InternalURL:    cfg.CitadelInternalURL,
+			PublicURL:      cfg.CitadelPublicURL,
+			InternalSecret: cfg.CitadelInternalSecret,
+			SiteURL:        cfg.SiteURL,
+			UpstreamURL:    "http://127.0.0.1:3000",
+		}, logger)
+		authSvc.SetCitadel(citClient)
+		citClient.StartAutoRegister(ctx)
+	}
 	mailer := distribution.NewMailer(cfg)
 	webhooks := distribution.NewWebhookDispatcher(cfg, stateStore)
 	poller := community.NewFeedPoller()

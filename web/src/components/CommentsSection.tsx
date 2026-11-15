@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { CheckCircle2, CornerDownRight, MessageSquare, ShieldCheck } from 'lucide-react'
 import { APIError, getComments, postComment } from '../lib/api'
 import { formatDateISO } from '../lib/format'
+import { buildPublicLoginUrl, logoutPublicReader, usePublicAuth } from '../lib/publicAuth'
 import type { CommentNode, ContentType } from '../lib/types'
 
 interface CommentsSectionProps {
@@ -106,6 +107,9 @@ export function CommentsSection({
   const urlId = useId()
   const bodyId = useId()
   const notifyId = useId()
+  const errorId = useId()
+  const { data: authMe, isLoading: authLoading } = usePublicAuth()
+  const requiresCitadel = Boolean(authMe?.usesCitadel)
 
   const { data } = useQuery({
     queryKey: ['comments', contentType, slug],
@@ -152,12 +156,17 @@ export function CommentsSection({
 
   const handleSubmit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault()
-    if (!authorName.trim()) {
-      setFormError('请填写您的昵称')
-      return
-    }
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(authorEmail.trim())) {
-      setFormError('请填写有效的邮箱地址（仅用于头像和回复通知）')
+    if (!requiresCitadel) {
+      if (!authorName.trim()) {
+        setFormError('请填写您的昵称')
+        return
+      }
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(authorEmail.trim())) {
+        setFormError('请填写有效的邮箱地址（仅用于头像和回复通知）')
+        return
+      }
+    } else if (!authMe?.authenticated || !authMe.user) {
+      setFormError('请先使用 Citadel 账号登录后再发表评论')
       return
     }
     if (!bodyMarkdown.trim()) {
@@ -173,12 +182,18 @@ export function CommentsSection({
     setSubmitMessage('')
     setSubmitting(true)
     try {
+      const effectiveName = requiresCitadel
+        ? (authMe?.user?.name || authMe?.user?.email || 'Reader')
+        : authorName.trim()
+      const effectiveEmail = requiresCitadel
+        ? (authMe?.user?.email || '')
+        : authorEmail.trim()
       const res = await postComment({
         type: contentType,
         slug,
         parentId: replyTarget?.id,
-        authorName: authorName.trim(),
-        authorEmail: authorEmail.trim(),
+        authorName: effectiveName,
+        authorEmail: effectiveEmail,
         authorUrl: authorUrl.trim() || undefined,
         bodyMarkdown: bodyMarkdown.trim(),
         notifyOnReply,
@@ -191,6 +206,9 @@ export function CommentsSection({
       void queryClient.invalidateQueries({ queryKey: ['comments', contentType, slug] })
     } catch (err) {
       if (err instanceof APIError) {
+        if (err.status === 401) {
+          void queryClient.invalidateQueries({ queryKey: ['public-auth-me'] })
+        }
         setFormError(err.detail || err.message || '评论提交失败')
       } else {
         setFormError('评论提交失败，请稍后重试')
@@ -201,6 +219,10 @@ export function CommentsSection({
   }
 
   const items = data?.items ?? []
+  const loginReturnTarget =
+    typeof window !== 'undefined'
+      ? `${window.location.pathname}${window.location.search}#comments`
+      : '#comments'
 
   return (
     <section id="comments" aria-label="评论交流" className="mt-10 space-y-6">
@@ -229,7 +251,75 @@ export function CommentsSection({
           </div>
         ) : null}
 
+        {requiresCitadel && authLoading ? (
+          <div className="mt-4 h-24 animate-pulse rounded-xl bg-[var(--bg-elevated)]" />
+        ) : requiresCitadel && (!authMe?.authenticated || !authMe.user) ? (
+          <div className="mt-4 flex flex-wrap items-center justify-between gap-4 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-elevated)]/60 p-4">
+            <div className="space-y-1">
+              <p className="text-sm font-semibold text-[var(--text-primary)]">
+                请先使用 Citadel 账号登录后发表评论
+              </p>
+              <p className="text-xs text-[var(--text-secondary)]">
+                登录后将自动绑定你的 Citadel 身份与邮箱通知设置，评论后将直接跳转回此处。
+              </p>
+            </div>
+            <a
+              href={buildPublicLoginUrl(loginReturnTarget)}
+              className="inline-flex min-h-10 items-center justify-center gap-2 rounded-xl bg-[var(--accent)] px-4 text-xs font-semibold text-[var(--accent-ink)] transition-colors hover:bg-[var(--accent-hover)]"
+            >
+              <ShieldCheck className="h-4 w-4" aria-hidden="true" />
+              使用 Citadel 登录并评论
+            </a>
+          </div>
+        ) : (
         <form onSubmit={handleSubmit} noValidate className="mt-4 space-y-4">
+          {requiresCitadel && authMe?.user ? (
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-12 sm:items-end">
+              <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-elevated)]/60 px-3.5 py-2.5 text-xs sm:col-span-7">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="font-semibold text-[var(--text-primary)]">
+                    {authMe.user.name || authMe.user.email}
+                  </span>
+                  <span className="text-[var(--text-muted)]">{authMe.user.email}</span>
+                  {(authMe.user.allowAdmin || authMe.user.globalRole?.toLowerCase() === 'super_admin') && (
+                    <span className="inline-flex items-center gap-1 rounded-full bg-[var(--accent-soft)] px-2 py-0.5 text-[11px] font-semibold text-[var(--accent)]">
+                      <ShieldCheck className="h-3 w-3" aria-hidden="true" />
+                      Author
+                    </span>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const res = await logoutPublicReader()
+                    await queryClient.invalidateQueries({ queryKey: ['public-auth-me'] })
+                    if (res.citadelLogoutUrl) {
+                      window.location.assign(res.citadelLogoutUrl)
+                    }
+                  }}
+                  className="cursor-pointer font-medium text-[var(--text-muted)] hover:text-[var(--tone-danger)]"
+                >
+                  退出登录
+                </button>
+              </div>
+              <div className="sm:col-span-5">
+                <label htmlFor={urlId} className="mb-1.5 block text-xs font-medium text-[var(--text-secondary)]">
+                  网站主页（可选）
+                </label>
+                <input
+                  id={urlId}
+                  type="url"
+                  autocorrect="off"
+                  autoCapitalize="none"
+                  spellCheck={false}
+                  value={authorUrl}
+                  onChange={(e) => setAuthorUrl(e.target.value)}
+                  placeholder="https://example.com"
+                  className="editorial-input"
+                />
+              </div>
+            </div>
+          ) : (
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
             <div>
               <label htmlFor={nameId} className="mb-1.5 block text-xs font-medium text-[var(--text-secondary)]">
@@ -287,6 +377,7 @@ export function CommentsSection({
               />
             </div>
           </div>
+          )}
 
           <div>
             <label htmlFor={bodyId} className="mb-1.5 block text-xs font-medium text-[var(--text-secondary)]">
@@ -295,6 +386,8 @@ export function CommentsSection({
             <textarea
               id={bodyId}
               required
+              aria-invalid={Boolean(formError)}
+              aria-describedby={formError ? errorId : undefined}
               value={bodyMarkdown}
               onChange={(e) => {
                 setBodyMarkdown(e.target.value)
@@ -327,7 +420,7 @@ export function CommentsSection({
           </div>
 
           {formError ? (
-            <p role="alert" className="text-xs font-medium text-[var(--tone-danger)]">
+            <p id={errorId} role="alert" className="text-xs font-medium text-[var(--tone-danger)]">
               {formError}
             </p>
           ) : null}
@@ -343,6 +436,7 @@ export function CommentsSection({
             </div>
           ) : null}
         </form>
+        )}
       </div>
 
       {items.length > 0 ? (

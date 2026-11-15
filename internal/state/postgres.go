@@ -55,6 +55,97 @@ func (p *PostgresStore) CreateUser(ctx context.Context, u User) (User, error) {
 	return u, nil
 }
 
+func (p *PostgresStore) EnsureCitadelUser(ctx context.Context, id uuid.UUID, email, name, avatarURL, role string) (User, error) {
+	if id == uuid.Nil {
+		id = uuid.New()
+	}
+	emailKey := strings.ToLower(strings.TrimSpace(email))
+	if emailKey == "" {
+		emailKey = id.String() + "@citadel.local"
+	}
+	cleanName := strings.TrimSpace(name)
+	if cleanName == "" {
+		if at := strings.IndexByte(emailKey, '@'); at > 0 {
+			cleanName = emailKey[:at]
+		} else {
+			cleanName = "User"
+		}
+	}
+	cleanAvatar := strings.TrimSpace(avatarURL)
+	cleanRole := strings.TrimSpace(role)
+	if cleanRole == "" {
+		cleanRole = "reader"
+	}
+
+	syncExisting := func(existing *User) (User, error) {
+		needUpdate := false
+		nextName := existing.Name
+		if cleanName != "" && existing.Name != cleanName {
+			nextName = cleanName
+			needUpdate = true
+		}
+		nextAvatar := existing.AvatarURL
+		if cleanAvatar != "" && existing.AvatarURL != cleanAvatar {
+			nextAvatar = cleanAvatar
+			needUpdate = true
+		}
+		if needUpdate {
+			if err := p.UpdateUserProfile(ctx, existing.ID, nextName, existing.Bio, nextAvatar); err == nil {
+				existing.Name = nextName
+				existing.AvatarURL = nextAvatar
+				existing.UpdatedAt = time.Now().UTC()
+			}
+		}
+		return *existing, nil
+	}
+
+	if existing, err := p.GetUserByID(ctx, id); err != nil {
+		return User{}, err
+	} else if existing != nil {
+		return syncExisting(existing)
+	}
+
+	if existing, err := p.GetUserByEmail(ctx, emailKey); err != nil {
+		return User{}, err
+	} else if existing != nil {
+		return syncExisting(existing)
+	}
+
+	now := time.Now().UTC()
+	u := User{
+		ID:           id,
+		Email:        emailKey,
+		Name:         cleanName,
+		PasswordHash: "!citadel-managed!",
+		Role:         cleanRole,
+		AvatarURL:    cleanAvatar,
+		Bio:          "",
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
+	tag, err := p.pool.Exec(ctx, `
+		INSERT INTO users (id, email, name, password_hash, role, avatar_url, bio, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''), $7, $8, $9)
+		ON CONFLICT DO NOTHING
+	`, u.ID, u.Email, u.Name, u.PasswordHash, u.Role, u.AvatarURL, u.Bio, u.CreatedAt, u.UpdatedAt)
+	if err != nil {
+		return User{}, err
+	}
+	if tag.RowsAffected() == 0 {
+		if existing, err := p.GetUserByID(ctx, id); err != nil {
+			return User{}, err
+		} else if existing != nil {
+			return syncExisting(existing)
+		}
+		if existing, err := p.GetUserByEmail(ctx, emailKey); err != nil {
+			return User{}, err
+		} else if existing != nil {
+			return syncExisting(existing)
+		}
+	}
+	return u, nil
+}
+
 func (p *PostgresStore) GetUserByID(ctx context.Context, id uuid.UUID) (*User, error) {
 	return p.getUserWhere(ctx, `WHERE id = $1`, id)
 }

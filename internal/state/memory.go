@@ -99,6 +99,73 @@ func (m *MemoryStore) CreateUser(_ context.Context, u User) (User, error) {
 	return u, nil
 }
 
+func (m *MemoryStore) EnsureCitadelUser(_ context.Context, id uuid.UUID, email, name, avatarURL, role string) (User, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if id == uuid.Nil {
+		id = uuid.New()
+	}
+	emailKey := strings.ToLower(strings.TrimSpace(email))
+	if emailKey == "" {
+		emailKey = id.String() + "@citadel.local"
+	}
+	cleanName := strings.TrimSpace(name)
+	if cleanName == "" {
+		if at := strings.IndexByte(emailKey, '@'); at > 0 {
+			cleanName = emailKey[:at]
+		} else {
+			cleanName = "User"
+		}
+	}
+	cleanAvatar := strings.TrimSpace(avatarURL)
+	cleanRole := strings.TrimSpace(role)
+	if cleanRole == "" {
+		cleanRole = "reader"
+	}
+
+	syncExisting := func(existing User) User {
+		changed := false
+		if cleanName != "" && existing.Name != cleanName {
+			existing.Name = cleanName
+			changed = true
+		}
+		if cleanAvatar != "" && existing.AvatarURL != cleanAvatar {
+			existing.AvatarURL = cleanAvatar
+			changed = true
+		}
+		if changed {
+			existing.UpdatedAt = time.Now().UTC()
+			m.users[existing.ID] = existing
+		}
+		return existing
+	}
+
+	if u, ok := m.users[id]; ok {
+		return syncExisting(u), nil
+	}
+	if existingID, ok := m.usersEmail[emailKey]; ok {
+		if u, ok2 := m.users[existingID]; ok2 {
+			return syncExisting(u), nil
+		}
+	}
+
+	now := time.Now().UTC()
+	u := User{
+		ID:           id,
+		Email:        emailKey,
+		Name:         cleanName,
+		PasswordHash: "!citadel-managed!",
+		Role:         cleanRole,
+		AvatarURL:    cleanAvatar,
+		Bio:          "",
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
+	m.users[u.ID] = u
+	m.usersEmail[emailKey] = u.ID
+	return u, nil
+}
+
 func (m *MemoryStore) GetUserByID(_ context.Context, id uuid.UUID) (*User, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()

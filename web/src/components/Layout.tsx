@@ -1,8 +1,10 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import { Link, useRouterState } from '@tanstack/react-router'
-import { Menu, Monitor, Moon, Rss, Search, Sparkles, Sun, X } from 'lucide-react'
+import { LogOut, Menu, Monitor, Moon, Rss, Search, Sparkles, Sun, X } from 'lucide-react'
 import { attachClosedByFallback } from '../lib/dialog'
 import { getInitialSiteInfo } from '../lib/preload'
+import { buildPublicLoginUrl, logoutPublicReader, usePublicAuth } from '../lib/publicAuth'
 import { getThemeMode, setThemeMode, type ThemeMode } from '../lib/theme'
 import { CommandPalette } from './CommandPalette'
 import { NewsletterBox } from './NewsletterBox'
@@ -22,6 +24,8 @@ export function Layout({ children }: { children: ReactNode }) {
   const pathname = useRouterState({ select: (s) => s.location.pathname })
   const isAdminRoute = pathname === '/admin' || pathname.startsWith('/admin/')
   const site = getInitialSiteInfo()
+  const queryClient = useQueryClient()
+  const { data: authMe } = usePublicAuth()
 
   const [theme, setTheme] = useState<ThemeMode>(() => getThemeMode())
   const [cmdkOpen, setCmdkOpen] = useState(false)
@@ -29,6 +33,22 @@ export function Layout({ children }: { children: ReactNode }) {
 
   const mobileDialogRef = useRef<HTMLDialogElement>(null)
   const mobileMenuTitleId = useId()
+
+  const handleReaderLogout = async () => {
+    try {
+      const res = await logoutPublicReader()
+      await queryClient.invalidateQueries({ queryKey: ['public-auth-me'] })
+      if (res.citadelLogoutUrl) {
+        window.location.assign(res.citadelLogoutUrl)
+      }
+    } catch {
+      await queryClient.invalidateQueries({ queryKey: ['public-auth-me'] })
+    }
+  }
+
+  const canAccessStudio = Boolean(
+    authMe?.user?.allowAdmin || authMe?.user?.globalRole?.toLowerCase() === 'super_admin',
+  )
 
   useEffect(() => {
     const dialog = mobileDialogRef.current
@@ -144,6 +164,46 @@ export function Layout({ children }: { children: ReactNode }) {
               )}
             </button>
 
+            {authMe?.usesCitadel && (
+              authMe.authenticated && authMe.user ? (
+                <div className="hidden items-center gap-1.5 sm:inline-flex">
+                  <span className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-2.5 text-xs font-medium text-[var(--text-primary)]">
+                    <span
+                      aria-hidden="true"
+                      className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-[var(--accent-soft)] text-[10px] font-bold text-[var(--accent)]"
+                    >
+                      {(authMe.user.name || authMe.user.email).slice(0, 1).toUpperCase()}
+                    </span>
+                    <span className="max-w-24 truncate">{authMe.user.name || authMe.user.email}</span>
+                  </span>
+                  {canAccessStudio && (
+                    <a
+                      href={authMe.studioUrl || '/admin'}
+                      className="inline-flex h-9 items-center rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-2.5 text-xs font-medium text-[var(--text-secondary)] hover:border-[var(--accent)] hover:text-[var(--accent)]"
+                    >
+                      Studio
+                    </a>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => void handleReaderLogout()}
+                    aria-label="退出账号登录"
+                    title="退出登录"
+                    className="inline-flex h-9 w-9 cursor-pointer items-center justify-center rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-elevated)] text-[var(--text-secondary)] transition-colors hover:border-[var(--tone-danger)] hover:text-[var(--tone-danger)]"
+                  >
+                    <LogOut className="h-3.5 w-3.5" aria-hidden="true" />
+                  </button>
+                </div>
+              ) : (
+                <a
+                  href={buildPublicLoginUrl()}
+                  className="hidden h-9 items-center rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-3 text-xs font-semibold text-[var(--text-primary)] transition-colors hover:border-[var(--accent)] hover:text-[var(--accent)] sm:inline-flex"
+                >
+                  登录
+                </a>
+              )
+            )}
+
             <button
               type="button"
               onClick={() => setMobileMenuOpen(true)}
@@ -200,9 +260,15 @@ export function Layout({ children }: { children: ReactNode }) {
                 <Link to="/tags" className="hover:text-[var(--accent)]">
                   全部标签
                 </Link>
-                <Link to="/admin" className="hover:text-[var(--accent)]">
-                  Studio
-                </Link>
+                {authMe?.usesCitadel && authMe.studioUrl ? (
+                  <a href={authMe.studioUrl} rel="noopener noreferrer" className="hover:text-[var(--accent)]">
+                    Studio
+                  </a>
+                ) : (
+                  <Link to="/admin" className="hover:text-[var(--accent)]">
+                    Studio
+                  </Link>
+                )}
               </div>
             </div>
 
@@ -269,6 +335,39 @@ export function Layout({ children }: { children: ReactNode }) {
           >
             全站搜索
           </Link>
+          {authMe?.usesCitadel && (
+            authMe.authenticated && authMe.user ? (
+              <>
+                {canAccessStudio && (
+                  <a
+                    href={authMe.studioUrl || '/admin'}
+                    onClick={() => setMobileMenuOpen(false)}
+                    className="rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-3.5 py-2.5 text-sm font-medium text-[var(--text-primary)]"
+                  >
+                    Studio 后台
+                  </a>
+                )}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMobileMenuOpen(false)
+                    void handleReaderLogout()
+                  }}
+                  className="col-span-2 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-3.5 py-2.5 text-left text-sm font-medium text-[var(--tone-danger)]"
+                >
+                  退出登录 ({authMe.user.name || authMe.user.email})
+                </button>
+              </>
+            ) : (
+              <a
+                href={buildPublicLoginUrl()}
+                onClick={() => setMobileMenuOpen(false)}
+                className="col-span-2 rounded-xl border border-[var(--accent)] bg-[var(--accent-soft)] px-3.5 py-2.5 text-center text-sm font-semibold text-[var(--accent)]"
+              >
+                使用 Citadel 登录
+              </a>
+            )
+          )}
         </nav>
       </dialog>
     </div>

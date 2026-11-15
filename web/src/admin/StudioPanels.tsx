@@ -20,6 +20,8 @@ import {
 } from 'lucide-react'
 import {
   adminApi,
+  adminBackupDownloadUrl,
+  resolveStudioAssetUrl,
   type AdminCommentRecord,
   type AdminOverviewResponse,
   type APITokenRecord,
@@ -281,7 +283,7 @@ export function MediaPanel() {
               <div className="space-y-2">
                 {isImg && (
                   <img
-                    src={a.publicUrl}
+                    src={resolveStudioAssetUrl(a.publicUrl)}
                     alt={a.altText || a.filename}
                     loading="lazy"
                     className="h-36 w-full rounded-lg border border-[var(--border-subtle)] object-cover"
@@ -841,7 +843,13 @@ export function SettingsRedirectsPanel() {
   )
 }
 
-export function TokensWebhooksPanel() {
+export function TokensWebhooksPanel({
+  canAdmin = true,
+  citadelPublicUrl,
+}: {
+  canAdmin?: boolean
+  citadelPublicUrl?: string
+}) {
   const [tokens, setTokens] = useState<APITokenRecord[]>([])
   const [webhooks, setWebhooks] = useState<WebhookRecord[]>([])
   const [deliveries, setDeliveries] = useState<WebhookDeliveryRecord[]>([])
@@ -857,27 +865,54 @@ export function TokensWebhooksPanel() {
 
   const load = useCallback(async () => {
     try {
-      const [t, w] = await Promise.all([adminApi.listTokens(), adminApi.listWebhooks()])
+      const [t, w] = await Promise.all([
+        canAdmin ? adminApi.listTokens() : Promise.resolve({ items: [] as APITokenRecord[] }),
+        adminApi.listWebhooks(),
+      ])
       setTokens(t.items ?? [])
       setWebhooks(w.items ?? [])
     } catch (e) {
       setErr(e instanceof Error ? e.message : '加载开放接口配置失败')
     }
-  }, [])
+  }, [canAdmin])
 
   useEffect(() => {
     void load()
   }, [load])
 
   const allScopes = ['admin:*', 'content:read', 'content:write', 'media:write', 'comments:moderate', 'webhooks:manage']
+  const cleanCitadelUrl = citadelPublicUrl ? citadelPublicUrl.replace(/\/$/, '') : ''
 
   return (
     <div className="grid grid-cols-1 gap-5 lg:grid-cols-12">
       <section className="editorial-card space-y-4 p-5 lg:col-span-6">
-        <PanelHeader title="Personal Access Tokens (CLI / MCP)" subtitle="Bearer 细粒度作用域 API 令牌（仅创建时明文展示一次）" />
+        <PanelHeader
+          title="Personal Access Tokens (CLI / MCP)"
+          subtitle="支持 Citadel 统一签发的 `cit_pat_*` 令牌与 Inkbranch 兼容 `ibr_pat_*` 令牌"
+        />
         <FeedbackBanner message={msg} error={err} />
 
-        <form
+        {cleanCitadelUrl && (
+          <div className="rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-elevated)]/50 px-3 py-2.5 text-xs text-[var(--text-secondary)]">
+            <span>推荐使用 Citadel 签发跨应用统一的 `cit_pat_*`：</span>
+            <a
+              href={`${cleanCitadelUrl}/security`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="font-semibold text-[var(--accent)] hover:underline"
+            >
+              前往 Citadel 安全中心 →
+            </a>
+          </div>
+        )}
+
+        {!canAdmin ? (
+          <p className="rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-elevated)]/40 p-3.5 text-xs text-[var(--text-muted)]">
+            当前账号角色不含 `admin:*` 权限，仅可管理 Webhook。如需本地 `ibr_pat_*` 令牌，请联系超级管理员授权。
+          </p>
+        ) : (
+          <>
+            <form
           onSubmit={async (e) => {
             e.preventDefault()
             setErr('')
@@ -948,6 +983,8 @@ export function TokensWebhooksPanel() {
             </div>
           ))}
         </div>
+          </>
+        )}
       </section>
 
       <section className="editorial-card space-y-4 p-5 lg:col-span-6">
@@ -1056,6 +1093,8 @@ export function SecurityBackupsPanel() {
   const [passkeys, setPasskeys] = useState<PasskeyRecord[]>([])
   const [sessions, setSessions] = useState<SessionRecord[]>([])
   const [currentSessId, setCurrentSessId] = useState('')
+  const [managedByCitadel, setManagedByCitadel] = useState(false)
+  const [citadelSecurityUrl, setCitadelSecurityUrl] = useState('')
   const [backups, setBackups] = useState<BackupRecord[]>([])
 
   const [curPass, setCurPass] = useState('')
@@ -1076,6 +1115,8 @@ export function SecurityBackupsPanel() {
       setPasskeys(sec.passkeys ?? [])
       setSessions(sec.sessions ?? [])
       setCurrentSessId(sec.currentSessionId)
+      setManagedByCitadel(Boolean(sec.managedByCitadel))
+      setCitadelSecurityUrl(sec.citadelSecurityUrl ?? '')
       setBackups(bk.items ?? [])
     } catch (e) {
       setErr(e instanceof Error ? e.message : '加载安全与备份数据失败')
@@ -1089,9 +1130,33 @@ export function SecurityBackupsPanel() {
   return (
     <div className="grid grid-cols-1 gap-5 lg:grid-cols-12">
       <section className="editorial-card space-y-5 p-5 lg:col-span-6">
-        <PanelHeader title="账户安全 · Passkey / TOTP / 会话" subtitle="Argon2id 密码哈希 + WebAuthn 无密码通行密钥" />
+        <PanelHeader
+          title={managedByCitadel ? 'Citadel 统一安全中心' : '账户安全 · Passkey / TOTP / 会话'}
+          subtitle={
+            managedByCitadel
+              ? '身份认证、双步验证、Passkey 与会话已由 Citadel 统一托管'
+              : 'Argon2id 密码哈希 + WebAuthn 无密码通行密钥'
+          }
+        />
         <FeedbackBanner message={msg} error={err} />
 
+        {managedByCitadel ? (
+          <div className="space-y-4 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-elevated)]/50 p-4 text-xs">
+            <p className="leading-relaxed text-[var(--text-secondary)]">
+              当前 Studio 运行在 Citadel SSO 认证体系下。为避免凭据分裂，密码修改、TOTP 双步验证、WebAuthn Passkey 绑定以及活跃会话下线已集中至 Citadel 安全中心管理。
+            </p>
+            <a
+              href={citadelSecurityUrl || 'https://admin.crackrammer.com/security'}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1.5 rounded-xl bg-[var(--accent)] px-4 py-2 font-semibold text-[var(--accent-ink)]"
+            >
+              <ShieldCheck className="h-3.5 w-3.5" aria-hidden="true" />
+              前往 Citadel 安全中心管理
+            </a>
+          </div>
+        ) : (
+          <>
         {/* Password Change */}
         <form
           onSubmit={async (e) => {
@@ -1246,6 +1311,8 @@ export function SecurityBackupsPanel() {
             </div>
           ))}
         </div>
+          </>
+        )}
       </section>
 
       <section className="editorial-card space-y-4 p-5 lg:col-span-6">
@@ -1315,7 +1382,7 @@ export function SecurityBackupsPanel() {
               </div>
               <div className="flex items-center gap-2">
                 <a
-                  href={`/api/v1/admin/backups/${encodeURIComponent(b.id)}/download`}
+                  href={adminBackupDownloadUrl(b.id)}
                   className="inline-flex items-center gap-1 rounded-lg border border-[var(--border-subtle)] px-2.5 py-1 hover:border-[var(--accent)]"
                 >
                   <Download className="h-3 w-3" aria-hidden="true" />

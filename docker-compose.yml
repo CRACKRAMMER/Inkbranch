@@ -6,6 +6,8 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-inkbranch}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me}
       POSTGRES_DB: ${POSTGRES_DB:-inkbranch}
+    ports:
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -24,6 +26,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "${BIND_ADDR:-127.0.0.1}:${PORT:-3000}:3000"
     environment:
@@ -36,6 +40,12 @@ services:
       DATABASE_POOL_MAX: ${DATABASE_POOL_MAX:-10}
       SESSION_SECRET: ${SESSION_SECRET:-replace-with-32-byte-random-secret}
       TRUST_PROXY: ${TRUST_PROXY:-true}
+      AUTH_MODE: ${AUTH_MODE:-${CITADEL_AUTH_MODE:-local}}
+      CITADEL_APP_ID: ${CITADEL_APP_ID:-inkbranch}
+      CITADEL_INTERNAL_URL: ${CITADEL_INTERNAL_URL:-http://host.docker.internal:8082}
+      CITADEL_PUBLIC_URL: ${CITADEL_PUBLIC_URL:-https://admin.crackrammer.com}
+      CITADEL_INTERNAL_SECRET: ${CITADEL_INTERNAL_SECRET:-}
+      CITADEL_HEADER_HMAC_SECRET: ${CITADEL_HEADER_HMAC_SECRET:-}
       CONTENT_DIR: /app/content
       UPLOADS_DIR: /app/uploads
       BACKUPS_DIR: /app/backups

@@ -59,8 +59,10 @@ func (s *Server) registerPageRoutes() {
 	s.router.Get("/projects/{slugParam}", s.handleDocumentRoute(content.TypeProject))
 
 	s.router.Get("/preview/{token}", s.handleNoIndexShell("preview", "Draft Preview"))
-	s.router.Get("/admin", s.handleNoIndexShell("admin", "Admin Studio"))
-	s.router.Get("/admin/*", s.handleNoIndexShell("admin", "Admin Studio"))
+	s.router.Get("/admin", s.handleAdminLegacyShell)
+	s.router.Get("/admin/*", s.handleAdminLegacyShell)
+	s.router.Get("/blog", s.handleBlogStudioShell)
+	s.router.Get("/blog/*", s.handleBlogStudioShell)
 
 	s.router.NotFound(s.handleNotFound)
 }
